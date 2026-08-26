@@ -126,6 +126,26 @@ struct HTMLPayloadParserTests {
 
         #expect(progress.shelfProgressLabel == "00:43:21")
     }
+
+    @Test("Discovers real HLS qualities and chooses the closest lower default")
+    func hlsQualityDiscovery() throws {
+        let playlist = #"""
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=854x480
+        480/index.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2800000,AVERAGE-BANDWIDTH=2400000,RESOLUTION=1280x720
+        720/index.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=6200000,RESOLUTION=1920x1080
+        1080/index.m3u8
+        """#
+
+        let qualities = HLSMasterPlaylistParser.qualities(from: playlist)
+        #expect(qualities.map(\.height) == [480, 720, 1080])
+        #expect(qualities[1].peakBitRate == 2_400_000)
+        #expect(StreamQuality.closest(to: 1080, in: Array(qualities.dropLast()))?.height == 720)
+        #expect(StreamQuality.closest(to: 480, in: Array(qualities.dropFirst()))?.height == 720)
+        #expect(StreamQuality.closest(to: 0, in: qualities) == nil)
+    }
 }
 
 private struct StubHTTPClient: HTTPClientProtocol {

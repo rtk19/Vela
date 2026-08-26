@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct RootView: View {
-    private enum Tab: Hashable { case home, movies, series, search, library }
+    private enum Tab: Hashable { case home, movies, series, search, settings }
 
     @State private var selectedTab: Tab = .home
     @State private var searchIsPresented = false
@@ -26,9 +26,9 @@ struct RootView: View {
             NavigationStack { SearchView(isSearchPresented: $searchIsPresented) }
                 .tabItem { Label("Search", systemImage: "magnifyingglass") }
                 .tag(Tab.search)
-            NavigationStack { MyLibraryView() }
-                .tabItem { Label("My Library", systemImage: "bookmark.fill") }
-                .tag(Tab.library)
+            NavigationStack { SettingsView() }
+                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                .tag(Tab.settings)
         }
         .tint(.red)
     }
@@ -61,7 +61,6 @@ struct HomeView: View {
         }
         .background(Color.black)
         .navigationTitle("BetterStreamflix")
-        .toolbar { ToolbarItem(placement: .topBarTrailing) { NavigationLink(destination: SettingsView()) { Image(systemName: "gearshape") } } }
         .overlay { if model.isLoading && model.shelves.isEmpty { ProgressView("Loading StreamingCommunity…") } }
         .task { await model.load(registry: environment.registry) }
         .refreshable { await model.load(registry: environment.registry, force: true) }
@@ -340,63 +339,11 @@ struct DetailsView: View {
     }
 }
 
-struct MyLibraryView: View {
-    @EnvironmentObject private var library: LibraryStore
-    var body: some View {
-        List {
-            if !library.progress.isEmpty {
-                Section("Continue Watching") {
-                    ForEach(library.progress) { progress in
-                        ProgressRow(progress: progress)
-                    }
-                }
-            }
-            let favoriteSeries = library.favorites.filter { $0.kind == .series }
-            if !favoriteSeries.isEmpty {
-                Section("Favorite Series") {
-                    ForEach(favoriteSeries) { item in
-                        NavigationLink(value: item) { Text(item.title) }
-                    }
-                }
-            }
-            let favoriteMovies = library.favorites.filter { $0.kind == .movie }
-            if !favoriteMovies.isEmpty {
-                Section("Favorite Movies") {
-                    ForEach(favoriteMovies) { item in
-                        NavigationLink(value: item) { Text(item.title) }
-                    }
-                }
-            }
-            if library.favorites.isEmpty {
-                Section("Favorites") {
-                    Text("Your favorite movies and series will appear here.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .navigationTitle("My Library")
-        .navigationDestination(for: MediaItem.self) { DetailsView(item: $0) }
-    }
-}
-
-struct ProgressRow: View {
-    let progress: WatchProgress
-    var body: some View {
-        NavigationLink(value: progress.media) {
-            VStack(alignment: .leading) {
-                Text(progress.displayTitle)
-                if let episodeTitle = progress.episode?.title {
-                    Text(episodeTitle).font(.caption).foregroundStyle(.secondary)
-                }
-                ProgressView(value: progress.fraction).tint(.red)
-            }
-        }
-    }
-}
-
 struct SettingsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @AppStorage("player.autoNext") private var autoNext = true
+    @AppStorage("player.defaultQualityHeight") private var defaultQualityHeight = 0
+    @AppStorage("player.defaultPlaybackRate") private var defaultPlaybackRate = 1.0
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
@@ -428,6 +375,20 @@ struct SettingsView: View {
             }
             Section("Player") {
                 Toggle("Automatically play next episode", isOn: $autoNext)
+                Picker("Default quality", selection: $defaultQualityHeight) {
+                    Text("Auto").tag(0)
+                    Text("480p").tag(480)
+                    Text("720p").tag(720)
+                    Text("1080p").tag(1080)
+                }
+                Picker("Default speed", selection: $defaultPlaybackRate) {
+                    ForEach([0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { speed in
+                        Text("\(speed, specifier: "%.2g")×").tag(speed)
+                    }
+                }
+                Text("If the preferred quality is unavailable, the closest lower resolution is selected.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
             Section("Playback Languages") {
                 languagePicker("Default subtitles", selection: $primarySubtitleLanguage)
@@ -483,6 +444,8 @@ struct PlayerScreen: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var library: LibraryStore
     @AppStorage("player.autoNext") private var autoNext = true
+    @AppStorage("player.defaultQualityHeight") private var defaultQualityHeight = 0
+    @AppStorage("player.defaultPlaybackRate") private var defaultPlaybackRate = 1.0
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
@@ -499,7 +462,8 @@ struct PlayerScreen: View {
     var body: some View {
         NativePlayerController(
             player: session.player,
-            qualityLimit: session.qualityLimit,
+            availableQualities: session.availableQualities,
+            selectedQuality: session.selectedQuality,
             onQualityChanged: { session.setQuality($0) },
             onDismiss: {
                 saveProgress()
@@ -516,7 +480,9 @@ struct PlayerScreen: View {
                 resumeAt: library.resumePosition(for: model.request.contentID),
                 primarySubtitleLanguage: primarySubtitleLanguage,
                 secondarySubtitleLanguage: secondarySubtitleLanguage,
-                audioLanguage: audioLanguage
+                audioLanguage: audioLanguage,
+                defaultQualityHeight: defaultQualityHeight,
+                defaultPlaybackRate: Float(defaultPlaybackRate)
             )
             session.onEnded = { handlePlaybackEnded() }
         }

@@ -3,3 +3,4 @@
 DerivedData/
 *.xcresult
 xcuserdata/
+releases/*.ipa

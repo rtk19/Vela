@@ -56,7 +56,7 @@ final class PlayerSession: ObservableObject {
         let qualities = await playlistInspector.availableQualities(for: preparedSource)
         guard !Task.isCancelled else { return }
         availableQualities = qualities
-        selectedQuality = Self.closestQuality(to: defaultQualityHeight, in: qualities)
+        selectedQuality = StreamQuality.closest(to: defaultQualityHeight, in: qualities)
         self.primarySubtitleLanguage = primarySubtitleLanguage
         self.secondarySubtitleLanguage = secondarySubtitleLanguage
         self.audioLanguage = audioLanguage
@@ -137,14 +137,6 @@ final class PlayerSession: ObservableObject {
             )
         }
         if shouldPlay { player.playImmediately(atRate: playbackRate) }
-    }
-
-    private static func closestQuality(
-        to preferredHeight: Int,
-        in qualities: [StreamQuality]
-    ) -> StreamQuality? {
-        guard preferredHeight > 0 else { return nil }
-        return qualities.last(where: { $0.height <= preferredHeight }) ?? qualities.first
     }
 
     private func applyPreferredLanguages(
@@ -243,6 +235,11 @@ struct StreamQuality: Identifiable, Hashable, Sendable {
 
     var id: Int { height }
     var title: String { "\(height)p" }
+
+    static func closest(to preferredHeight: Int, in qualities: [StreamQuality]) -> StreamQuality? {
+        guard preferredHeight > 0 else { return nil }
+        return qualities.last(where: { $0.height <= preferredHeight }) ?? qualities.first
+    }
 }
 
 private actor HLSPlaylistInspector {
@@ -386,7 +383,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, AVPlayerViewControllerDelegate {
+    final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         private let qualityButton = UIButton(type: .system)
         private var availableQualities: [StreamQuality]
         private var selectedQuality: StreamQuality?
@@ -411,7 +408,6 @@ struct NativePlayerController: UIViewControllerRepresentable {
             qualityButton.translatesAutoresizingMaskIntoConstraints = false
             qualityButton.showsMenuAsPrimaryAction = true
             qualityButton.accessibilityLabel = "Video quality"
-            qualityButton.alpha = 0.86
             overlay.addSubview(qualityButton)
             NSLayoutConstraint.activate([
                 qualityButton.trailingAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.trailingAnchor, constant: -14),
@@ -419,28 +415,97 @@ struct NativePlayerController: UIViewControllerRepresentable {
                 qualityButton.widthAnchor.constraint(equalToConstant: 38),
                 qualityButton.heightAnchor.constraint(equalToConstant: 38)
             ])
-            updateQuality(qualityLimit)
+            let tapGesture = UITapGestureRecognizer(target: self, action: #selector(playerTapped(_:)))
+            tapGesture.cancelsTouchesInView = false
+            tapGesture.delegate = self
+            controller.view.addGestureRecognizer(tapGesture)
+            updateQualities(availableQualities, selectedQuality: selectedQuality)
+            showQualityButton()
         }
 
-        func updateQuality(_ quality: QualityLimit) {
-            qualityLimit = quality
+        func updateQualities(
+            _ qualities: [StreamQuality],
+            selectedQuality: StreamQuality?
+        ) {
+            if qualityButton.configuration != nil,
+               availableQualities == qualities,
+               self.selectedQuality == selectedQuality {
+                return
+            }
+            let discoveredQualities = availableQualities.isEmpty && !qualities.isEmpty
+            availableQualities = qualities
+            self.selectedQuality = selectedQuality
+            qualityButton.isHidden = qualities.isEmpty
             var configuration = UIButton.Configuration.gray()
             configuration.cornerStyle = .capsule
             configuration.image = UIImage(systemName: "slider.horizontal.3")
             configuration.baseForegroundColor = .white
             qualityButton.configuration = configuration
-            qualityButton.accessibilityValue = quality.rawValue
+            qualityButton.accessibilityValue = selectedQuality?.title ?? "Auto"
+            let automaticAction = UIAction(
+                title: "Auto",
+                state: selectedQuality == nil ? .on : .off
+            ) { [weak self] _ in
+                self?.onQualityChanged(nil)
+                self?.showQualityButton()
+            }
             qualityButton.menu = UIMenu(
                 title: "Video Quality",
-                children: QualityLimit.allCases.map { option in
+                children: [automaticAction] + qualities.reversed().map { quality in
                     UIAction(
-                        title: option.rawValue,
-                        state: option == quality ? .on : .off
+                        title: quality.title,
+                        state: quality == selectedQuality ? .on : .off
                     ) { [weak self] _ in
-                        self?.onQualityChanged(option)
+                        self?.onQualityChanged(quality)
+                        self?.showQualityButton()
                     }
                 }
             )
+            if discoveredQualities { showQualityButton() }
+        }
+
+        @objc private func playerTapped(_ gesture: UITapGestureRecognizer) {
+            guard !qualityButton.isHidden else { return }
+            let buttonLocation = gesture.location(in: qualityButton)
+            guard !qualityButton.bounds.contains(buttonLocation) else {
+                showQualityButton()
+                return
+            }
+            if let view = gesture.view {
+                let location = gesture.location(in: view)
+                var hitView: UIView? = view.hitTest(location, with: nil)
+                while let current = hitView {
+                    if current is UIControl {
+                        showQualityButton()
+                        return
+                    }
+                    hitView = current.superview
+                }
+            }
+            qualityButton.alpha > 0.1 ? hideQualityButton() : showQualityButton()
+        }
+
+        private func showQualityButton() {
+            guard !availableQualities.isEmpty else { return }
+            hideTask?.cancel()
+            UIView.animate(withDuration: 0.2) { [qualityButton] in qualityButton.alpha = 0.86 }
+            hideTask = Task { @MainActor [weak self] in
+                try? await Task.sleep(for: .seconds(4))
+                guard !Task.isCancelled else { return }
+                self?.hideQualityButton()
+            }
+        }
+
+        private func hideQualityButton() {
+            hideTask?.cancel()
+            UIView.animate(withDuration: 0.2) { [qualityButton] in qualityButton.alpha = 0 }
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
         }
 
         func playerViewControllerWillEndFullScreenPresentation(

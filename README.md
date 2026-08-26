@@ -32,7 +32,8 @@ To create an archive, select **Any iOS Device (arm64)** and use **Product → Ar
 - Vixcloud player-token resolution with one automatic expired-token retry
 - HLS playback through AVPlayer
 - Native AVPlayer playback controls, including audio, subtitles, speed, play/pause, and 10-second seeking
-- A compact in-player Auto/480p/720p/1080p quality selector backed by native HLS limits
+- A compact in-player quality selector populated from each stream's real HLS variants
+- Default quality with closest-lower fallback and configurable default playback speed
 - Preferred primary and backup subtitle languages
 - Preferred audio language with automatic English fallback
 - Resume position and continue-watching persistence
