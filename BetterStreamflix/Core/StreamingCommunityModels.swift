@@ -42,6 +42,7 @@ struct SCShow: Decodable, Sendable {
     let name: String
     let type: String
     let tmdbID: Int?
+    let imdbID: String?
     let score: String?
     let lastAirDate: String?
     let images: [SCImage]
@@ -56,6 +57,7 @@ struct SCShow: Decodable, Sendable {
     enum CodingKeys: String, CodingKey {
         case id, name, type, score, images, slug, plot, genres, seasons, quality, runtime
         case tmdbID = "tmdb_id"
+        case imdbID = "imdb_id"
         case lastAirDate = "last_air_date"
         case actors = "main_actors"
     }
@@ -67,7 +69,8 @@ struct SCShow: Decodable, Sendable {
         else { throw AppError.decoding("Missing title id") }
         name = (try? box.decode(String.self, forKey: .name)) ?? "Untitled"
         type = (try? box.decode(String.self, forKey: .type)) ?? "movie"
-        tmdbID = try? box.decodeIfPresent(Int.self, forKey: .tmdbID)
+        tmdbID = box.decodeFlexibleIntIfPresent(forKey: .tmdbID)
+        imdbID = try? box.decodeIfPresent(String.self, forKey: .imdbID)
         if let string = try? box.decode(String.self, forKey: .score) {
             score = string
         } else if let number = try? box.decode(Double.self, forKey: .score) {
@@ -195,6 +198,12 @@ extension JSONDecoder {
 }
 
 private extension KeyedDecodingContainer {
+    func decodeFlexibleIntIfPresent(forKey key: Key) -> Int? {
+        if let value = try? decode(Int.self, forKey: key) { return value }
+        if let value = try? decode(String.self, forKey: key) { return Int(value) }
+        return nil
+    }
+
     func decodeFlexibleString(forKey key: Key) throws -> String {
         if let value = try? decode(String.self, forKey: key) { return value }
         if let value = try? decode(Int.self, forKey: key) { return String(value) }

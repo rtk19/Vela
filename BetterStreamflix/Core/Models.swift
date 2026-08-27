@@ -15,6 +15,8 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
     let rating: Double?
     let quality: String?
     let runtimeMinutes: Int?
+    let imdbID: String?
+    let tmdbID: Int?
     let posterURL: URL?
     let backdropURL: URL?
     let genres: [MediaGenre]
@@ -31,6 +33,8 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
         rating: Double? = nil,
         quality: String? = nil,
         runtimeMinutes: Int? = nil,
+        imdbID: String? = nil,
+        tmdbID: Int? = nil,
         posterURL: URL? = nil,
         backdropURL: URL? = nil,
         genres: [MediaGenre] = [],
@@ -46,6 +50,8 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
         self.rating = rating
         self.quality = quality
         self.runtimeMinutes = runtimeMinutes
+        self.imdbID = imdbID
+        self.tmdbID = tmdbID
         self.posterURL = posterURL
         self.backdropURL = backdropURL
         self.genres = genres
@@ -100,9 +106,30 @@ struct PlaybackRequest: Hashable, Sendable {
     let episode: MediaEpisode?
 
     var contentID: String { episode?.id ?? media.id }
+    var nowPlayingTitle: String {
+        guard let episode else { return media.title }
+        return "\(media.title) • Season \(episode.seasonNumber) Episode \(episode.number)"
+    }
     var displayTitle: String {
         guard let episode else { return media.title }
         return "\(media.title) · S\(episode.seasonNumber) E\(episode.number)"
+    }
+}
+
+enum PlaybackCompletionPolicy {
+    static let episodeExitThreshold: TimeInterval = 60
+
+    static func shouldFinishEpisodeOnExit(
+        request: PlaybackRequest,
+        position: Double,
+        duration: Double
+    ) -> Bool {
+        guard request.episode != nil,
+              position.isFinite,
+              duration.isFinite,
+              position > 0,
+              duration > 0 else { return false }
+        return max(duration - position, 0) <= episodeExitThreshold
     }
 }
 
@@ -115,17 +142,64 @@ struct PlaybackSource: Sendable {
 
 struct SubtitleSource: Identifiable, Hashable, Sendable {
     let id: String
+    let providerID: String
+    let providerName: String
     let label: String
     let languageCode: String?
     let url: URL
     let isDefault: Bool
 
-    init(label: String, languageCode: String? = nil, url: URL, isDefault: Bool = false) {
-        id = "\(languageCode ?? "und"):\(url.absoluteString)"
+    init(
+        id: String? = nil,
+        providerID: String = "stream",
+        providerName: String = "Built-in",
+        label: String,
+        languageCode: String? = nil,
+        url: URL,
+        isDefault: Bool = false
+    ) {
+        self.id = id ?? "\(providerID):\(languageCode ?? "und"):\(url.absoluteString)"
+        self.providerID = providerID
+        self.providerName = providerName
         self.label = label
         self.languageCode = languageCode
         self.url = url
         self.isDefault = isDefault
+    }
+}
+
+extension SubtitleSource {
+    static func firstAlphabetically(
+        matching languageCode: String,
+        in subtitles: [SubtitleSource]
+    ) -> SubtitleSource? {
+        let language = canonicalLanguageCode(languageCode)
+        guard !language.isEmpty else { return nil }
+        return subtitles
+            .filter { canonicalLanguageCode($0.languageCode ?? "") == language }
+            .sorted(by: alphabeticalOrder)
+            .first
+    }
+
+    private static func alphabeticalOrder(_ left: SubtitleSource, _ right: SubtitleSource) -> Bool {
+        let providerOrder = left.providerName.localizedCaseInsensitiveCompare(right.providerName)
+        if providerOrder != .orderedSame { return providerOrder == .orderedAscending }
+        let labelOrder = left.label.localizedCaseInsensitiveCompare(right.label)
+        if labelOrder != .orderedSame { return labelOrder == .orderedAscending }
+        return left.id < right.id
+    }
+
+    private static func canonicalLanguageCode(_ code: String) -> String {
+        let base = code
+            .lowercased()
+            .split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .first
+            .map(String.init) ?? ""
+        switch base {
+        case "heb", "iw": return "he"
+        case "eng": return "en"
+        default: return base
+        }
     }
 }
 
@@ -140,6 +214,10 @@ struct WatchProgress: Identifiable, Codable, Hashable, Sendable {
     var updatedAt: Date
 
     var fraction: Double { duration > 0 ? min(max(position / duration, 0), 1) : 0 }
+
+    var isNextUp: Bool {
+        media.kind == .series && episode != nil && position <= 0 && duration <= 0
+    }
 
     var displayTitle: String {
         guard let episode else { return media.title }
@@ -159,6 +237,27 @@ struct WatchProgress: Identifiable, Codable, Hashable, Sendable {
     var shelfProgressLabel: String {
         guard let episode else { return positionLabel }
         return String(format: "S%02dE%02d • %@", episode.seasonNumber, episode.number, positionLabel)
+    }
+}
+
+struct WatchedEpisode: Codable, Hashable, Sendable {
+    let providerID: String
+    let showID: String
+    let seasonNumber: Int
+    let episodeNumber: Int
+
+    init(request: PlaybackRequest) {
+        providerID = request.media.providerID
+        showID = request.media.id
+        seasonNumber = request.episode?.seasonNumber ?? 0
+        episodeNumber = request.episode?.number ?? 0
+    }
+
+    func matches(_ episode: MediaEpisode, in item: MediaItem) -> Bool {
+        providerID == item.providerID &&
+            showID == item.id &&
+            seasonNumber == episode.seasonNumber &&
+            episodeNumber == episode.number
     }
 }
 

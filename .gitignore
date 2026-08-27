@@ -1,5 +1,8 @@
 .DS_Store
 .xcodebuild*/
+.swift-clang-cache/
+.swift-module-cache/
+.typecheck/
 DerivedData/
 *.xcresult
 xcuserdata/

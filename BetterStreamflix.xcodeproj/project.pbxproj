@@ -8,8 +8,12 @@
 
 /* Begin PBXBuildFile section */
 		059A1EF57302BC82CECD830C /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */; };
+		18FE2CC746AE1D986BE4F681 /* TMDBClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */; };
+		2A41AF0C4E4C42B2B8AE0C01 /* PlaybackProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */; };
+		30DB641A2B674F6BA2A84501 /* TMDBCatalogMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */; };
 		1C34F5EEF952356309A73FB5 /* Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23BFB819E1F6E6D0FDA303C5 /* Provider.swift */; };
 		4BF2E61CF8166494F858D6DE /* VixcloudResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */; };
+		51EF05D4A5D2D6C8BBCC75EE /* SubtitleProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */; };
 		58BC03FC05E81AA00D175E0B /* StreamingCommunityModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */; };
 		60E9F697F477EE98E69F0762 /* NativePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */; };
 		836C800689F9EF8087607BFE /* HTMLPayloadParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */; };
@@ -23,6 +27,7 @@
 		C96125C82320414436F98BCC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74A2EA851D7A16B77E578F8 /* Models.swift */; };
 		CA1A02392EDFD451F7AB9EE2 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71DEDA88C858B0270DD5A87F /* Views.swift */; };
 		D095A3DBFADDBE8026344B89 /* StreamingCommunityProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */; };
+		D717B85841750963A4E7A921 /* TMDBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -36,22 +41,27 @@
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		080960E9E3B8ADD4C97B433F /* BetterStreamflix.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = BetterStreamflix.entitlements; sourceTree = "<group>"; };
 		23BFB819E1F6E6D0FDA303C5 /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
-		3F7E760F287418B23975A2C1 /* BetterStreamflix.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = BetterStreamflix.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackProgressTests.swift; sourceTree = "<group>"; };
+		30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBCatalogMatcherTests.swift; sourceTree = "<group>"; };
+		3F7E760F287418B23975A2C1 /* BetterStreamflix.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = BetterStreamflix.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePlayer.swift; sourceTree = "<group>"; };
 		642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VixcloudResolver.swift; sourceTree = "<group>"; };
 		71DEDA88C858B0270DD5A87F /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
 		72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityProvider.swift; sourceTree = "<group>"; };
-		731FD062BC7E00D297E466E2 /* BetterStreamflixTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = BetterStreamflixTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		731FD062BC7E00D297E466E2 /* BetterStreamflixTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = BetterStreamflixTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		8CAE86812F97E13B74F2B61D /* BetterStreamflixApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BetterStreamflixApp.swift; sourceTree = "<group>"; };
 		90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParser.swift; sourceTree = "<group>"; };
 		923EB46117EA703E173F5254 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviders.swift; sourceTree = "<group>"; };
 		A111E97A6AAFBC8093B3567A /* ViewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModels.swift; sourceTree = "<group>"; };
+		ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClient.swift; sourceTree = "<group>"; };
 		B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityModels.swift; sourceTree = "<group>"; };
+		B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClientTests.swift; sourceTree = "<group>"; };
 		B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPClient.swift; sourceTree = "<group>"; };
 		C74A2EA851D7A16B77E578F8 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
 		E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParserTests.swift; sourceTree = "<group>"; };
@@ -103,6 +113,9 @@
 			isa = PBXGroup;
 			children = (
 				E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */,
+				2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */,
+				30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */,
+				B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */,
 			);
 			path = BetterStreamflixTests;
 			sourceTree = "<group>";
@@ -118,6 +131,8 @@
 				23BFB819E1F6E6D0FDA303C5 /* Provider.swift */,
 				B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */,
 				72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */,
+				9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */,
+				ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */,
 				642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */,
 			);
 			path = Core;
@@ -181,6 +196,9 @@
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
+					8CA3C1D19F54E1F65D38CFFC = {
+						DevelopmentTeam = "";
+					};
 					EE9A3246C1C04BA88E6ADDE3 = {
 						DevelopmentTeam = "";
 					};
@@ -233,6 +251,8 @@
 				1C34F5EEF952356309A73FB5 /* Provider.swift in Sources */,
 				58BC03FC05E81AA00D175E0B /* StreamingCommunityModels.swift in Sources */,
 				D095A3DBFADDBE8026344B89 /* StreamingCommunityProvider.swift in Sources */,
+				51EF05D4A5D2D6C8BBCC75EE /* SubtitleProviders.swift in Sources */,
+				D717B85841750963A4E7A921 /* TMDBClient.swift in Sources */,
 				93653BAF494CB0D07F761155 /* ViewModels.swift in Sources */,
 				CA1A02392EDFD451F7AB9EE2 /* Views.swift in Sources */,
 				4BF2E61CF8166494F858D6DE /* VixcloudResolver.swift in Sources */,
@@ -244,6 +264,9 @@
 			buildActionMask = 2147483647;
 			files = (
 				836C800689F9EF8087607BFE /* HTMLPayloadParserTests.swift in Sources */,
+				2A41AF0C4E4C42B2B8AE0C01 /* PlaybackProgressTests.swift in Sources */,
+				30DB641A2B674F6BA2A84501 /* TMDBCatalogMatcherTests.swift in Sources */,
+				18FE2CC746AE1D986BE4F681 /* TMDBClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -273,7 +296,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -347,6 +370,7 @@
 				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
 				MTL_ENABLE_DEBUG_INFO = NO;
 				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = "$(inherited) -framework AppIntents";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -415,6 +439,7 @@
 				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
 				MTL_FAST_MATH = YES;
 				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = "$(inherited) -framework AppIntents";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SDKROOT = iphoneos;
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
@@ -456,7 +481,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 1.0.0;
+				MARKETING_VERSION = 1.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

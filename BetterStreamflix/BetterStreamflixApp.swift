@@ -9,6 +9,7 @@ struct BetterStreamflixApp: App {
             RootView()
                 .environmentObject(environment)
                 .environmentObject(environment.library)
+                .environmentObject(environment.sourceLookup)
                 .preferredColorScheme(.dark)
         }
     }

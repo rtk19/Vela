@@ -1,0 +1,249 @@
+import Foundation
+import Testing
+@testable import BetterStreamflix
+
+@Suite("Playback progress")
+struct PlaybackProgressTests {
+    @Test(
+        "Episode exit completion uses the final minute boundary",
+        arguments: [
+            (position: 1_739.0, duration: 1_800.0, expected: false),
+            (position: 1_740.0, duration: 1_800.0, expected: true),
+            (position: 1_799.0, duration: 1_800.0, expected: true),
+            (position: 0.0, duration: 30.0, expected: false),
+        ]
+    )
+    func episodeExitBoundary(value: (position: Double, duration: Double, expected: Bool)) {
+        #expect(
+            PlaybackCompletionPolicy.shouldFinishEpisodeOnExit(
+                request: request(episodeNumber: 1),
+                position: value.position,
+                duration: value.duration
+            ) == value.expected
+        )
+    }
+
+    @Test("Movies do not use the episode exit rule")
+    func movieExitDoesNotFinish() {
+        let movie = MediaItem(id: "movie", providerID: "test", kind: .movie, title: "Movie")
+        #expect(
+            PlaybackCompletionPolicy.shouldFinishEpisodeOnExit(
+                request: PlaybackRequest(media: movie, episode: nil),
+                position: 1_799,
+                duration: 1_800
+            ) == false
+        )
+    }
+
+    @MainActor
+    @Test("Finishing an episode promotes the next episode at zero")
+    func finishingPromotesNextEpisode() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = LibraryStore(directory: directory)
+        let current = request(episodeNumber: 1)
+        let next = request(episodeNumber: 2)
+
+        library.updateProgress(request: current, position: 1_750, duration: 1_800)
+        #expect(library.latestProgress(for: current.media)?.episode?.number == 1)
+
+        library.markFinished(request: current, nextRequest: next)
+
+        let progress = try #require(library.latestProgress(for: current.media))
+        #expect(progress.episode?.number == 2)
+        #expect(progress.position == 0)
+        #expect(progress.duration == 0)
+        #expect(progress.isNextUp)
+        #expect(progress.shelfProgressLabel == "S01E02 • 00:00:00")
+    }
+
+    @MainActor
+    @Test("Each episode keeps its own resume position while the latest play drives Continue Watching")
+    func perEpisodeProgressAndLatestPlay() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = LibraryStore(directory: directory)
+        let seasonThreeEpisodeFour = request(seasonNumber: 3, episodeNumber: 4)
+        let seasonOneEpisodeOne = request(seasonNumber: 1, episodeNumber: 1)
+
+        library.updateProgress(request: seasonThreeEpisodeFour, position: 792, duration: 1_800)
+        library.updateProgress(request: seasonOneEpisodeOne, position: 75, duration: 1_800)
+
+        #expect(library.progress.count == 2)
+        #expect(library.continueWatching.count == 1)
+        #expect(library.latestProgress(for: seasonOneEpisodeOne.media)?.episode?.number == 1)
+        #expect(library.resumePosition(for: seasonThreeEpisodeFour) == 792)
+        #expect(library.resumePosition(for: seasonOneEpisodeOne) == 75)
+
+        library.markPlaybackStarted(request: seasonThreeEpisodeFour)
+
+        #expect(library.latestProgress(for: seasonThreeEpisodeFour.media)?.episode?.seasonNumber == 3)
+        #expect(library.latestProgress(for: seasonThreeEpisodeFour.media)?.episode?.number == 4)
+        #expect(library.resumePosition(for: seasonThreeEpisodeFour) == 792)
+        #expect(library.resumePosition(for: seasonOneEpisodeOne) == 75)
+
+        library.markFinished(request: seasonOneEpisodeOne, nextRequest: seasonThreeEpisodeFour)
+        #expect(library.resumePosition(for: seasonThreeEpisodeFour) == 792)
+
+        let reloadedLibrary = LibraryStore(directory: directory)
+        #expect(reloadedLibrary.progress.count == 1)
+        #expect(reloadedLibrary.latestProgress(for: seasonThreeEpisodeFour.media)?.episode?.number == 4)
+        #expect(reloadedLibrary.resumePosition(for: seasonThreeEpisodeFour) == 792)
+        #expect(reloadedLibrary.resumePosition(for: seasonOneEpisodeOne) == 0)
+    }
+
+    @MainActor
+    @Test("Watched state persists and replaying resets the episode")
+    func watchedStatePersistsAndReplayResets() {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let episode = request(episodeNumber: 1)
+        let library = LibraryStore(directory: directory)
+
+        library.updateProgress(request: episode, position: 540, duration: 1_800)
+        library.markWatched(request: episode)
+
+        #expect(library.isWatched(episode))
+        #expect(library.progress(for: episode) == nil)
+        #expect(library.continueWatching.isEmpty)
+        #expect(LibraryStore(directory: directory).isWatched(episode))
+
+        library.markPlaybackStarted(request: episode)
+
+        #expect(!library.isWatched(episode))
+        #expect(library.resumePosition(for: episode) == 0)
+        #expect(library.progress(for: episode)?.duration == 0)
+    }
+
+    @MainActor
+    @Test("Promoting the next unwatched episode keeps its saved position")
+    func promotionKeepsNextEpisodeProgress() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = LibraryStore(directory: directory)
+        let current = request(episodeNumber: 1)
+        let watchedNext = request(episodeNumber: 2)
+        let nextUnwatched = request(episodeNumber: 3)
+
+        library.updateProgress(request: nextUnwatched, position: 321, duration: 1_800)
+        library.updateProgress(request: current, position: 900, duration: 1_800)
+        library.markWatched(request: watchedNext)
+        library.markWatched(request: current)
+        library.promoteToContinueWatching(nextUnwatched)
+
+        let promoted = try #require(library.continueWatching.first)
+        #expect(promoted.episode?.number == 3)
+        #expect(promoted.position == 321)
+        #expect(library.isWatched(current))
+        #expect(library.isWatched(watchedNext))
+    }
+
+    @MainActor
+    @Test("Finishing the final episode does not reveal older saved progress")
+    func finishingFinalEpisodeClearsSeriesFromContinueWatching() {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = LibraryStore(directory: directory)
+        let older = request(episodeNumber: 1)
+        let final = request(episodeNumber: 8)
+
+        library.updateProgress(request: older, position: 120, duration: 1_800)
+        library.updateProgress(request: final, position: 1_790, duration: 1_800)
+        library.markFinished(request: final, nextRequest: nil)
+
+        #expect(library.progress(for: older)?.position == 120)
+        #expect(library.continueWatching.isEmpty)
+        #expect(library.latestProgress(for: final.media) == nil)
+        #expect(library.isWatched(final))
+    }
+
+    @MainActor
+    @Test("Playback speed persists per title and removal resets it to Settings")
+    func playbackSpeedMemory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstEpisode = request(episodeNumber: 1)
+        let anotherEpisode = request(episodeNumber: 2)
+        let library = LibraryStore(directory: directory)
+
+        #expect(library.playbackRate(for: firstEpisode, defaultRate: 1.25) == 1.25)
+
+        library.updatePlaybackRate(1.5, for: firstEpisode)
+
+        #expect(library.playbackRate(for: anotherEpisode, defaultRate: 1.0) == 1.5)
+        #expect(LibraryStore(directory: directory).playbackRate(
+            for: anotherEpisode,
+            defaultRate: 1.0
+        ) == 1.5)
+
+        library.updateProgress(request: firstEpisode, position: 120, duration: 1_800)
+        let savedProgress = try #require(library.progress(for: firstEpisode))
+        library.removeProgress(savedProgress)
+
+        #expect(library.resumePosition(for: firstEpisode) == 0)
+        #expect(library.playbackRate(for: firstEpisode, defaultRate: 0.75) == 0.75)
+        #expect(LibraryStore(directory: directory).playbackRate(
+            for: firstEpisode,
+            defaultRate: 0.75
+        ) == 0.75)
+    }
+
+    @MainActor
+    @Test("Watchlist persists and migrates the previous favorites file")
+    func watchlistPersistenceAndMigration() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let legacyItem = MediaItem(
+            id: "legacy-movie",
+            providerID: "test",
+            kind: .movie,
+            title: "Legacy Movie"
+        )
+        try JSONEncoder().encode([legacyItem]).write(
+            to: directory.appending(path: "favorites.json"),
+            options: .atomic
+        )
+
+        let migratedLibrary = LibraryStore(directory: directory)
+
+        #expect(migratedLibrary.watchlist == [legacyItem])
+        #expect(FileManager.default.fileExists(
+            atPath: directory.appending(path: "watchlist.json").path
+        ))
+
+        let newItem = MediaItem(
+            id: "new-series",
+            providerID: "test",
+            kind: .series,
+            title: "New Series"
+        )
+        migratedLibrary.toggleWatchlist(newItem)
+        let reloadedLibrary = LibraryStore(directory: directory)
+
+        #expect(reloadedLibrary.watchlist == [newItem, legacyItem])
+        #expect(reloadedLibrary.isInWatchlist(newItem))
+    }
+
+    private func request(seasonNumber: Int = 1, episodeNumber: Int) -> PlaybackRequest {
+        let show = MediaItem(id: "show", providerID: "test", kind: .series, title: "Show")
+        let episode = MediaEpisode(
+            id: "episode-\(seasonNumber)-\(episodeNumber)",
+            providerID: "test",
+            showID: show.id,
+            seasonNumber: seasonNumber,
+            number: episodeNumber,
+            title: "Episode \(episodeNumber)",
+            overview: nil,
+            posterURL: nil
+        )
+        return PlaybackRequest(media: show, episode: episode)
+    }
+}

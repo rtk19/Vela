@@ -26,7 +26,8 @@ To create an archive, select **Any iOS Device (arm64)** and use **Product → Ar
 
 ## Included
 
-- Native SwiftUI navigation for Home, Movies, Series, Search, Details, Seasons, Episodes, Favorites, and Continue Watching
+- Apple TV-inspired, auto-advancing trending hero carousel backed independently by TMDB
+- Native SwiftUI navigation for Home, Movies, Series, Search, Details, Seasons, Episodes, Watchlist, and Continue Watching
 - StreamingCommunity EN/Inertia catalog client
 - Automatic provider-domain redirect tracking and a configurable fallback domain that can be applied without restarting the app
 - Vixcloud player-token resolution with one automatic expired-token retry
@@ -35,6 +36,7 @@ To create an archive, select **Any iOS Device (arm64)** and use **Product → Ar
 - A compact in-player quality selector populated from each stream's real HLS variants
 - Default quality with closest-lower fallback and configurable default playback speed
 - Preferred primary and backup subtitle languages
+- Live ±0.1-second timing adjustment for downloaded subtitle tracks
 - Preferred audio language with automatic English fallback
 - Resume position and continue-watching persistence
 - Automatic next-episode playback and next-episode Continue Watching handoff
@@ -57,6 +59,10 @@ The rest of the application does not need provider-specific branching.
 ## Provider maintenance
 
 Streaming sites change domains and response formats without notice. The current fallback domain can be changed in **My Library → Settings → Provider**. A response-format change requires updating only `StreamingCommunityProvider`, `StreamingCommunityModels`, or `VixcloudResolver`.
+
+## TMDB trending carousel
+
+The hero carousel and discovery shelves use TMDB independently of StreamingCommunity's catalog lists. The app ships with its TMDB API Read Access Token in the bundled configuration and imports it into the device Keychain automatically, so no user setup is required.
 
 ## Important notes
 

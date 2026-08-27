@@ -104,6 +104,9 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
         func details(for item: MediaItem) async throws -> MediaItem {
             let page = try await fetchPage(path: "en/titles/\(item.id)")
             guard let show = page.props?.title else { throw AppError.decoding("Title details") }
+            SubtitleDiagnostics.logger.info(
+                "Catalog subtitle metadata: title=\(show.name, privacy: .public) catalogID=\(show.id, privacy: .public) imdb=\(show.imdbID ?? "missing", privacy: .public) tmdb=\(show.tmdbID.map(String.init) ?? "missing", privacy: .public)"
+            )
             return media(from: show, providerID: item.providerID, forcedKind: item.kind)
         }
 
@@ -211,6 +214,8 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
                 rating: show.score.flatMap(Double.init),
                 quality: show.quality,
                 runtimeMinutes: show.runtime,
+                imdbID: show.imdbID,
+                tmdbID: show.tmdbID,
                 posterURL: imageURL(show.images.first(where: { $0.type == "poster" })?.filename
                     ?? show.images.first(where: { $0.type == "cover" })?.filename),
                 backdropURL: imageURL(show.images.first(where: { $0.type == "background" })?.filename
