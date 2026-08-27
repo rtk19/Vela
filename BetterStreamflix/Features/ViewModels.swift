@@ -66,7 +66,7 @@ final class SourceLookupCoordinator: ObservableObject {
     private var failureDismissTask: Task<Void, Never>?
 
     var activeKeys: Set<String> { Set(activeTitles.keys) }
-    var activeCount: Int { activeTitles.count + activeArtworkKeys.count }
+    var activeCount: Int { activeTitles.count }
 
     func resolve(_ title: TrendingTitle, registry: ProviderRegistry) async -> MediaItem? {
         let key = title.lookupKey

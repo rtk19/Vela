@@ -1,6 +1,19 @@
 import SwiftUI
 import UIKit
 
+private extension AppThemeColor {
+    var color: Color {
+        switch self {
+        case .red: .red
+        case .white: .white
+        case .blue: .blue
+        case .purple: .purple
+        case .green: .green
+        case .pink: .pink
+        }
+    }
+}
+
 private enum MediaArtworkLayout {
     static let shelfPosterWidth: CGFloat = 112
     static let gridSpacing: CGFloat = 12
@@ -14,6 +27,7 @@ private enum MediaArtworkLayout {
 struct RootView: View {
     private enum Tab: Hashable { case home, movies, series, search, settings }
 
+    @EnvironmentObject private var environment: AppEnvironment
     @State private var selectedTab: Tab = .home
     @State private var searchIsPresented = false
 
@@ -41,7 +55,7 @@ struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "gearshape.fill") }
                 .tag(Tab.settings)
         }
-        .tint(.red)
+        .tint(environment.themeColor.color)
         .overlay(alignment: .top) {
             SourceLookupStatusOverlay()
                 .safeAreaPadding(.top, 8)
@@ -791,7 +805,7 @@ struct MediaShelfView: View {
                 } label: {
                     Text("Show All")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.tint)
                 }
             }
             .padding(.horizontal)
@@ -901,7 +915,7 @@ struct PosterCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
                 if let progress {
                     GeometryReader { geometry in
-                        VStack { Spacer(); Rectangle().fill(.red).frame(width: geometry.size.width * progress, height: 4) }
+                        VStack { Spacer(); Rectangle().fill(.tint).frame(width: geometry.size.width * progress, height: 4) }
                     }
                 }
             }
@@ -943,7 +957,6 @@ private struct PosterGridCard: View {
                 .clipShape(RoundedRectangle(cornerRadius: 8))
                 if let progress {
                     ProgressView(value: progress)
-                        .tint(.red)
                         .background(.black.opacity(0.5))
                 }
             }
@@ -977,7 +990,7 @@ private struct TMDBShelfView: View {
                 } label: {
                     Text("Show All")
                         .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(.red)
+                        .foregroundStyle(.tint)
                 }
             }
             .padding(.horizontal)
@@ -1322,11 +1335,13 @@ struct DetailsView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var sourceLookup: SourceLookupCoordinator
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model: DetailsViewModel
     @State private var selectedSeason: MediaSeason?
     @State private var playback: PlaybackRequest?
     @State private var episodeInfo: MediaEpisode?
     @State private var tmdbHeroArtworkData: Data?
+    @State private var isHeroArtworkLoading = true
 
     init(item: MediaItem) { _model = StateObject(wrappedValue: DetailsViewModel(item: item)) }
 
@@ -1343,8 +1358,12 @@ struct DetailsView: View {
                         Button {
                             guard let request = primaryPlaybackRequest else { return }
                             Task { await beginPlayback(request) }
-                        } label: { Label(primaryActionTitle, systemImage: "play.fill").frame(maxWidth: .infinity) }
-                        .buttonStyle(.borderedProminent).tint(.red)
+                        } label: {
+                            Label(primaryActionTitle, systemImage: "play.fill")
+                                .foregroundStyle(environment.themeColor == .white ? Color.black : Color.white)
+                                .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.borderedProminent)
                         .disabled(primaryPlaybackRequest == nil)
                         Button { library.toggleWatchlist(model.item) } label: {
                             Image(systemName: library.isInWatchlist(model.item) ? "bookmark.fill" : "bookmark")
@@ -1368,6 +1387,7 @@ struct DetailsView: View {
                 .zIndex(1)
             }
         }
+        .coordinateSpace(name: DetailsHeroScrollEffect.coordinateSpace)
         .background(.black)
         .ignoresSafeArea(edges: .top)
         .navigationBarTitleDisplayMode(.inline)
@@ -1394,14 +1414,14 @@ struct DetailsView: View {
             await model.load(registry: environment.registry)
             guard !Task.isCancelled else { return }
             tmdbHeroArtworkData = await initialArtwork
-            if tmdbHeroArtworkData == nil,
-               model.item.tmdbID != initialItem.tmdbID {
+            if model.item.tmdbID != initialItem.tmdbID {
                 tmdbHeroArtworkData = await sourceLookup.resolveArtwork(
                     for: model.item,
                     environment: environment
                 )
             }
             guard !Task.isCancelled else { return }
+            isHeroArtworkLoading = false
             if let episode = library.latestProgress(for: model.item)?.episode,
                let season = model.item.seasons.first(where: { $0.number == episode.seasonNumber }) {
                 selectedSeason = season
@@ -1419,37 +1439,66 @@ struct DetailsView: View {
     }
 
     private var detailsHero: some View {
-        ZStack(alignment: .bottomLeading) {
-            Group {
-                if let tmdbHeroArtworkData,
-                   let image = UIImage(data: tmdbHeroArtworkData) {
-                    Image(uiImage: image)
-                        .resizable()
-                        .scaledToFill()
-                } else {
-                    Rectangle()
-                        .fill(.gray.opacity(0.18))
-                        .overlay {
-                            Image(systemName: model.item.kind == .movie ? "film" : "tv")
-                                .font(.system(size: 44))
-                                .foregroundStyle(.white.opacity(0.45))
+        GeometryReader { proxy in
+            let minY = proxy.frame(in: .named(DetailsHeroScrollEffect.coordinateSpace)).minY
+            let upwardScroll = max(0, -minY)
+            let recessionProgress = min(upwardScroll / DetailsHeroScrollEffect.recessionDistance, 1)
+            let disappearanceProgress = min(upwardScroll / DetailsHeroScrollEffect.disappearanceDistance, 1)
+            let artworkScale = reduceMotion
+                ? 1
+                : 1 - (DetailsHeroScrollEffect.maximumScaleReduction * recessionProgress)
+
+            ZStack(alignment: .bottomLeading) {
+                ZStack {
+                    Group {
+                        if let tmdbHeroArtworkData,
+                           let image = UIImage(data: tmdbHeroArtworkData) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Rectangle()
+                                .fill(.gray.opacity(0.18))
+                                .overlay {
+                                    if isHeroArtworkLoading {
+                                        ProgressView()
+                                            .controlSize(.large)
+                                            .tint(.white)
+                                            .accessibilityLabel("Loading artwork")
+                                    } else {
+                                        Image(systemName: model.item.kind == .movie ? "film" : "tv")
+                                            .font(.system(size: 44))
+                                            .foregroundStyle(.white.opacity(0.45))
+                                    }
+                                }
                         }
                     }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .clipped()
+                    .frame(width: proxy.size.width, height: proxy.size.height)
+                    .clipped()
 
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0.28),
-                    .init(color: .black.opacity(0.15), location: 0.48),
-                    .init(color: .black.opacity(0.82), location: 0.76),
-                    .init(color: .black, location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
+                    Color.black
+                        .opacity(DetailsHeroScrollEffect.maximumDimming * recessionProgress)
+                }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .scaleEffect(artworkScale)
+                .offset(y: upwardScroll)
+                .opacity(1 - disappearanceProgress)
+
+                // This gradient deliberately remains in the scrolling layer so it
+                // continues to sit behind the title as the artwork recedes.
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.28),
+                        .init(color: .black.opacity(0.15), location: 0.48),
+                        .init(color: .black.opacity(0.82), location: 0.76),
+                        .init(color: .black, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
+            }
+            .frame(width: proxy.size.width, height: proxy.size.height)
 
         }
         .frame(height: 570)
@@ -1517,7 +1566,6 @@ struct DetailsView: View {
 
                                 if let episodeProgress {
                                     ProgressView(value: episodeProgress.fraction)
-                                        .tint(.red)
                                         .background(.white.opacity(0.28))
                                 }
 
@@ -1657,6 +1705,14 @@ struct DetailsView: View {
     }
 }
 
+private enum DetailsHeroScrollEffect {
+    static let coordinateSpace = "details-hero-scroll"
+    static let recessionDistance: CGFloat = 360
+    static let disappearanceDistance: CGFloat = 500
+    static let maximumScaleReduction: CGFloat = 0.1
+    static let maximumDimming: Double = 0.64
+}
+
 private struct EpisodeInfoOverlay: View {
     let showTitle: String
     let episode: MediaEpisode
@@ -1731,8 +1787,7 @@ struct SettingsView: View {
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
-    @AppStorage("subtitle.provider.wizdom.enabled") private var wizdomSubtitlesEnabled = true
-    @AppStorage("subtitle.provider.ktuvit.enabled") private var ktuvitSubtitlesEnabled = true
+    @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
     @State private var providerDomain = ""
     @State private var providerMessage: String?
 
@@ -1742,6 +1797,23 @@ struct SettingsView: View {
                 .listRowInsets(EdgeInsets())
                 .listRowBackground(Color.black)
                 .listRowSeparator(.hidden)
+
+            Section("Appearance") {
+                Picker("Theme color", selection: $environment.themeColor) {
+                    ForEach(AppThemeColor.allCases) { option in
+                        HStack {
+                            Circle()
+                                .fill(option.color)
+                                .frame(width: 14, height: 14)
+                                .overlay {
+                                    Circle().stroke(.white.opacity(option == .white ? 0.5 : 0), lineWidth: 1)
+                                }
+                            Text(option.name)
+                        }
+                        .tag(option)
+                    }
+                }
+            }
 
             Section("Provider") {
                 LabeledContent("Active", value: "StreamingCommunity (EN)")
@@ -1790,9 +1862,8 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
             Section("Third-party Subtitles") {
-                Toggle("Wizdom", isOn: $wizdomSubtitlesEnabled)
-                Toggle("Ktuvit", isOn: $ktuvitSubtitlesEnabled)
-                Text("Enabled sources are added to the player's built-in subtitle list and remain available in Picture in Picture. Third-party availability depends on the title and provider service.")
+                Toggle("Enabled", isOn: $thirdPartySubtitlesEnabled)
+                Text("Third-party availability depends on the title and provider service.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1807,12 +1878,23 @@ struct SettingsView: View {
                 Link(destination: URL(string: "https://github.com/rtk19/BetterStreamflix-iOS-port/releases")!) {
                     Label("Check for updates", systemImage: "arrow.triangle.2.circlepath")
                 }
+                Link(destination: URL(string: "https://buymeacoffee.com/refaelbar")!) {
+                    Label("Buy me a coffee", systemImage: "cup.and.saucer.fill")
+                        .font(.headline)
+                        .foregroundStyle(.black)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color(red: 1, green: 0.87, blue: 0), in: RoundedRectangle(cornerRadius: 10))
+                }
+                .buttonStyle(.plain)
+                .accessibilityHint("Opens Buy Me a Coffee in your browser")
                 Text("This app does not host media. Use it only for content you are authorized to access.").font(.caption).foregroundStyle(.secondary)
                 Text("Trending data and images are provided by TMDB. This product uses the TMDB API but is not endorsed or certified by TMDB.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
         }
+        .tint(environment.themeColor.color)
         .scrollContentBackground(.hidden)
         .background(.black)
         .contentMargins(.top, 0, for: .scrollContent)
@@ -1909,8 +1991,7 @@ struct PlayerScreen: View {
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
-    @AppStorage("subtitle.provider.wizdom.enabled") private var wizdomSubtitlesEnabled = true
-    @AppStorage("subtitle.provider.ktuvit.enabled") private var ktuvitSubtitlesEnabled = true
+    @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
     @StateObject private var model: PlayerViewModel
     @StateObject private var session = PlayerSession()
     @State private var nextRequest: PlaybackRequest?
@@ -2056,10 +2137,7 @@ struct PlayerScreen: View {
     }
 
     private var enabledSubtitleProviderIDs: Set<String> {
-        var providerIDs: Set<String> = []
-        if wizdomSubtitlesEnabled { providerIDs.insert("wizdom") }
-        if ktuvitSubtitlesEnabled { providerIDs.insert("ktuvit") }
-        return providerIDs
+        thirdPartySubtitlesEnabled ? ["wizdom", "ktuvit"] : []
     }
 }
 

@@ -175,6 +175,61 @@ struct TMDBClientTests {
         #expect(request?.url?.query?.contains("query=Example%20Series") == true)
         #expect(request?.url?.query?.contains("first_air_date_year=2025") == true)
     }
+
+    @Test("Rejects artwork from a differently named TMDB search result")
+    func artworkSearchRejectsDifferentTitle() async throws {
+        let transport = RecordingTMDBTransport(data: Data(
+            """
+            {
+              "results": [{
+                "name": "Neuro: Supernatural Detective",
+                "poster_path": "/wrong-series.jpg",
+                "backdrop_path": null
+              }]
+            }
+            """.utf8
+        ))
+        let client = TMDBClient(client: transport)
+        let item = MediaItem(
+            id: "supernatural",
+            providerID: "provider",
+            kind: .series,
+            title: "Supernatural",
+            releaseDate: "2007"
+        )
+
+        let artwork = try await client.artwork(for: item, accessToken: "secret-token")
+
+        #expect(artwork == nil)
+    }
+
+    @Test("Caches TMDB images for three days and deletes expired files")
+    func imageCacheExpiration() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = TMDBImageCache(directoryURL: directory)
+        let remoteURL = try #require(URL(string: "https://image.tmdb.org/t/p/original/hero.jpg"))
+        let imageData = Data("cached-image".utf8)
+        let loadedAt = Date(timeIntervalSince1970: 1_000_000)
+
+        await cache.store(imageData, for: remoteURL, now: loadedAt)
+
+        let validData = await cache.data(
+            for: remoteURL,
+            now: loadedAt.addingTimeInterval(TMDBImageCache.threeDays - 1)
+        )
+        #expect(validData == imageData)
+
+        let expiredData = await cache.data(
+            for: remoteURL,
+            now: loadedAt.addingTimeInterval(TMDBImageCache.threeDays + 1)
+        )
+        #expect(expiredData == nil)
+        let cachedFiles = try FileManager.default.contentsOfDirectory(atPath: directory.path)
+        #expect(cachedFiles.isEmpty)
+    }
 }
 
 private actor RecordingTMDBTransport: HTTPClientProtocol {

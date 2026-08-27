@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import Security
 
@@ -76,9 +77,15 @@ enum TMDBCollection: Identifiable, Hashable, Sendable {
 
 actor TMDBClient {
     private let client: any HTTPClientProtocol
+    private let imageCache: TMDBImageCache
 
-    init(client: any HTTPClientProtocol = HTTPClient()) {
+    init(
+        client: any HTTPClientProtocol = HTTPClient(),
+        imageCache: TMDBImageCache = TMDBImageCache()
+    ) {
         self.client = client
+        self.imageCache = imageCache
+        Task { await imageCache.removeExpiredEntries() }
     }
 
     func trending(accessToken: String, language: String = "en-US") async throws -> [TrendingTitle] {
@@ -174,10 +181,15 @@ actor TMDBClient {
             accessToken: accessToken,
             language: language
         )?.heroURL else { return nil }
+        if let cachedData = await imageCache.data(for: url) {
+            return cachedData
+        }
         var request = URLRequest(url: url)
         request.timeoutInterval = 30
-        request.cachePolicy = .returnCacheDataElseLoad
-        return try await client.data(for: request).data
+        request.cachePolicy = .reloadIgnoringLocalCacheData
+        let data = try await client.data(for: request).data
+        await imageCache.store(data, for: url)
+        return data
     }
 
     private func fetch(
@@ -249,8 +261,84 @@ actor TMDBClient {
                 options: [.caseInsensitive, .diacriticInsensitive],
                 locale: .current
             ) == normalizedTitle && $0.artwork.heroURL != nil
-        }) ?? payload.results.first(where: { $0.artwork.heroURL != nil })
+        })
         return match?.artwork
+    }
+}
+
+actor TMDBImageCache {
+    static let threeDays: TimeInterval = 3 * 24 * 60 * 60
+
+    private let directoryURL: URL
+    private let lifetime: TimeInterval
+    private let fileManager: FileManager
+
+    init(
+        directoryURL: URL? = nil,
+        lifetime: TimeInterval = TMDBImageCache.threeDays,
+        fileManager: FileManager = .default
+    ) {
+        self.directoryURL = directoryURL
+            ?? fileManager.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+                .appendingPathComponent("TMDBImages", isDirectory: true)
+        self.lifetime = lifetime
+        self.fileManager = fileManager
+    }
+
+    func data(for remoteURL: URL, now: Date = Date()) -> Data? {
+        let localURL = fileURL(for: remoteURL)
+        guard let modificationDate = try? localURL.resourceValues(
+            forKeys: [.contentModificationDateKey]
+        ).contentModificationDate else {
+            return nil
+        }
+        guard now.timeIntervalSince(modificationDate) <= lifetime else {
+            try? fileManager.removeItem(at: localURL)
+            return nil
+        }
+        return try? Data(contentsOf: localURL)
+    }
+
+    func store(_ data: Data, for remoteURL: URL, now: Date = Date()) {
+        do {
+            try fileManager.createDirectory(
+                at: directoryURL,
+                withIntermediateDirectories: true
+            )
+            let localURL = fileURL(for: remoteURL)
+            try data.write(to: localURL, options: .atomic)
+            try fileManager.setAttributes(
+                [.modificationDate: now],
+                ofItemAtPath: localURL.path
+            )
+        } catch {
+            // A cache write must never prevent artwork from being displayed.
+        }
+    }
+
+    func removeExpiredEntries(now: Date = Date()) {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: [.contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+
+        for file in files where file.pathExtension == "tmdb-image" {
+            guard let modificationDate = try? file.resourceValues(
+                forKeys: [.contentModificationDateKey]
+            ).contentModificationDate,
+                  now.timeIntervalSince(modificationDate) > lifetime else { continue }
+            try? fileManager.removeItem(at: file)
+        }
+    }
+
+    private func fileURL(for remoteURL: URL) -> URL {
+        let digest = SHA256.hash(data: Data(remoteURL.absoluteString.utf8))
+            .map { String(format: "%02x", $0) }
+            .joined()
+        return directoryURL
+            .appendingPathComponent(digest)
+            .appendingPathExtension("tmdb-image")
     }
 }
 

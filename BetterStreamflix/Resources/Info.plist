@@ -17,16 +17,16 @@
 	<key>CFBundleShortVersionString</key>
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
-	<string>1</string>
+	<string>$(CURRENT_PROJECT_VERSION)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
-	<key>TMDBReadAccessToken</key>
-	<string>eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NmVhMDlkODViNTIzZTgzMmU2YzM3NjVlNDQyODgzNiIsIm5iZiI6MTc4NzgxNzk0Ny45NzUwMDAxLCJzdWIiOiI2YThmZWZkYjAwYjY5ZmMxMTkzY2U5ZTgiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.dYwBrAG1hXl1kCPAWGLbBl54zyicbxW9aMN9YoGxQdI</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
+	<key>TMDBReadAccessToken</key>
+	<string>eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NmVhMDlkODViNTIzZTgzMmU2YzM3NjVlNDQyODgzNiIsIm5iZiI6MTc4NzgxNzk0Ny45NzUwMDAxLCJzdWIiOiI2YThmZWZkYjAwYjY5ZmMxMTkzY2U5ZTgiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.dYwBrAG1hXl1kCPAWGLbBl54zyicbxW9aMN9YoGxQdI</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -1,7 +1,7 @@
 @preconcurrency import AVKit
 @preconcurrency import Network
 import Combine
-import MediaPlayer
+@preconcurrency import MediaPlayer
 import SwiftUI
 import UIKit
 
@@ -187,12 +187,14 @@ final class PlayerSession: ObservableObject {
     nonisolated(unsafe) private var mediaSelectionObserver: NSObjectProtocol?
     nonisolated(unsafe) private var rateObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var defaultRateObservation: NSKeyValueObservation?
+    nonisolated(unsafe) private var timeControlStatusObservation: NSKeyValueObservation?
     private var mediaOptionsTask: Task<Void, Never>?
     private var subtitleAdjustmentTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var nowPlayingContentID: String?
     private var nowPlayingTitle: String?
     private var nowPlayingArtwork: MPMediaItemArtwork?
+    private var remoteCommandTargets: [(command: MPRemoteCommand, target: Any)] = []
     private var injectedSubtitleNames: Set<String> = []
     private var subtitleRenditions: [HLSSubtitleRendition] = []
     private var subtitlePlaybackSource: PlaybackSource?
@@ -216,6 +218,9 @@ final class PlayerSession: ObservableObject {
         defaultRateObservation = player.observe(\.defaultRate, options: [.new]) { [weak self] _, change in
             guard let rate = change.newValue, rate > 0 else { return }
             Task { @MainActor [weak self] in self?.recordPlaybackRate(rate) }
+        }
+        timeControlStatusObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.publishNowPlayingInfo() }
         }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1), queue: .main) { [weak self] time in
             Task { @MainActor in
@@ -287,6 +292,7 @@ final class PlayerSession: ObservableObject {
         player.pause()
         removeInjectedSubtitleAsset()
         clearNowPlaying()
+        removeRemoteCommands()
         Task { [audioSessionController] in
             await audioSessionController.deactivate()
         }
@@ -639,6 +645,7 @@ final class PlayerSession: ObservableObject {
     }
 
     private func configureNowPlaying(for request: PlaybackRequest) {
+        configureRemoteCommandsIfNeeded()
         nowPlayingArtworkTask?.cancel()
         nowPlayingContentID = request.contentID
         nowPlayingTitle = request.nowPlayingTitle
@@ -682,14 +689,115 @@ final class PlayerSession: ObservableObject {
         if let nowPlayingArtwork {
             info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
         }
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+        let center = MPNowPlayingInfoCenter.default()
+        center.nowPlayingInfo = info
+        center.playbackState = player.timeControlStatus == .paused ? .paused : .playing
     }
 
     private func clearNowPlaying() {
         nowPlayingContentID = nil
         nowPlayingTitle = nil
         nowPlayingArtwork = nil
-        MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        let center = MPNowPlayingInfoCenter.default()
+        center.playbackState = .stopped
+        center.nowPlayingInfo = nil
+    }
+
+    private func configureRemoteCommandsIfNeeded() {
+        guard remoteCommandTargets.isEmpty else { return }
+        let center = MPRemoteCommandCenter.shared()
+
+        center.playCommand.isEnabled = true
+        let playTarget = center.playCommand.addTarget { [weak self] _ in
+            Task { @MainActor [weak self] in self?.resumeFromRemoteCommand() }
+            return .success
+        }
+        remoteCommandTargets.append((center.playCommand, playTarget))
+
+        center.pauseCommand.isEnabled = true
+        let pauseTarget = center.pauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor [weak self] in self?.pauseFromRemoteCommand() }
+            return .success
+        }
+        remoteCommandTargets.append((center.pauseCommand, pauseTarget))
+
+        center.togglePlayPauseCommand.isEnabled = true
+        let toggleTarget = center.togglePlayPauseCommand.addTarget { [weak self] _ in
+            Task { @MainActor [weak self] in self?.togglePlaybackFromRemoteCommand() }
+            return .success
+        }
+        remoteCommandTargets.append((center.togglePlayPauseCommand, toggleTarget))
+
+        center.changePlaybackPositionCommand.isEnabled = true
+        let positionTarget = center.changePlaybackPositionCommand.addTarget { [weak self] event in
+            guard let positionEvent = event as? MPChangePlaybackPositionCommandEvent else {
+                return .commandFailed
+            }
+            let position = positionEvent.positionTime
+            Task { @MainActor [weak self] in self?.seekFromRemoteCommand(to: position) }
+            return .success
+        }
+        remoteCommandTargets.append((center.changePlaybackPositionCommand, positionTarget))
+    }
+
+    private func removeRemoteCommands() {
+        for target in remoteCommandTargets {
+            target.command.removeTarget(target.target)
+        }
+        remoteCommandTargets.removeAll()
+
+        let center = MPRemoteCommandCenter.shared()
+        center.playCommand.isEnabled = false
+        center.pauseCommand.isEnabled = false
+        center.togglePlayPauseCommand.isEnabled = false
+        center.changePlaybackPositionCommand.isEnabled = false
+    }
+
+    private func resumeFromRemoteCommand() {
+        guard let item = player.currentItem else { return }
+        let currentTime = item.currentTime().seconds
+        let itemDuration = item.duration.seconds
+        let rate = Float(playbackRate.isFinite && playbackRate > 0 ? playbackRate : 1)
+
+        if currentTime.isFinite,
+           itemDuration.isFinite,
+           itemDuration > 0,
+           currentTime >= itemDuration - 0.5 {
+            item.seek(to: .zero, toleranceBefore: .zero, toleranceAfter: .zero) { [weak self] _ in
+                Task { @MainActor [weak self] in
+                    self?.player.playImmediately(atRate: rate)
+                    self?.publishNowPlayingInfo()
+                }
+            }
+        } else {
+            player.playImmediately(atRate: rate)
+            publishNowPlayingInfo()
+        }
+    }
+
+    private func pauseFromRemoteCommand() {
+        guard player.currentItem != nil else { return }
+        player.pause()
+        publishNowPlayingInfo()
+    }
+
+    private func togglePlaybackFromRemoteCommand() {
+        if player.timeControlStatus == .paused {
+            resumeFromRemoteCommand()
+        } else {
+            pauseFromRemoteCommand()
+        }
+    }
+
+    private func seekFromRemoteCommand(to position: TimeInterval) {
+        guard player.currentItem != nil, position.isFinite else { return }
+        player.seek(
+            to: CMTime(seconds: max(0, position), preferredTimescale: 600),
+            toleranceBefore: .zero,
+            toleranceAfter: .zero
+        ) { [weak self] _ in
+            Task { @MainActor [weak self] in self?.publishNowPlayingInfo() }
+        }
     }
 
     private func applyQuality(to item: AVPlayerItem) {

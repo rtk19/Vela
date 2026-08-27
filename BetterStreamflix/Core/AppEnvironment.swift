@@ -1,5 +1,17 @@
 import Foundation
 
+enum AppThemeColor: String, CaseIterable, Identifiable {
+    case red
+    case white
+    case blue
+    case purple
+    case green
+    case pink
+
+    var id: Self { self }
+    var name: String { rawValue.capitalized }
+}
+
 @MainActor
 final class AppEnvironment: ObservableObject {
     let registry: ProviderRegistry
@@ -9,11 +21,18 @@ final class AppEnvironment: ObservableObject {
     private let tmdbClient: TMDBClient
     private let tmdbCredentials: TMDBCredentialStore
 
+    @Published var themeColor: AppThemeColor {
+        didSet { UserDefaults.standard.set(themeColor.rawValue, forKey: "appearance.themeColor") }
+    }
+
     @Published var providerDomain: String {
         didSet { UserDefaults.standard.set(providerDomain, forKey: "provider.streamingcommunity.domain") }
     }
 
     init() {
+        let savedThemeColor = UserDefaults.standard.string(forKey: "appearance.themeColor")
+            .flatMap(AppThemeColor.init(rawValue:)) ?? .red
+        themeColor = savedThemeColor
         let credentials = TMDBCredentialStore()
         tmdbCredentials = credentials
         tmdbClient = TMDBClient()
