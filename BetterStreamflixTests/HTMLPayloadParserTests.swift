@@ -83,6 +83,29 @@ struct HTMLPayloadParserTests {
         #expect(decoded == item)
     }
 
+    @Test("Formats Now Playing metadata for series and movies")
+    func nowPlayingMetadata() {
+        let show = MediaItem(id: "show", providerID: "test", kind: .series, title: "Example Show")
+        let episode = MediaEpisode(
+            id: "episode",
+            providerID: "test",
+            showID: "show",
+            seasonNumber: 2,
+            number: 4,
+            title: "The Fourth Episode",
+            overview: nil,
+            posterURL: nil
+        )
+        let seriesRequest = PlaybackRequest(media: show, episode: episode)
+        #expect(seriesRequest.nowPlayingTitle == "Example Show")
+        #expect(seriesRequest.nowPlayingSubtitle == "Season 2, Episode 4")
+
+        let movie = MediaItem(id: "movie", providerID: "test", kind: .movie, title: "Example Movie")
+        let movieRequest = PlaybackRequest(media: movie, episode: nil)
+        #expect(movieRequest.nowPlayingTitle == "Example Movie")
+        #expect(movieRequest.nowPlayingSubtitle == nil)
+    }
+
     @Test("Formats series progress with its show and episode identity")
     func seriesProgressDisplay() {
         let show = MediaItem(id: "show", providerID: "test", kind: .series, title: "Example Show")

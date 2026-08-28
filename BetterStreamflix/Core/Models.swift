@@ -60,6 +60,40 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
     }
 }
 
+extension MediaItem {
+    var artworkIdentityKey: String {
+        if let tmdbID {
+            return "tmdb:\(kind.rawValue):\(tmdbID)"
+        }
+        return "provider:\(providerID):\(kind.rawValue):\(id)"
+    }
+
+    /// Keeps provider-owned playback data while replacing display metadata with TMDB's values.
+    func applyingTMDBMetadata(_ metadata: TrendingTitle) -> MediaItem {
+        let tmdbOverview = metadata.overview.trimmingCharacters(in: .whitespacesAndNewlines)
+        return MediaItem(
+            id: id,
+            providerID: providerID,
+            kind: kind,
+            title: metadata.title,
+            overview: tmdbOverview.isEmpty ? nil : tmdbOverview,
+            releaseDate: metadata.releaseDate,
+            rating: metadata.rating,
+            quality: quality,
+            runtimeMinutes: runtimeMinutes,
+            imdbID: imdbID,
+            tmdbID: metadata.id,
+            posterURL: metadata.posterURL ?? posterURL,
+            backdropURL: metadata.backdropURL ?? backdropURL,
+            genres: metadata.genreNames.enumerated().map { index, name in
+                MediaGenre(id: "tmdb-\(metadata.id)-genre-\(index)", name: name)
+            },
+            cast: cast,
+            seasons: seasons
+        )
+    }
+}
+
 struct MediaGenre: Identifiable, Codable, Hashable, Sendable {
     let id: String
     let name: String
@@ -106,9 +140,10 @@ struct PlaybackRequest: Hashable, Sendable {
     let episode: MediaEpisode?
 
     var contentID: String { episode?.id ?? media.id }
-    var nowPlayingTitle: String {
-        guard let episode else { return media.title }
-        return "\(media.title) • Season \(episode.seasonNumber) Episode \(episode.number)"
+    var nowPlayingTitle: String { media.title }
+    var nowPlayingSubtitle: String? {
+        guard let episode else { return nil }
+        return "Season \(episode.seasonNumber), Episode \(episode.number)"
     }
     var displayTitle: String {
         guard let episode else { return media.title }

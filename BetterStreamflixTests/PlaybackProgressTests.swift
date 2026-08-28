@@ -163,6 +163,32 @@ struct PlaybackProgressTests {
     }
 
     @MainActor
+    @Test("A finished final episode is remembered until a newly released episode is promoted")
+    func completedSeriesCheckpointPersistsUntilNewEpisode() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let final = request(seasonNumber: 2, episodeNumber: 8)
+        let newlyReleased = request(seasonNumber: 3, episodeNumber: 1)
+        let library = LibraryStore(directory: directory)
+
+        library.markFinished(request: final, nextRequest: nil)
+
+        #expect(library.continueWatching.isEmpty)
+        let reloadedLibrary = LibraryStore(directory: directory)
+        let checkpoint = try #require(reloadedLibrary.completedSeriesRequests.first)
+        #expect(checkpoint.episode?.seasonNumber == 2)
+        #expect(checkpoint.episode?.number == 8)
+
+        reloadedLibrary.promoteToContinueWatching(newlyReleased)
+
+        #expect(reloadedLibrary.completedSeriesRequests.isEmpty)
+        #expect(reloadedLibrary.continueWatching.first?.episode?.seasonNumber == 3)
+        #expect(reloadedLibrary.continueWatching.first?.episode?.number == 1)
+        #expect(LibraryStore(directory: directory).completedSeriesRequests.isEmpty)
+    }
+
+    @MainActor
     @Test("Playback speed persists per title and removal resets it to Settings")
     func playbackSpeedMemory() throws {
         let directory = FileManager.default.temporaryDirectory

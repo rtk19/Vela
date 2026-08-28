@@ -34,6 +34,11 @@ struct TMDBArtwork: Equatable, Sendable {
     var heroURL: URL? { posterURL ?? backdropURL }
 }
 
+struct TMDBCarouselAssets: Sendable {
+    var artworkDataByKey: [String: Data] = [:]
+    var logoDataByKey: [String: Data] = [:]
+}
+
 enum TMDBCollection: Identifiable, Hashable, Sendable {
     case trending(MediaKind)
     case topToday(MediaKind)
@@ -78,6 +83,7 @@ enum TMDBCollection: Identifiable, Hashable, Sendable {
 actor TMDBClient {
     private let client: any HTTPClientProtocol
     private let imageCache: TMDBImageCache
+    private var imageDownloadTasks: [URL: Task<Data, Error>] = [:]
 
     init(
         client: any HTTPClientProtocol = HTTPClient(),
@@ -138,6 +144,41 @@ actor TMDBClient {
         return result
     }
 
+    func titleMetadata(
+        for item: MediaItem,
+        accessToken: String,
+        language: String = "en-US"
+    ) async throws -> TrendingTitle? {
+        if let tmdbID = item.tmdbID {
+            return try await titleMetadata(
+                path: "\(item.kind == .movie ? "movie" : "tv")/\(tmdbID)",
+                kind: item.kind,
+                accessToken: accessToken,
+                language: language,
+                queryItems: []
+            )
+        }
+
+        var queryItems = [
+            URLQueryItem(name: "query", value: item.title),
+            URLQueryItem(name: "include_adult", value: "false"),
+        ]
+        if let year = item.releaseDate.map({ String($0.prefix(4)) }), year.count == 4 {
+            queryItems.append(URLQueryItem(
+                name: item.kind == .movie ? "year" : "first_air_date_year",
+                value: year
+            ))
+        }
+        return try await titleMetadata(
+            path: "search/\(item.kind == .movie ? "movie" : "tv")",
+            kind: item.kind,
+            accessToken: accessToken,
+            language: language,
+            queryItems: queryItems,
+            preferredTitle: item.title
+        )
+    }
+
     func artwork(
         for item: MediaItem,
         accessToken: String,
@@ -176,20 +217,211 @@ actor TMDBClient {
         accessToken: String,
         language: String = "en-US"
     ) async throws -> Data? {
-        guard let url = try await artwork(
-            for: item,
-            accessToken: accessToken,
-            language: language
-        )?.heroURL else { return nil }
+        let directTMDBURL = [item.posterURL, item.backdropURL]
+            .compactMap { $0 }
+            .first(where: { $0.host == "image.tmdb.org" })
+        let url = if let directTMDBURL {
+            directTMDBURL
+        } else {
+            try await artwork(
+                for: item,
+                accessToken: accessToken,
+                language: language
+            )?.heroURL
+        }
+        guard let url else { return nil }
+        return try await imageData(for: url)
+    }
+
+    func carouselAssets(
+        for titles: [TrendingTitle],
+        accessToken: String,
+        language: String = "en-US",
+        timeout: Duration = .seconds(5)
+    ) async -> TMDBCarouselAssets {
+        enum Result: Sendable {
+            case title(key: String, artwork: Data?, logo: Data?)
+            case timeout
+        }
+
+        return await withTaskGroup(of: Result.self) { group in
+            for title in titles {
+                group.addTask { [self] in
+                    async let artwork: Data? = {
+                        guard let url = title.posterURL ?? title.backdropURL else { return nil }
+                        return try? await imageData(for: url)
+                    }()
+                    async let logo = try? logoData(
+                        for: title,
+                        accessToken: accessToken,
+                        language: language
+                    )
+                    return await .title(key: title.lookupKey, artwork: artwork, logo: logo)
+                }
+            }
+            group.addTask {
+                try? await Task.sleep(for: timeout)
+                return .timeout
+            }
+
+            var assets = TMDBCarouselAssets()
+            var completedTitles = 0
+            while let result = await group.next() {
+                switch result {
+                case .title(let key, let artwork, let logo):
+                    completedTitles += 1
+                    if let artwork { assets.artworkDataByKey[key] = artwork }
+                    if let logo { assets.logoDataByKey[key] = logo }
+                    if completedTitles == titles.count {
+                        group.cancelAll()
+                        return assets
+                    }
+                case .timeout:
+                    group.cancelAll()
+                    return assets
+                }
+            }
+            return assets
+        }
+    }
+
+    func imageData(for url: URL) async throws -> Data {
         if let cachedData = await imageCache.data(for: url) {
             return cachedData
         }
+        if let existingTask = imageDownloadTasks[url] {
+            return try await withTaskCancellationHandler {
+                try await existingTask.value
+            } onCancel: {
+                existingTask.cancel()
+            }
+        }
+
+        let client = self.client
+        let imageCache = self.imageCache
+        let task = Task<Data, Error> {
+            if let cachedData = await imageCache.data(for: url) {
+                return cachedData
+            }
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 30
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let data = try await client.data(for: request).data
+            try Task.checkCancellation()
+            await imageCache.store(data, for: url)
+            return data
+        }
+        imageDownloadTasks[url] = task
+        defer { imageDownloadTasks[url] = nil }
+        return try await withTaskCancellationHandler {
+            try await task.value
+        } onCancel: {
+            task.cancel()
+        }
+    }
+
+    func logoData(
+        for title: TrendingTitle,
+        accessToken: String,
+        language: String = "en-US"
+    ) async throws -> Data? {
+        try await logoData(
+            tmdbID: title.id,
+            kind: title.kind,
+            accessToken: accessToken,
+            language: language
+        )
+    }
+
+    func logoData(
+        for item: MediaItem,
+        accessToken: String,
+        language: String = "en-US"
+    ) async throws -> Data? {
+        let reference: (id: Int, kind: MediaKind)
+        if let tmdbID = item.tmdbID {
+            reference = (tmdbID, item.kind)
+        } else if let metadata = try await titleMetadata(
+            for: item,
+            accessToken: accessToken,
+            language: language
+        ) {
+            reference = (metadata.id, metadata.kind)
+        } else {
+            return nil
+        }
+
+        return try await logoData(
+            tmdbID: reference.id,
+            kind: reference.kind,
+            accessToken: accessToken,
+            language: language
+        )
+    }
+
+    func logoURL(
+        tmdbID: Int,
+        kind: MediaKind,
+        accessToken: String,
+        language: String = "en-US"
+    ) async throws -> URL? {
+        guard !accessToken.isEmpty else { throw TMDBError.missingAccessToken }
+        let preferredLanguage = Self.imageLanguageCode(from: language)
+        let lookupCacheURL = try Self.logoLookupCacheURL(
+            tmdbID: tmdbID,
+            kind: kind,
+            language: preferredLanguage
+        )
+        if let cachedLookup = await imageCache.data(for: lookupCacheURL),
+           let value = String(data: cachedLookup, encoding: .utf8) {
+            return value == "none" ? nil : URL(string: value)
+        }
+        let includedLanguages = [preferredLanguage, "en", "null"]
+            .reduce(into: [String]()) { values, language in
+                if !values.contains(language) { values.append(language) }
+            }
+            .joined(separator: ",")
+
+        var components = URLComponents(
+            string: "https://api.themoviedb.org/3/\(kind == .movie ? "movie" : "tv")/\(tmdbID)/images"
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "include_image_language", value: includedLanguages),
+        ]
+        guard let url = components?.url else { throw AppError.invalidURL }
+
         var request = URLRequest(url: url)
-        request.timeoutInterval = 30
-        request.cachePolicy = .reloadIgnoringLocalCacheData
-        let data = try await client.data(for: request).data
-        await imageCache.store(data, for: url)
-        return data
+        request.timeoutInterval = 20
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        let response = try await client.data(for: request)
+        do {
+            let payload = try JSONDecoder().decode(TMDBImagesPayload.self, from: response.data)
+            let logoURL = payload.preferredLogoURL(language: preferredLanguage)
+            let cachedValue = logoURL?.absoluteString ?? "none"
+            await imageCache.store(Data(cachedValue.utf8), for: lookupCacheURL)
+            return logoURL
+        } catch {
+            throw AppError.decoding(error.localizedDescription)
+        }
+    }
+
+    private func logoData(
+        tmdbID: Int,
+        kind: MediaKind,
+        accessToken: String,
+        language: String
+    ) async throws -> Data? {
+        guard let url = try await logoURL(
+            tmdbID: tmdbID,
+            kind: kind,
+            accessToken: accessToken,
+            language: language
+        ) else { return nil }
+        return try await imageData(for: url)
     }
 
     private func fetch(
@@ -263,6 +495,67 @@ actor TMDBClient {
             ) == normalizedTitle && $0.artwork.heroURL != nil
         })
         return match?.artwork
+    }
+
+    private func titleMetadata(
+        path: String,
+        kind: MediaKind,
+        accessToken: String,
+        language: String,
+        queryItems: [URLQueryItem],
+        preferredTitle: String? = nil
+    ) async throws -> TrendingTitle? {
+        guard !accessToken.isEmpty else { throw TMDBError.missingAccessToken }
+        var components = URLComponents(string: "https://api.themoviedb.org/3/\(path)")
+        components?.queryItems = [URLQueryItem(name: "language", value: language)] + queryItems
+        guard let url = components?.url else { throw AppError.invalidURL }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+
+        let response = try await client.data(for: request)
+        do {
+            if let preferredTitle {
+                let payload = try JSONDecoder().decode(TMDBMetadataSearchResponse.self, from: response.data)
+                let normalizedTitle = Self.normalizedTitle(preferredTitle)
+                return payload.results.first(where: {
+                    Self.normalizedTitle($0.displayTitle ?? "") == normalizedTitle
+                })?.metadata(kind: kind)
+            }
+            return try JSONDecoder().decode(TMDBMetadataPayload.self, from: response.data)
+                .metadata(kind: kind)
+        } catch {
+            throw AppError.decoding(error.localizedDescription)
+        }
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        title.folding(
+            options: [.caseInsensitive, .diacriticInsensitive],
+            locale: .current
+        )
+    }
+
+    private static func imageLanguageCode(from language: String) -> String {
+        let identifier = language.replacingOccurrences(of: "_", with: "-")
+        return identifier.split(separator: "-").first.map(String.init) ?? "en"
+    }
+
+    private static func logoLookupCacheURL(
+        tmdbID: Int,
+        kind: MediaKind,
+        language: String
+    ) throws -> URL {
+        var components = URLComponents()
+        components.scheme = "tmdb-logo"
+        components.host = kind.rawValue
+        components.path = "/\(tmdbID)"
+        components.queryItems = [URLQueryItem(name: "language", value: language)]
+        guard let url = components.url else { throw AppError.invalidURL }
+        return url
     }
 }
 
@@ -441,6 +734,55 @@ private struct TMDBArtworkPayload: Decodable, Sendable {
     }
 }
 
+private struct TMDBImagesPayload: Decodable, Sendable {
+    let logos: [TMDBLogoPayload]
+
+    func preferredLogoURL(language: String) -> URL? {
+        logos
+            .enumerated()
+            .sorted { lhs, rhs in
+                let lhsRank = Self.languageRank(lhs.element.languageCode, preferred: language)
+                let rhsRank = Self.languageRank(rhs.element.languageCode, preferred: language)
+                if lhsRank != rhsRank { return lhsRank < rhsRank }
+                if lhs.element.voteAverage != rhs.element.voteAverage {
+                    return lhs.element.voteAverage > rhs.element.voteAverage
+                }
+                if lhs.element.width != rhs.element.width {
+                    return lhs.element.width > rhs.element.width
+                }
+                return lhs.offset < rhs.offset
+            }
+            .first?
+            .element
+            .url
+    }
+
+    private static func languageRank(_ language: String?, preferred: String) -> Int {
+        if language == preferred { return 0 }
+        if language == "en" { return 1 }
+        if language == nil { return 2 }
+        return 3
+    }
+}
+
+private struct TMDBLogoPayload: Decodable, Sendable {
+    let filePath: String
+    let languageCode: String?
+    let voteAverage: Double
+    let width: Int
+
+    enum CodingKeys: String, CodingKey {
+        case width
+        case filePath = "file_path"
+        case languageCode = "iso_639_1"
+        case voteAverage = "vote_average"
+    }
+
+    var url: URL? {
+        URL(string: "https://image.tmdb.org/t/p/original\(filePath)")
+    }
+}
+
 private struct TMDBArtworkSearchResponse: Decodable, Sendable {
     let results: [TMDBArtworkSearchResult]
 }
@@ -465,6 +807,63 @@ private struct TMDBArtworkSearchResult: Decodable, Sendable {
     }
 
     private func imageURL(path: String) -> URL? {
+        URL(string: "https://image.tmdb.org/t/p/original\(path)")
+    }
+}
+
+private struct TMDBMetadataSearchResponse: Decodable, Sendable {
+    let results: [TMDBMetadataPayload]
+}
+
+private struct TMDBMetadataPayload: Decodable, Sendable {
+    struct Genre: Decodable, Sendable {
+        let id: Int
+        let name: String
+    }
+
+    let id: Int
+    let title: String?
+    let name: String?
+    let overview: String?
+    let releaseDate: String?
+    let firstAirDate: String?
+    let voteAverage: Double?
+    let genreIDs: [Int]?
+    let genres: [Genre]?
+    let posterPath: String?
+    let backdropPath: String?
+    let adult: Bool?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, name, overview, genres, adult
+        case releaseDate = "release_date"
+        case firstAirDate = "first_air_date"
+        case voteAverage = "vote_average"
+        case genreIDs = "genre_ids"
+        case posterPath = "poster_path"
+        case backdropPath = "backdrop_path"
+    }
+
+    var displayTitle: String? { title ?? name }
+
+    func metadata(kind: MediaKind) -> TrendingTitle? {
+        guard adult != true, let displayTitle else { return nil }
+        let names = genres?.map(\.name)
+            ?? (genreIDs ?? []).compactMap { TMDBGenres.names[$0] }
+        return TrendingTitle(
+            id: id,
+            kind: kind,
+            title: displayTitle,
+            overview: overview ?? "",
+            releaseDate: releaseDate ?? firstAirDate,
+            rating: voteAverage,
+            genreNames: names,
+            posterURL: posterPath.flatMap(Self.imageURL),
+            backdropURL: backdropPath.flatMap(Self.imageURL)
+        )
+    }
+
+    private static func imageURL(path: String) -> URL? {
         URL(string: "https://image.tmdb.org/t/p/original\(path)")
     }
 }
@@ -507,7 +906,7 @@ private struct TMDBTrendingResult: Decodable, Sendable {
             overview: overview,
             releaseDate: releaseDate ?? firstAirDate,
             rating: voteAverage,
-            genreNames: genreIDs.compactMap { Self.genreNames[$0] },
+            genreNames: genreIDs.compactMap { TMDBGenres.names[$0] },
             posterURL: posterPath.flatMap { imageURL(path: $0, size: "original") },
             backdropURL: backdropPath.flatMap { imageURL(path: $0, size: "original") }
         )
@@ -517,7 +916,10 @@ private struct TMDBTrendingResult: Decodable, Sendable {
         URL(string: "https://image.tmdb.org/t/p/\(size)\(path)")
     }
 
-    private static let genreNames: [Int: String] = [
+}
+
+private enum TMDBGenres {
+    static let names: [Int: String] = [
         12: "Adventure", 14: "Fantasy", 16: "Animation", 18: "Drama",
         27: "Horror", 28: "Action", 35: "Comedy", 36: "History",
         37: "Western", 53: "Thriller", 80: "Crime", 99: "Documentary",

@@ -180,19 +180,24 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var subtitleTimingOffset: Double = 0
     @Published private(set) var canAdjustSubtitleTiming = false
     @Published private(set) var playbackRate: Double = 1
+    @Published private(set) var isBuffering = false
 
     var onEnded: (() -> Void)?
     nonisolated(unsafe) private var timeObserver: Any?
     nonisolated(unsafe) private var endObserver: NSObjectProtocol?
     nonisolated(unsafe) private var mediaSelectionObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var playbackStalledObserver: NSObjectProtocol?
     nonisolated(unsafe) private var rateObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var defaultRateObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var timeControlStatusObservation: NSKeyValueObservation?
+    nonisolated(unsafe) private var playbackBufferEmptyObservation: NSKeyValueObservation?
+    nonisolated(unsafe) private var playbackLikelyToKeepUpObservation: NSKeyValueObservation?
     private var mediaOptionsTask: Task<Void, Never>?
     private var subtitleAdjustmentTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var nowPlayingContentID: String?
     private var nowPlayingTitle: String?
+    private var nowPlayingSubtitle: String?
     private var nowPlayingArtwork: MPMediaItemArtwork?
     private var remoteCommandTargets: [(command: MPRemoteCommand, target: Any)] = []
     private var injectedSubtitleNames: Set<String> = []
@@ -210,6 +215,7 @@ final class PlayerSession: ObservableObject {
     init(subtitleClient: any HTTPClientProtocol = HTTPClient()) {
         self.subtitleClient = subtitleClient
         player.allowsExternalPlayback = true
+        player.automaticallyWaitsToMinimizeStalling = true
         player.appliesMediaSelectionCriteriaAutomatically = false
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] _, change in
             guard let rate = change.newValue, rate > 0 else { return }
@@ -219,8 +225,8 @@ final class PlayerSession: ObservableObject {
             guard let rate = change.newValue, rate > 0 else { return }
             Task { @MainActor [weak self] in self?.recordPlaybackRate(rate) }
         }
-        timeControlStatusObservation = player.observe(\.timeControlStatus, options: [.new]) { [weak self] _, _ in
-            Task { @MainActor [weak self] in self?.publishNowPlayingInfo() }
+        timeControlStatusObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] _, _ in
+            Task { @MainActor [weak self] in self?.refreshPlaybackState() }
         }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1), queue: .main) { [weak self] time in
             Task { @MainActor in
@@ -241,6 +247,7 @@ final class PlayerSession: ObservableObject {
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let mediaSelectionObserver { NotificationCenter.default.removeObserver(mediaSelectionObserver) }
+        if let playbackStalledObserver { NotificationCenter.default.removeObserver(playbackStalledObserver) }
     }
 
     func load(
@@ -290,6 +297,7 @@ final class PlayerSession: ObservableObject {
         subtitleAdjustmentTask?.cancel()
         nowPlayingArtworkTask?.cancel()
         player.pause()
+        isBuffering = false
         removeInjectedSubtitleAsset()
         clearNowPlaying()
         removeRemoteCommands()
@@ -468,6 +476,7 @@ final class PlayerSession: ObservableObject {
         mediaOptionsTask?.cancel()
         let item = AVPlayerItem(asset: asset)
         applyQuality(to: item)
+        observeBufferingState(of: item)
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let mediaSelectionObserver { NotificationCenter.default.removeObserver(mediaSelectionObserver) }
         endObserver = NotificationCenter.default.addObserver(
@@ -488,6 +497,7 @@ final class PlayerSession: ObservableObject {
             }
         }
         player.replaceCurrentItem(with: item)
+        player.defaultRate = playbackRate
         if resumeAt > 0 {
             item.seek(
                 to: CMTime(seconds: resumeAt, preferredTimescale: 600),
@@ -506,7 +516,60 @@ final class PlayerSession: ObservableObject {
                 preferredSubtitleDisplayName: preferredSubtitleDisplayName
             )
         }
-        if shouldPlay { player.playImmediately(atRate: playbackRate) }
+        if shouldPlay { player.play() }
+    }
+
+    private func observeBufferingState(of item: AVPlayerItem) {
+        playbackBufferEmptyObservation = item.observe(
+            \.isPlaybackBufferEmpty,
+            options: [.initial, .new]
+        ) { [weak self, weak item] _, change in
+            guard change.newValue == true else { return }
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.refreshPlaybackState()
+            }
+        }
+        playbackLikelyToKeepUpObservation = item.observe(
+            \.isPlaybackLikelyToKeepUp,
+            options: [.initial, .new]
+        ) { [weak self, weak item] _, change in
+            guard change.newValue == true else { return }
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.resumeWhenBufferIsReady()
+            }
+        }
+
+        if let playbackStalledObserver {
+            NotificationCenter.default.removeObserver(playbackStalledObserver)
+        }
+        playbackStalledObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemPlaybackStalled,
+            object: item,
+            queue: .main
+        ) { [weak self, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.refreshPlaybackState()
+                guard self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate else {
+                    return
+                }
+                // Reassert the play request so AVPlayer keeps waiting for enough data
+                // instead of leaving the item stopped after a network interruption.
+                self.player.play()
+            }
+        }
+    }
+
+    private func refreshPlaybackState() {
+        isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        publishNowPlayingInfo()
+    }
+
+    private func resumeWhenBufferIsReady() {
+        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+        player.play()
     }
 
     private func applyPreferredLanguages(
@@ -649,6 +712,7 @@ final class PlayerSession: ObservableObject {
         nowPlayingArtworkTask?.cancel()
         nowPlayingContentID = request.contentID
         nowPlayingTitle = request.nowPlayingTitle
+        nowPlayingSubtitle = request.nowPlayingSubtitle
         nowPlayingArtwork = nil
         publishNowPlayingInfo()
 
@@ -686,6 +750,9 @@ final class PlayerSession: ObservableObject {
         if duration > 0 {
             info[MPMediaItemPropertyPlaybackDuration] = duration
         }
+        if let nowPlayingSubtitle {
+            info[MPMediaItemPropertyArtist] = nowPlayingSubtitle
+        }
         if let nowPlayingArtwork {
             info[MPMediaItemPropertyArtwork] = nowPlayingArtwork
         }
@@ -697,6 +764,7 @@ final class PlayerSession: ObservableObject {
     private func clearNowPlaying() {
         nowPlayingContentID = nil
         nowPlayingTitle = nil
+        nowPlayingSubtitle = nil
         nowPlayingArtwork = nil
         let center = MPNowPlayingInfoCenter.default()
         center.playbackState = .stopped
@@ -942,6 +1010,7 @@ private actor AudioSessionController {
 
 struct NativePlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
+    let isBuffering: Bool
     let availableQualities: [StreamQuality]
     let selectedQuality: StreamQuality?
     let subtitleTimingOffset: Double
@@ -982,11 +1051,13 @@ struct NativePlayerController: UIViewControllerRepresentable {
             offset: subtitleTimingOffset,
             isAvailable: canAdjustSubtitleTiming
         )
+        context.coordinator.updateBuffering(isBuffering)
     }
 
     @MainActor
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         private let settingsButton = UIButton(type: .system)
+        private let bufferingIndicator = UIActivityIndicatorView(style: .large)
         private let subtitleTimingControl = UIStackView()
         private let subtitleTimingLabel = UILabel()
         private let decreaseSubtitleTimingButton = UIButton(type: .system)
@@ -1017,6 +1088,11 @@ struct NativePlayerController: UIViewControllerRepresentable {
         func installControls(in controller: AVPlayerViewController) {
             guard let overlay = controller.contentOverlayView else { return }
             player = controller.player
+            bufferingIndicator.translatesAutoresizingMaskIntoConstraints = false
+            bufferingIndicator.color = .white
+            bufferingIndicator.hidesWhenStopped = true
+            bufferingIndicator.accessibilityLabel = "Buffering video"
+            overlay.addSubview(bufferingIndicator)
             settingsButton.translatesAutoresizingMaskIntoConstraints = false
             settingsButton.showsMenuAsPrimaryAction = true
             settingsButton.accessibilityLabel = "Playback settings"
@@ -1024,6 +1100,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
             configureSubtitleTimingControl()
             overlay.addSubview(subtitleTimingControl)
             NSLayoutConstraint.activate([
+                bufferingIndicator.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+                bufferingIndicator.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
                 settingsButton.trailingAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.trailingAnchor, constant: -14),
                 settingsButton.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
                 settingsButton.widthAnchor.constraint(equalToConstant: 44),
@@ -1039,6 +1117,14 @@ struct NativePlayerController: UIViewControllerRepresentable {
             controller.view.addGestureRecognizer(tapGesture)
             updateQualities(availableQualities, selectedQuality: selectedQuality)
             showSettingsButton()
+        }
+
+        func updateBuffering(_ isBuffering: Bool) {
+            if isBuffering {
+                bufferingIndicator.startAnimating()
+            } else {
+                bufferingIndicator.stopAnimating()
+            }
         }
 
         func updateSubtitleTiming(offset: Double, isAvailable: Bool) {

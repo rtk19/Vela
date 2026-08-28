@@ -35,6 +35,98 @@ struct TMDBCatalogMatcherTests {
         #expect(result?.id == "correct")
     }
 
+    @Test("Uses TMDB display metadata while preserving provider quality")
+    func appliesTMDBMetadataAndPreservesQuality() async throws {
+        let providerItem = MediaItem(
+            id: "dark-matter",
+            providerID: "matcher",
+            kind: .series,
+            title: "Provider Title",
+            overview: "Provider synopsis",
+            releaseDate: "2026",
+            rating: 8.0,
+            quality: "HD",
+            tmdbID: 456,
+            posterURL: URL(string: "https://provider.example/provider-poster.jpg")
+        )
+        let provider = MatcherProvider(searchPages: [1: [providerItem]])
+        let tmdb = TrendingTitle(
+            id: 456,
+            kind: .series,
+            title: "Dark Matter",
+            overview: "TMDB synopsis",
+            releaseDate: "2024-05-08",
+            rating: 7.8,
+            genreNames: ["Sci-Fi & Fantasy"],
+            posterURL: URL(string: "https://image.tmdb.org/t/p/original/tmdb-poster.jpg"),
+            backdropURL: nil
+        )
+
+        let result = try await TMDBCatalogMatcher.resolve(tmdb, using: provider)
+
+        #expect(result?.title == "Dark Matter")
+        #expect(result?.overview == "TMDB synopsis")
+        #expect(result?.releaseDate == "2024-05-08")
+        #expect(result?.rating == 7.8)
+        #expect(result?.quality == "HD")
+        #expect(result?.posterURL == tmdb.posterURL)
+    }
+
+    @Test("TMDB identity gives duplicate media one shared artwork key")
+    func sharesArtworkIdentityAcrossProviderCopies() {
+        let watchlistCopy = MediaItem(
+            id: "provider-dark-matter",
+            providerID: "streaming-provider",
+            kind: .series,
+            title: "Dark Matter",
+            tmdbID: 196322,
+            posterURL: URL(string: "https://provider.example/dark-matter.jpg")
+        )
+        let refreshedCopy = MediaItem(
+            id: "different-provider-id",
+            providerID: "another-provider",
+            kind: .series,
+            title: "Dark Matter",
+            tmdbID: 196322,
+            posterURL: URL(string: "https://image.tmdb.org/t/p/original/dark-matter.jpg")
+        )
+
+        #expect(watchlistCopy.artworkIdentityKey == refreshedCopy.artworkIdentityKey)
+    }
+
+    @MainActor
+    @Test("Carries the exact TMDB list snapshot into title details")
+    func carriesTMDBSnapshotIntoDetails() async throws {
+        let providerItem = MediaItem(
+            id: "mutiny",
+            providerID: "matcher",
+            kind: .movie,
+            title: "Mutiny",
+            rating: 6.5,
+            quality: "HD",
+            tmdbID: 1_234
+        )
+        let provider = MatcherProvider(searchPages: [1: [providerItem]])
+        let registry = ProviderRegistry(providers: [provider], selectedProviderID: provider.id)
+        let tmdbSnapshot = TrendingTitle(
+            id: 1_234,
+            kind: .movie,
+            title: "Mutiny",
+            overview: "TMDB synopsis",
+            releaseDate: "2026-01-09",
+            rating: 6.4,
+            genreNames: ["Action"],
+            posterURL: nil,
+            backdropURL: nil
+        )
+
+        let resolved = await SourceLookupCoordinator().resolve(tmdbSnapshot, registry: registry)
+
+        #expect(resolved?.tmdbMetadata?.rating == 6.4)
+        #expect(resolved?.media.rating == 6.4)
+        #expect(resolved?.media.quality == "HD")
+    }
+
     private func tmdbTitle(id: Int, title: String) -> TrendingTitle {
         TrendingTitle(
             id: id,

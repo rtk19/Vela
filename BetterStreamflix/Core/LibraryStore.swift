@@ -6,6 +6,12 @@ final class LibraryStore: ObservableObject {
     @Published private(set) var progress: [WatchProgress] = []
     @Published private(set) var watchedEpisodes: Set<WatchedEpisode> = []
 
+    var completedSeriesRequests: [PlaybackRequest] {
+        completedSeriesCheckpoints.values
+            .sorted { $0.updatedAt > $1.updatedAt }
+            .map { PlaybackRequest(media: $0.media, episode: $0.episode) }
+    }
+
     var continueWatching: [WatchProgress] {
         progress.filter { value in
             guard value.media.kind == .series else { return true }
@@ -19,6 +25,7 @@ final class LibraryStore: ObservableObject {
     private let decoder = JSONDecoder()
     private var currentSeriesProgressKeys: [String: String] = [:]
     private var playbackRates: [String: Double] = [:]
+    private var completedSeriesCheckpoints: [String: WatchProgress] = [:]
 
     init(fileManager: FileManager = .default, directory: URL? = nil) {
         self.fileManager = fileManager
@@ -149,7 +156,11 @@ final class LibraryStore: ObservableObject {
             removeProgress(for: request)
             saveProgress()
         }
-        if let nextRequest { promoteToContinueWatching(nextRequest) }
+        if let nextRequest {
+            promoteToContinueWatching(nextRequest)
+        } else if request.episode != nil {
+            rememberCompletedSeries(request)
+        }
     }
 
     func markWatched(request: PlaybackRequest) {
@@ -184,6 +195,7 @@ final class LibraryStore: ObservableObject {
         )
         progress.insert(value, at: 0)
         setAsCurrentIfSeries(value)
+        completedSeriesCheckpoints.removeValue(forKey: seriesKey(for: request.media))
         saveProgress()
     }
 
@@ -216,6 +228,10 @@ final class LibraryStore: ObservableObject {
             currentSeriesProgressKeys = migratedCurrentSeriesProgressKeys()
         }
         playbackRates = read([String: Double].self, from: "playback-rates.json") ?? [:]
+        completedSeriesCheckpoints = read(
+            [String: WatchProgress].self,
+            from: "completed-series.json"
+        ) ?? [:]
         if progress != storedProgress || currentSeriesProgressKeys != storedCurrentSeriesProgressKeys {
             saveProgress()
         }
@@ -259,9 +275,24 @@ final class LibraryStore: ObservableObject {
         return result
     }
 
+    private func rememberCompletedSeries(_ request: PlaybackRequest) {
+        guard request.media.kind == .series, request.episode != nil else { return }
+        completedSeriesCheckpoints[seriesKey(for: request.media)] = WatchProgress(
+            contentID: request.contentID,
+            providerID: request.media.providerID,
+            media: request.media,
+            episode: request.episode,
+            position: 0,
+            duration: 0,
+            updatedAt: Date()
+        )
+        saveProgress()
+    }
+
     private func saveProgress() {
         save(progress, to: "progress.json")
         save(currentSeriesProgressKeys, to: "continue-watching.json")
+        save(completedSeriesCheckpoints, to: "completed-series.json")
     }
 
     private func saveWatchedEpisodes() {

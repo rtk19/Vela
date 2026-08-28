@@ -13,7 +13,7 @@ enum TMDBCatalogMatcher {
             let candidates = results.filter { $0.kind == title.kind }
 
             if let identifierMatch = candidates.first(where: { $0.tmdbID == title.id }) {
-                return identifierMatch
+                return identifierMatch.applyingTMDBMetadata(title)
             }
 
             // Search payloads sometimes omit TMDB metadata. Verify those candidates
@@ -23,7 +23,7 @@ enum TMDBCatalogMatcher {
                 do {
                     let details = try await provider.details(for: candidate)
                     if details.kind == title.kind, details.tmdbID == title.id {
-                        return details
+                        return details.applyingTMDBMetadata(title)
                     }
                 } catch where error.isCancellation {
                     throw error
@@ -42,10 +42,17 @@ struct SourceLookupFailure: Identifiable, Equatable, Sendable {
     let message: String
 }
 
+struct ResolvedMediaItem: Identifiable, Hashable, Sendable {
+    let media: MediaItem
+    let tmdbMetadata: TrendingTitle?
+
+    var id: String { "\(media.providerID):\(media.id)" }
+}
+
 @MainActor
 final class SourceLookupCoordinator: ObservableObject {
     private enum Outcome: Sendable {
-        case found(MediaItem)
+        case found(ResolvedMediaItem)
         case failed(String)
         case cancelled
     }
@@ -68,7 +75,7 @@ final class SourceLookupCoordinator: ObservableObject {
     var activeKeys: Set<String> { Set(activeTitles.keys) }
     var activeCount: Int { activeTitles.count }
 
-    func resolve(_ title: TrendingTitle, registry: ProviderRegistry) async -> MediaItem? {
+    func resolve(_ title: TrendingTitle, registry: ProviderRegistry) async -> ResolvedMediaItem? {
         let key = title.lookupKey
         guard tasks[key] == nil else { return nil }
 
@@ -80,7 +87,7 @@ final class SourceLookupCoordinator: ObservableObject {
                     return .failed("\(title.title) (TMDB ID \(title.id)) is not available in the current streaming catalog.")
                 }
                 try Task.checkCancellation()
-                return .found(item)
+                return .found(ResolvedMediaItem(media: item, tmdbMetadata: title))
             } catch where error.isCancellation {
                 return .cancelled
             } catch {
@@ -173,6 +180,7 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var shelves: [MediaShelf] = []
     @Published private(set) var trendingTitles: [TrendingTitle] = []
     @Published private(set) var tmdbShelves: [TMDBCollection: [TrendingTitle]] = [:]
+    @Published private(set) var carouselAssets = TMDBCarouselAssets()
     @Published private(set) var isLoading = false
     @Published private(set) var isTrendingLoading = false
     @Published var errorMessage: String?
@@ -205,6 +213,7 @@ final class HomeViewModel: ObservableObject {
             tmdbShelves[.trending(.movie)] = moviePage.titles
             tmdbShelves[.trending(.series)] = showPage.titles
             trendingMessage = trendingTitles.isEmpty ? "TMDB did not return any trending titles." : nil
+            carouselAssets = await environment.preloadCarouselAssets(for: heroTitles)
         }
         catch where error.isCancellation { }
         catch { trendingMessage = error.localizedDescription }
@@ -325,17 +334,41 @@ final class DetailsViewModel: ObservableObject {
     @Published private(set) var episodes: [String: [MediaEpisode]] = [:]
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
+    private let tmdbMetadataSnapshot: TrendingTitle?
 
-    init(item: MediaItem) { self.item = item }
+    init(item: MediaItem, tmdbMetadataSnapshot: TrendingTitle? = nil) {
+        self.item = item
+        self.tmdbMetadataSnapshot = tmdbMetadataSnapshot
+    }
 
-    func load(registry: ProviderRegistry) async {
+    func load(environment: AppEnvironment, preferredSeasonNumber: Int? = nil) async {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
         do {
-            let provider = try await registry.provider(id: item.providerID)
-            item = try await provider.details(for: item)
-            if let first = item.seasons.first { await loadEpisodes(first, registry: registry) }
+            let provider = try await environment.registry.provider(id: item.providerID)
+            let providerItem = try await provider.details(for: item)
+            if let tmdbMetadataSnapshot {
+                item = providerItem.applyingTMDBMetadata(tmdbMetadataSnapshot)
+            } else {
+                do {
+                    if let metadata = try await environment.tmdbTitleMetadata(for: providerItem) {
+                        item = providerItem.applyingTMDBMetadata(metadata)
+                    } else {
+                        item = providerItem
+                    }
+                } catch where error.isCancellation {
+                    throw error
+                } catch {
+                    item = providerItem
+                    errorMessage = "TMDB metadata could not be loaded: \(error.localizedDescription)"
+                }
+            }
+            if let season = preferredSeasonNumber.flatMap({ preferredNumber in
+                item.seasons.first { $0.number == preferredNumber }
+            }) ?? item.seasons.first {
+                await loadEpisodes(season, registry: environment.registry)
+            }
         } catch where error.isCancellation { }
         catch { errorMessage = error.localizedDescription }
     }

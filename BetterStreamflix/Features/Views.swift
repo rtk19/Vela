@@ -28,39 +28,176 @@ struct RootView: View {
     private enum Tab: Hashable { case home, movies, series, search, settings }
 
     @EnvironmentObject private var environment: AppEnvironment
+    @Environment(\.scenePhase) private var scenePhase
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var selectedTab: Tab = .home
     @State private var searchIsPresented = false
+    @State private var isHomeReady = false
+    @State private var pendingAutomaticUpdate: GitHubRelease?
+    @State private var automaticUpdateRelease: GitHubRelease?
+    @AppStorage("updates.skippedReleaseTag") private var skippedUpdateTag = ""
 
     var body: some View {
-        TabView(selection: Binding(
-            get: { selectedTab },
-            set: { tab in
-                selectedTab = tab
-                searchIsPresented = tab == .search
+        ZStack {
+            TabView(selection: Binding(
+                get: { selectedTab },
+                set: { tab in
+                    selectedTab = tab
+                    searchIsPresented = tab == .search
+                }
+            )) {
+                NavigationStack { HomeView(onInitialLoadCompleted: showHome) }
+                    .tabItem { Label("Home", systemImage: "house.fill") }
+                    .tag(Tab.home)
+                NavigationStack { CatalogView(kind: .movie) }
+                    .tabItem { Label("Movies", systemImage: "film.fill") }
+                    .tag(Tab.movies)
+                NavigationStack { CatalogView(kind: .series) }
+                    .tabItem { Label("Series", systemImage: "tv.fill") }
+                    .tag(Tab.series)
+                NavigationStack { SearchView(isSearchPresented: $searchIsPresented) }
+                    .tabItem { Label("Search", systemImage: "magnifyingglass") }
+                    .tag(Tab.search)
+                NavigationStack { SettingsView() }
+                    .tabItem { Label("Settings", systemImage: "gearshape.fill") }
+                    .tag(Tab.settings)
             }
-        )) {
-            NavigationStack { HomeView() }
-                .tabItem { Label("Home", systemImage: "house.fill") }
-                .tag(Tab.home)
-            NavigationStack { CatalogView(kind: .movie) }
-                .tabItem { Label("Movies", systemImage: "film.fill") }
-                .tag(Tab.movies)
-            NavigationStack { CatalogView(kind: .series) }
-                .tabItem { Label("Series", systemImage: "tv.fill") }
-                .tag(Tab.series)
-            NavigationStack { SearchView(isSearchPresented: $searchIsPresented) }
-                .tabItem { Label("Search", systemImage: "magnifyingglass") }
-                .tag(Tab.search)
-            NavigationStack { SettingsView() }
-                .tabItem { Label("Settings", systemImage: "gearshape.fill") }
-                .tag(Tab.settings)
+            .tint(environment.themeColor.color)
+            .overlay(alignment: .top) {
+                SourceLookupStatusOverlay()
+                    .safeAreaPadding(.top, 8)
+                    .zIndex(100)
+            }
+
+            if !isHomeReady {
+                SplashScreen()
+                    .transition(.opacity)
+                    .zIndex(200)
+            }
         }
-        .tint(environment.themeColor.color)
-        .overlay(alignment: .top) {
-            SourceLookupStatusOverlay()
-                .safeAreaPadding(.top, 8)
-                .zIndex(100)
+        .task { await environment.refreshContinueWatchingForNewEpisodes() }
+        .task { await checkForUpdatesAtLaunch() }
+        .task {
+            do {
+                try await Task.sleep(for: .seconds(8))
+            } catch {
+                return
+            }
+            showHome()
         }
+        .onChange(of: scenePhase) { _, phase in
+            guard phase == .active else { return }
+            Task { await environment.refreshContinueWatchingForNewEpisodes() }
+        }
+        .onChange(of: isHomeReady) { _, isReady in
+            guard isReady, let release = pendingAutomaticUpdate else { return }
+            pendingAutomaticUpdate = nil
+            automaticUpdateRelease = release
+        }
+        .sheet(item: $automaticUpdateRelease) { release in
+            UpdateCheckSheet(
+                result: .updateAvailable(release),
+                onSkipUpdate: {
+                    skippedUpdateTag = release.tagName
+                    automaticUpdateRelease = nil
+                },
+                onRemindLater: {
+                    automaticUpdateRelease = nil
+                }
+            )
+            .presentationDetents([.medium, .large])
+            .presentationDragIndicator(.visible)
+        }
+    }
+
+    private func showHome() {
+        guard !isHomeReady else { return }
+        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.25)) {
+            isHomeReady = true
+        }
+    }
+
+    private func checkForUpdatesAtLaunch() async {
+        do {
+            let release = try await GitHubReleaseClient().latestRelease()
+            let currentVersion = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String ?? "0"
+            guard GitHubReleaseClient.shouldOfferUpdate(
+                tagName: release.tagName,
+                currentVersion: currentVersion,
+                skippedTagName: skippedUpdateTag
+            ) else { return }
+
+            if isHomeReady {
+                automaticUpdateRelease = release
+            } else {
+                pendingAutomaticUpdate = release
+            }
+        } catch {
+            // Launch should continue normally when the update service is unavailable.
+        }
+    }
+}
+
+private struct SplashScreen: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isPulsing = false
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 28) {
+                Group {
+                    if let icon = UIImage.applicationIcon {
+                        Image(uiImage: icon)
+                            .resizable()
+                            .scaledToFit()
+                    } else {
+                        Image(systemName: "play.rectangle.fill")
+                            .resizable()
+                            .scaledToFit()
+                            .foregroundStyle(.cyan)
+                            .padding(24)
+                    }
+                }
+                .frame(width: 148, height: 148)
+                .clipShape(RoundedRectangle(cornerRadius: 34, style: .continuous))
+                .scaleEffect(isPulsing ? 1.04 : 0.96)
+                .opacity(isPulsing ? 1 : 0.82)
+                .animation(
+                    reduceMotion ? nil : .easeInOut(duration: 0.9).repeatForever(autoreverses: true),
+                    value: isPulsing
+                )
+
+                ProgressView()
+                    .tint(.white)
+                    .controlSize(.large)
+            }
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Loading Better Streamflix")
+        .onAppear { isPulsing = true }
+    }
+}
+
+private extension UIImage {
+    static var applicationIcon: UIImage? {
+        if let icon = UIImage(named: "AppIcon") {
+            return icon
+        }
+
+        guard
+            let icons = Bundle.main.infoDictionary?["CFBundleIcons"] as? [String: Any],
+            let primaryIcon = icons["CFBundlePrimaryIcon"] as? [String: Any],
+            let filenames = primaryIcon["CFBundleIconFiles"] as? [String],
+            let filename = filenames.last
+        else {
+            return nil
+        }
+
+        return UIImage(named: filename)
     }
 }
 
@@ -68,9 +205,14 @@ struct HomeView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var library: LibraryStore
     @EnvironmentObject private var sourceLookup: SourceLookupCoordinator
+    let onInitialLoadCompleted: () -> Void
     @StateObject private var model = HomeViewModel()
-    @State private var selectedDetails: MediaItem?
+    @State private var selectedDetails: ResolvedMediaItem?
     @State private var playback: PlaybackRequest?
+
+    init(onInitialLoadCompleted: @escaping () -> Void = {}) {
+        self.onInitialLoadCompleted = onInitialLoadCompleted
+    }
 
     var body: some View {
         ScrollView {
@@ -78,6 +220,7 @@ struct HomeView: View {
                 if !model.trendingTitles.isEmpty {
                     TrendingHeroCarousel(
                         titles: model.trendingTitles,
+                        assets: model.carouselAssets,
                         resolvingKeys: sourceLookup.activeKeys,
                         onPlay: openForPlayback,
                         onDetails: openDetails
@@ -90,7 +233,9 @@ struct HomeView: View {
                 if !library.continueWatching.isEmpty {
                     ContinueWatchingShelfView(
                         progress: library.continueWatching,
-                        onDetails: { selectedDetails = $0 },
+                        onDetails: {
+                            selectedDetails = ResolvedMediaItem(media: $0, tmdbMetadata: nil)
+                        },
                         onResume: { value in
                             playback = PlaybackRequest(media: value.media, episode: value.episode)
                         },
@@ -122,6 +267,7 @@ struct HomeView: View {
             }
             .padding(.bottom)
         }
+        .coordinateSpace(name: HeroArtworkScrollEffect.homeCoordinateSpace)
         .background(Color.black)
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
@@ -130,14 +276,12 @@ struct HomeView: View {
             async let shelves: Void = model.load(registry: environment.registry)
             async let trending: Void = model.loadTrending(environment: environment)
             _ = await (shelves, trending)
-        }
-        .refreshable {
-            async let shelves: Void = model.load(registry: environment.registry, force: true)
-            async let trending: Void = model.loadTrending(environment: environment, force: true)
-            _ = await (shelves, trending)
+            onInitialLoadCompleted()
         }
         .navigationDestination(for: MediaItem.self) { DetailsView(item: $0) }
-        .navigationDestination(item: $selectedDetails) { DetailsView(item: $0) }
+        .navigationDestination(item: $selectedDetails) {
+            DetailsView(item: $0.media, tmdbMetadata: $0.tmdbMetadata)
+        }
         .fullScreenCover(isPresented: Binding(
             get: { playback != nil },
             set: { if !$0 { playback = nil } }
@@ -158,8 +302,8 @@ struct HomeView: View {
     private func openForPlayback(_ trending: TrendingTitle) {
         Task {
             guard let item = await sourceLookup.resolve(trending, registry: environment.registry) else { return }
-            if item.kind == .movie {
-                playback = PlaybackRequest(media: item, episode: nil)
+            if item.media.kind == .movie {
+                playback = PlaybackRequest(media: item.media, episode: nil)
             } else {
                 selectedDetails = item
             }
@@ -186,6 +330,7 @@ private struct TrendingHeroCarousel: View {
     private let interval: TimeInterval = 5
 
     let titles: [TrendingTitle]
+    let assets: TMDBCarouselAssets
     let resolvingKeys: Set<String>
     let onPlay: (TrendingTitle) -> Void
     let onDetails: (TrendingTitle) -> Void
@@ -201,48 +346,63 @@ private struct TrendingHeroCarousel: View {
     private var isCurrentTitleResolving: Bool { resolvingKeys.contains(currentTitle.lookupKey) }
 
     var body: some View {
-        ZStack(alignment: .bottom) {
-            ZStack {
-                ForEach(Array(titles.enumerated()), id: \.element.id) { index, title in
-                    CenteredHeroArtwork(url: title.posterURL ?? title.backdropURL)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                    .opacity(index == currentIndex ? 1 : 0)
-                    .animation(crossfadeAnimation, value: currentIndex)
-                    .accessibilityHidden(index != currentIndex)
+        GeometryReader { proxy in
+            let minY = proxy.frame(in: .named(HeroArtworkScrollEffect.homeCoordinateSpace)).minY
+            let metrics = HeroArtworkScrollEffect.metrics(minY: minY, reduceMotion: reduceMotion)
+
+            ZStack(alignment: .bottom) {
+                ZStack {
+                    ForEach(Array(titles.enumerated()), id: \.element.id) { index, title in
+                        CenteredHeroArtwork(data: assets.artworkDataByKey[title.lookupKey])
+                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                            .opacity(index == currentIndex ? 1 : 0)
+                            .animation(crossfadeAnimation, value: currentIndex)
+                            .accessibilityHidden(index != currentIndex)
+                    }
+
+                    Color.black
+                        .opacity(HeroArtworkScrollEffect.maximumDimming * metrics.recessionProgress)
                 }
+                .frame(width: proxy.size.width, height: proxy.size.height)
+                .scaleEffect(metrics.scale, anchor: .top)
+                .offset(y: metrics.parallaxOffset)
+                .clipped()
+                .offset(y: metrics.verticalOffset)
+                .opacity(metrics.opacity)
+
+                LinearGradient(
+                    stops: [
+                        .init(color: .clear, location: 0.28),
+                        .init(color: .black.opacity(0.15), location: 0.48),
+                        .init(color: .black.opacity(0.82), location: 0.76),
+                        .init(color: .black, location: 1),
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
+
+                heroContent
+                    .opacity(isInteracting ? 0 : 1)
+                    .padding(.horizontal, 22)
+                    .padding(.bottom, 44)
+
+                CarouselPageIndicator(
+                    count: titles.count,
+                    selectedIndex: currentIndex,
+                    startedAt: slideStartedAt,
+                    interval: interval,
+                    isPaused: isInteracting || scenePhase != .active
+                )
+                .padding(.bottom, 18)
+
+                PageTitleOverlay(title: "Home")
+                    .offset(y: metrics.verticalOffset)
             }
-
-            LinearGradient(
-                stops: [
-                    .init(color: .clear, location: 0.28),
-                    .init(color: .black.opacity(0.15), location: 0.48),
-                    .init(color: .black.opacity(0.82), location: 0.76),
-                    .init(color: .black, location: 1),
-                ],
-                startPoint: .top,
-                endPoint: .bottom
-            )
-            .allowsHitTesting(false)
-
-            heroContent
-                .opacity(isInteracting ? 0 : 1)
-                .padding(.horizontal, 22)
-                .padding(.bottom, 44)
-
-            CarouselPageIndicator(
-                count: titles.count,
-                selectedIndex: currentIndex,
-                startedAt: slideStartedAt,
-                interval: interval,
-                isPaused: isInteracting || scenePhase != .active
-            )
-            .padding(.bottom, 18)
-
-            PageTitleOverlay(title: "Home")
+            .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .containerRelativeFrame(.horizontal, alignment: .center)
         .frame(height: 690)
-        .clipped()
         .contentShape(Rectangle())
         .background {
             HorizontalCarouselPanRecognizer(
@@ -284,13 +444,19 @@ private struct TrendingHeroCarousel: View {
                 .tracking(1.8)
                 .foregroundStyle(.white.opacity(0.74))
 
-            Text(currentTitle.title)
-                .font(.system(size: 34, weight: .bold, design: .rounded))
-                .multilineTextAlignment(.center)
-                .lineLimit(2)
-                .minimumScaleFactor(0.72)
-                .contentTransition(.opacity)
-                .id(currentTitle.id)
+            TitleLogoView(
+                title: currentTitle.title,
+                logoData: assets.logoDataByKey[currentTitle.lookupKey],
+                showsFallback: true
+            ) {
+                Text(currentTitle.title)
+                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .multilineTextAlignment(.center)
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.72)
+                    .contentTransition(.opacity)
+            }
+            .id(currentTitle.id)
 
             metadata
 
@@ -401,24 +567,58 @@ private struct TrendingHeroCarousel: View {
         slideStartedAt = Date()
         timerVersion += 1
     }
+
+}
+
+private struct TitleLogoView<Fallback: View>: View {
+    let title: String
+    let logoData: Data?
+    let showsFallback: Bool
+    let fallback: Fallback
+
+    init(
+        title: String,
+        logoData: Data?,
+        showsFallback: Bool,
+        @ViewBuilder fallback: () -> Fallback
+    ) {
+        self.title = title
+        self.logoData = logoData
+        self.showsFallback = showsFallback
+        self.fallback = fallback()
+    }
+
+    var body: some View {
+        let logoImage = logoData.flatMap(UIImage.init(data:))
+        fallback
+            .opacity(logoImage == nil && showsFallback ? 1 : 0)
+            .overlay {
+                if let logoImage {
+                    Image(uiImage: logoImage)
+                        .resizable()
+                        .scaledToFit()
+                        .accessibilityHidden(true)
+                }
+            }
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(title)
+    }
 }
 
 private struct CenteredHeroArtwork: View {
-    let url: URL?
+    let data: Data?
 
     var body: some View {
         Color.clear
             .overlay {
-                AsyncImage(url: url) { phase in
-                    if let image = phase.image {
-                        image
+                Group {
+                    if let data, let image = UIImage(data: data) {
+                        Image(uiImage: image)
                             .resizable()
                             .scaledToFill()
                             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                     } else {
-                        Rectangle()
-                            .fill(.gray.opacity(0.16))
-                            .overlay { ProgressView().tint(.white.opacity(0.7)) }
+                        Rectangle().fill(.gray.opacity(0.16))
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -903,10 +1103,7 @@ struct PosterCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             ZStack(alignment: .bottom) {
-                AsyncImage(url: item.posterURL) { phase in
-                    if let image = phase.image { image.resizable().scaledToFill() }
-                    else { Rectangle().fill(.gray.opacity(0.22)).overlay { Image(systemName: item.kind == .movie ? "film" : "tv") } }
-                }
+                CanonicalPosterArtwork(item: item)
                 .frame(
                     width: MediaArtworkLayout.shelfPosterWidth,
                     height: MediaArtworkLayout.shelfPosterWidth * 1.5
@@ -944,14 +1141,7 @@ private struct PosterGridCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                AsyncImage(url: item.posterURL) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Rectangle().fill(.gray.opacity(0.22))
-                            .overlay { Image(systemName: item.kind == .movie ? "film" : "tv") }
-                    }
-                }
+                CanonicalPosterArtwork(item: item)
                 .aspectRatio(2 / 3, contentMode: .fit)
                 .clipped()
                 .clipShape(RoundedRectangle(cornerRadius: 8))
@@ -971,6 +1161,26 @@ private struct PosterGridCard: View {
             }
         }
         .foregroundStyle(.white)
+    }
+}
+
+private struct CanonicalPosterArtwork: View {
+    @EnvironmentObject private var environment: AppEnvironment
+    let item: MediaItem
+    @State private var posterURL: URL?
+
+    var body: some View {
+        AsyncImage(url: posterURL) { phase in
+            if let image = phase.image {
+                image.resizable().scaledToFill()
+            } else {
+                Rectangle().fill(.gray.opacity(0.22))
+                    .overlay { Image(systemName: item.kind == .movie ? "film" : "tv") }
+            }
+        }
+        .task(id: item.artworkIdentityKey) {
+            posterURL = await environment.canonicalPosterURL(for: item)
+        }
     }
 }
 
@@ -1146,7 +1356,7 @@ private struct TMDBCollectionGridView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var sourceLookup: SourceLookupCoordinator
     @StateObject private var model = TMDBCollectionGridViewModel()
-    @State private var selectedDetails: MediaItem?
+    @State private var selectedDetails: ResolvedMediaItem?
     let collection: TMDBCollection
 
     var body: some View {
@@ -1181,7 +1391,9 @@ private struct TMDBCollectionGridView: View {
         .background(.black)
         .navigationTitle(collection.title)
         .navigationBarTitleDisplayMode(.inline)
-        .navigationDestination(item: $selectedDetails) { DetailsView(item: $0) }
+        .navigationDestination(item: $selectedDetails) {
+            DetailsView(item: $0.media, tmdbMetadata: $0.tmdbMetadata)
+        }
         .task { await model.loadNext(collection: collection, environment: environment) }
         .errorAlert($model.errorMessage)
     }
@@ -1195,7 +1407,7 @@ struct CatalogView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var sourceLookup: SourceLookupCoordinator
     @StateObject private var model: TMDBCollectionsViewModel
-    @State private var selectedDetails: MediaItem?
+    @State private var selectedDetails: ResolvedMediaItem?
     let kind: MediaKind
 
     init(kind: MediaKind) {
@@ -1226,7 +1438,9 @@ struct CatalogView: View {
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
         .overlay { if model.isLoading && model.titles.isEmpty { ProgressView("Loading TMDB…") } }
-        .navigationDestination(item: $selectedDetails) { DetailsView(item: $0) }
+        .navigationDestination(item: $selectedDetails) {
+            DetailsView(item: $0.media, tmdbMetadata: $0.tmdbMetadata)
+        }
         .task { await model.load(environment: environment) }
         .refreshable { await model.load(environment: environment, force: true) }
         .errorAlert($model.errorMessage)
@@ -1244,7 +1458,7 @@ struct SearchView: View {
     @StateObject private var discovery = TMDBCollectionsViewModel(
         collections: [.trending(.series), .trending(.movie)]
     )
-    @State private var selectedDetails: MediaItem?
+    @State private var selectedDetails: ResolvedMediaItem?
     @FocusState private var searchFieldIsFocused: Bool
     @Binding var isSearchPresented: Bool
 
@@ -1306,6 +1520,7 @@ struct SearchView: View {
             }
             .padding(.bottom)
         }
+        .scrollDismissesKeyboard(.interactively)
         .background(.black)
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
@@ -1317,7 +1532,9 @@ struct SearchView: View {
             if model.isLoading || (discovery.isLoading && discovery.titles.isEmpty) { ProgressView() }
         }
         .navigationDestination(for: MediaItem.self) { DetailsView(item: $0) }
-        .navigationDestination(item: $selectedDetails) { DetailsView(item: $0) }
+        .navigationDestination(item: $selectedDetails) {
+            DetailsView(item: $0.media, tmdbMetadata: $0.tmdbMetadata)
+        }
         .task {
             await discovery.load(environment: environment)
             if isSearchPresented { searchFieldIsFocused = true }
@@ -1337,13 +1554,20 @@ struct DetailsView: View {
     @EnvironmentObject private var sourceLookup: SourceLookupCoordinator
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @StateObject private var model: DetailsViewModel
-    @State private var selectedSeason: MediaSeason?
+    @State private var selectedSeasonNumber: Int?
     @State private var playback: PlaybackRequest?
     @State private var episodeInfo: MediaEpisode?
     @State private var tmdbHeroArtworkData: Data?
+    @State private var tmdbTitleLogoData: Data?
     @State private var isHeroArtworkLoading = true
+    @State private var isTitleLogoResolved = false
 
-    init(item: MediaItem) { _model = StateObject(wrappedValue: DetailsViewModel(item: item)) }
+    init(item: MediaItem, tmdbMetadata: TrendingTitle? = nil) {
+        _model = StateObject(wrappedValue: DetailsViewModel(
+            item: item,
+            tmdbMetadataSnapshot: tmdbMetadata
+        ))
+    }
 
     var body: some View {
         ScrollView {
@@ -1387,7 +1611,7 @@ struct DetailsView: View {
                 .zIndex(1)
             }
         }
-        .coordinateSpace(name: DetailsHeroScrollEffect.coordinateSpace)
+        .coordinateSpace(name: HeroArtworkScrollEffect.detailsCoordinateSpace)
         .background(.black)
         .ignoresSafeArea(edges: .top)
         .navigationBarTitleDisplayMode(.inline)
@@ -1407,27 +1631,51 @@ struct DetailsView: View {
         .animation(.easeInOut(duration: 0.2), value: episodeInfo?.id)
         .task {
             let initialItem = model.item
+            let preferredSeasonNumber = library.latestProgress(for: initialItem)?.episode?.seasonNumber
+
+            // Season selection is playback state, so establish it before any artwork
+            // or network request can delay what the picker presents.
+            selectedSeasonNumber = preferredSeasonNumber ?? initialItem.seasons.first?.number
+
             async let initialArtwork = sourceLookup.resolveArtwork(
                 for: initialItem,
                 environment: environment
             )
-            await model.load(registry: environment.registry)
+            async let initialLogo = loadTitleLogo(for: initialItem)
+            async let detailsLoad: Void = model.load(
+                environment: environment,
+                preferredSeasonNumber: preferredSeasonNumber
+            )
+
+            tmdbTitleLogoData = await initialLogo
+            isTitleLogoResolved = true
             guard !Task.isCancelled else { return }
             tmdbHeroArtworkData = await initialArtwork
+            isHeroArtworkLoading = false
+            await detailsLoad
+            guard !Task.isCancelled else { return }
+
             if model.item.tmdbID != initialItem.tmdbID {
-                tmdbHeroArtworkData = await sourceLookup.resolveArtwork(
+                async let correctedArtwork = sourceLookup.resolveArtwork(
                     for: model.item,
                     environment: environment
                 )
+                async let correctedLogo = loadTitleLogo(for: model.item)
+                if let logo = await correctedLogo {
+                    tmdbTitleLogoData = logo
+                }
+                if let artwork = await correctedArtwork {
+                    tmdbHeroArtworkData = artwork
+                }
             }
             guard !Task.isCancelled else { return }
-            isHeroArtworkLoading = false
-            if let episode = library.latestProgress(for: model.item)?.episode,
-               let season = model.item.seasons.first(where: { $0.number == episode.seasonNumber }) {
-                selectedSeason = season
-                await model.loadEpisodes(season, registry: environment.registry)
-            } else {
-                selectedSeason = selectedSeason ?? model.item.seasons.first
+            let selectionIsStillAvailable = selectedSeasonNumber.map { selectedNumber in
+                model.item.seasons.contains { $0.number == selectedNumber }
+            } ?? false
+            if !selectionIsStillAvailable {
+                selectedSeasonNumber = model.item.seasons.first {
+                    $0.number == preferredSeasonNumber
+                }?.number ?? model.item.seasons.first?.number
             }
         }
         .fullScreenCover(isPresented: Binding(get: { playback != nil }, set: { if !$0 { playback = nil } })) {
@@ -1440,13 +1688,8 @@ struct DetailsView: View {
 
     private var detailsHero: some View {
         GeometryReader { proxy in
-            let minY = proxy.frame(in: .named(DetailsHeroScrollEffect.coordinateSpace)).minY
-            let upwardScroll = max(0, -minY)
-            let recessionProgress = min(upwardScroll / DetailsHeroScrollEffect.recessionDistance, 1)
-            let disappearanceProgress = min(upwardScroll / DetailsHeroScrollEffect.disappearanceDistance, 1)
-            let artworkScale = reduceMotion
-                ? 1
-                : 1 - (DetailsHeroScrollEffect.maximumScaleReduction * recessionProgress)
+            let minY = proxy.frame(in: .named(HeroArtworkScrollEffect.detailsCoordinateSpace)).minY
+            let metrics = HeroArtworkScrollEffect.metrics(minY: minY, reduceMotion: reduceMotion)
 
             ZStack(alignment: .bottomLeading) {
                 ZStack {
@@ -1477,12 +1720,14 @@ struct DetailsView: View {
                     .clipped()
 
                     Color.black
-                        .opacity(DetailsHeroScrollEffect.maximumDimming * recessionProgress)
+                        .opacity(HeroArtworkScrollEffect.maximumDimming * metrics.recessionProgress)
                 }
                 .frame(width: proxy.size.width, height: proxy.size.height)
-                .scaleEffect(artworkScale)
-                .offset(y: upwardScroll)
-                .opacity(1 - disappearanceProgress)
+                .scaleEffect(metrics.scale, anchor: .top)
+                .offset(y: metrics.parallaxOffset)
+                .clipped()
+                .offset(y: metrics.verticalOffset)
+                .opacity(metrics.opacity)
 
                 // This gradient deliberately remains in the scrolling layer so it
                 // continues to sit behind the title as the artwork recedes.
@@ -1502,23 +1747,62 @@ struct DetailsView: View {
 
         }
         .frame(height: 570)
-        .clipped()
     }
 
     private var detailsTitle: some View {
-        Text(model.item.title)
-            .font(.system(size: 36, weight: .bold, design: .rounded))
-            .foregroundStyle(.white)
-            .shadow(color: .black.opacity(0.55), radius: 12, y: 4)
-            .lineLimit(3)
-            .minimumScaleFactor(0.72)
-            .fixedSize(horizontal: false, vertical: true)
+        TitleLogoView(
+            title: model.item.title,
+            logoData: tmdbTitleLogoData,
+            showsFallback: isTitleLogoResolved
+        ) {
+            Text(model.item.title)
+                .font(.system(size: 36, weight: .bold, design: .rounded))
+                .foregroundStyle(.white)
+                .lineLimit(3)
+                .minimumScaleFactor(0.72)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .shadow(color: .black.opacity(0.55), radius: 12, y: 4)
+    }
+
+    private func loadTitleLogo(for item: MediaItem) async -> Data? {
+        enum Event: Sendable {
+            case loaded(Data?)
+            case timeout
+        }
+
+        return await withTaskGroup(of: Event.self) { group in
+            group.addTask {
+                .loaded(try? await environment.tmdbLogoData(for: item))
+            }
+            group.addTask {
+                try? await Task.sleep(for: .seconds(5))
+                return .timeout
+            }
+
+            while let event = await group.next() {
+                switch event {
+                case .loaded(let data):
+                    if let data {
+                        group.cancelAll()
+                        return data
+                    }
+                    // A negative lookup still waits for the five-second fallback
+                    // threshold so text never flashes during normal loading.
+                case .timeout:
+                    group.cancelAll()
+                    return nil
+                }
+            }
+            return nil
+        }
     }
 
     private var detailsMetadata: some View {
         HStack(spacing: 10) {
             Text(model.item.kind == .movie ? "Movie" : "TV Show")
-            if let rating = model.item.rating {
+            if let rating = model.item.rating, rating > 0 {
                 Text("·")
                 Label(String(format: "%.1f", rating), systemImage: "star.fill")
                     .foregroundStyle(.yellow)
@@ -1541,15 +1825,18 @@ struct DetailsView: View {
     private var seasonsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let firstSeason = model.item.seasons.first {
-                Picker("Season", selection: Binding(get: { selectedSeason ?? firstSeason }, set: { season in
-                    selectedSeason = season
+                Picker("Season", selection: Binding(get: { selectedSeasonNumber ?? firstSeason.number }, set: { seasonNumber in
+                    selectedSeasonNumber = seasonNumber
+                    guard let season = model.item.seasons.first(where: { $0.number == seasonNumber }) else { return }
                     Task { await model.loadEpisodes(season, registry: environment.registry) }
                 })) {
-                    ForEach(model.item.seasons) { Text($0.title ?? "Season \($0.number)").tag($0) }
+                    ForEach(model.item.seasons) { Text($0.title ?? "Season \($0.number)").tag($0.number) }
                 }
                 .pickerStyle(.menu)
 
-                let season = selectedSeason ?? firstSeason
+                let season = model.item.seasons.first {
+                    $0.number == selectedSeasonNumber
+                } ?? firstSeason
                 ForEach(model.episodes[season.id] ?? []) { episode in
                     let episodeProgress = library.progress(for: episode, in: model.item)
                     let isWatched = library.isWatched(episode, in: model.item)
@@ -1656,7 +1943,9 @@ struct DetailsView: View {
             return PlaybackRequest(media: model.item, episode: episode)
         }
 
-        guard let season = selectedSeason ?? model.item.seasons.first,
+        guard let season = model.item.seasons.first(where: {
+            $0.number == selectedSeasonNumber
+        }) ?? model.item.seasons.first,
               let episodes = model.episodes[season.id] else { return nil }
         guard let episode = episodes.first(where: { !library.isWatched($0, in: model.item) })
             ?? episodes.first else { return nil }
@@ -1705,12 +1994,44 @@ struct DetailsView: View {
     }
 }
 
-private enum DetailsHeroScrollEffect {
-    static let coordinateSpace = "details-hero-scroll"
+private enum HeroArtworkScrollEffect {
+    struct Metrics {
+        let recessionProgress: CGFloat
+        let scale: CGFloat
+        let parallaxOffset: CGFloat
+        let verticalOffset: CGFloat
+        let opacity: Double
+    }
+
+    static let homeCoordinateSpace = "home-hero-scroll"
+    static let detailsCoordinateSpace = "details-hero-scroll"
     static let recessionDistance: CGFloat = 360
     static let disappearanceDistance: CGFloat = 500
-    static let maximumScaleReduction: CGFloat = 0.1
     static let maximumDimming: Double = 0.64
+    static let upwardParallaxCompensation: CGFloat = 0.35
+    static let overscrollZoomDistance: CGFloat = 180
+    static let maximumOverscrollScaleIncrease: CGFloat = 0.12
+
+    static func metrics(minY: CGFloat, reduceMotion: Bool) -> Metrics {
+        let upwardScroll = max(0, -minY)
+        let overscroll = max(0, minY)
+        let recessionProgress = min(upwardScroll / recessionDistance, 1)
+        let disappearanceProgress = min(upwardScroll / disappearanceDistance, 1)
+        let overscrollProgress = min(overscroll / overscrollZoomDistance, 1)
+        let scale = reduceMotion
+            ? 1
+            : 1 + (maximumOverscrollScaleIncrease * overscrollProgress)
+
+        return Metrics(
+            recessionProgress: recessionProgress,
+            scale: scale,
+            parallaxOffset: reduceMotion ? 0 : upwardScroll * upwardParallaxCompensation,
+            // Moving the already-clipped artwork layer only during overscroll
+            // pins it to the screen without affecting normal upward scrolling.
+            verticalOffset: -overscroll,
+            opacity: 1 - Double(disappearanceProgress)
+        )
+    }
 }
 
 private struct EpisodeInfoOverlay: View {
@@ -1755,14 +2076,13 @@ private struct EpisodeInfoOverlay: View {
                 Text(episode.title ?? "Episode \(episode.number)")
                     .font(.headline)
 
-                ScrollView {
-                    Text(synopsis)
-                        .font(.body)
-                        .foregroundStyle(.secondary)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .frame(minHeight: 100, idealHeight: 140, maxHeight: 260, alignment: .top)
+                Text(synopsis)
+                    .font(.body)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .multilineTextAlignment(.leading)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .layoutPriority(1)
             }
             .padding(22)
             .frame(maxWidth: 520, alignment: .leading)
@@ -1784,12 +2104,15 @@ struct SettingsView: View {
     @AppStorage("player.autoNext") private var autoNext = true
     @AppStorage("player.defaultQualityHeight") private var defaultQualityHeight = 0
     @AppStorage("player.defaultPlaybackRate") private var defaultPlaybackRate = 1.0
+    @AppStorage("player.orientation") private var playerOrientationRawValue = PlayerOrientationPreference.autoRotate.rawValue
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
     @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
     @State private var providerDomain = ""
     @State private var providerMessage: String?
+    @State private var isCheckingForUpdates = false
+    @State private var updateCheckResult: UpdateCheckResult?
 
     var body: some View {
         Form {
@@ -1813,6 +2136,7 @@ struct SettingsView: View {
                         .tag(option)
                     }
                 }
+                .tint(environment.themeColor.color)
             }
 
             Section("Provider") {
@@ -1844,11 +2168,22 @@ struct SettingsView: View {
                     Text("720p").tag(720)
                     Text("1080p").tag(1080)
                 }
+                .tint(environment.themeColor.color)
                 Picker("Default speed", selection: $defaultPlaybackRate) {
                     ForEach([0.5, 0.75, 1, 1.25, 1.5, 1.75, 2], id: \.self) { speed in
                         Text("\(speed, specifier: "%.2g")×").tag(speed)
                     }
                 }
+                .tint(environment.themeColor.color)
+                Picker("Player orientation", selection: playerOrientation) {
+                    ForEach(PlayerOrientationPreference.allCases) { option in
+                        Text(option.name).tag(option)
+                    }
+                }
+                .tint(environment.themeColor.color)
+                Text("Auto-Rotate follows the device while the player is open. Landscape Only uses either landscape direction.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 Text("If the preferred quality is unavailable, the closest lower resolution is selected.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -1875,9 +2210,19 @@ struct SettingsView: View {
                 Link(destination: URL(string: "https://github.com/rtk19/BetterStreamflix-iOS-port")!) {
                     Label("GitHub", systemImage: "chevron.left.forwardslash.chevron.right")
                 }
-                Link(destination: URL(string: "https://github.com/rtk19/BetterStreamflix-iOS-port/releases")!) {
-                    Label("Check for updates", systemImage: "arrow.triangle.2.circlepath")
+                Button {
+                    Task { await checkForUpdates() }
+                } label: {
+                    if isCheckingForUpdates {
+                        HStack {
+                            ProgressView()
+                            Text("Checking for updates…")
+                        }
+                    } else {
+                        Label("Check for updates", systemImage: "arrow.triangle.2.circlepath")
+                    }
                 }
+                .disabled(isCheckingForUpdates)
                 Link(destination: URL(string: "https://buymeacoffee.com/refaelbar")!) {
                     Label("Buy me a coffee", systemImage: "cup.and.saucer.fill")
                         .font(.headline)
@@ -1894,6 +2239,9 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+        // Form-backed pickers cache their UIKit tint. Recreate the Form at the
+        // theme boundary so every current and future Settings control updates.
+        .id("settings-form-\(environment.themeColor.rawValue)")
         .tint(environment.themeColor.color)
         .scrollContentBackground(.hidden)
         .background(.black)
@@ -1902,6 +2250,11 @@ struct SettingsView: View {
         .toolbar(.hidden, for: .navigationBar)
         .task {
             if providerDomain.isEmpty { providerDomain = environment.providerDomain }
+        }
+        .sheet(item: $updateCheckResult) { result in
+            UpdateCheckSheet(result: result)
+                .presentationDetents([.medium, .large])
+                .presentationDragIndicator(.visible)
         }
     }
 
@@ -1915,6 +2268,282 @@ struct SettingsView: View {
             ForEach(PlaybackLanguages.options) { option in
                 Text(option.name).tag(option.code)
             }
+        }
+        .tint(environment.themeColor.color)
+    }
+
+    private var playerOrientation: Binding<PlayerOrientationPreference> {
+        Binding(
+            get: {
+                PlayerOrientationPreference(rawValue: playerOrientationRawValue) ?? .autoRotate
+            },
+            set: { playerOrientationRawValue = $0.rawValue }
+        )
+    }
+
+    private func checkForUpdates() async {
+        guard !isCheckingForUpdates else { return }
+        isCheckingForUpdates = true
+        defer { isCheckingForUpdates = false }
+
+        do {
+            let release = try await GitHubReleaseClient().latestRelease()
+            let currentVersion = Bundle.main.object(
+                forInfoDictionaryKey: "CFBundleShortVersionString"
+            ) as? String ?? "0"
+            updateCheckResult = GitHubReleaseClient.isNewer(
+                tagName: release.tagName,
+                than: currentVersion
+            ) ? .updateAvailable(release) : .upToDate(currentVersion)
+        } catch where error.isCancellation {
+            return
+        } catch {
+            updateCheckResult = .failed
+        }
+    }
+}
+
+private enum UpdateCheckResult: Identifiable {
+    case updateAvailable(GitHubRelease)
+    case upToDate(String)
+    case failed
+
+    var id: String {
+        switch self {
+        case .updateAvailable(let release): "available-\(release.tagName)"
+        case .upToDate(let version): "current-\(version)"
+        case .failed: "failed"
+        }
+    }
+}
+
+private struct UpdateCheckSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @Environment(\.openURL) private var openURL
+    @EnvironmentObject private var environment: AppEnvironment
+
+    let result: UpdateCheckResult
+    let onSkipUpdate: (() -> Void)?
+    let onRemindLater: (() -> Void)?
+
+    init(
+        result: UpdateCheckResult,
+        onSkipUpdate: (() -> Void)? = nil,
+        onRemindLater: (() -> Void)? = nil
+    ) {
+        self.result = result
+        self.onSkipUpdate = onSkipUpdate
+        self.onRemindLater = onRemindLater
+    }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(alignment: .leading, spacing: 18) {
+                    switch result {
+                    case .updateAvailable(let release):
+                        updateAvailableContent(release)
+                    case .upToDate(let version):
+                        statusContent(
+                            icon: "checkmark.circle.fill",
+                            title: "You're up to date",
+                            message: "BetterStreamflix \(version) is the newest available version."
+                        )
+                    case .failed:
+                        statusContent(
+                            icon: "exclamationmark.triangle.fill",
+                            title: "Unable to check for updates",
+                            message: "Check your internet connection and try again."
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(24)
+            }
+            .background(Color(uiColor: .systemGroupedBackground))
+            .navigationTitle("Check for Updates")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .confirmationAction) {
+                    Button("Done") { dismiss() }
+                        .foregroundStyle(accentColor)
+                }
+            }
+        }
+        .tint(accentColor)
+    }
+
+    @ViewBuilder
+    private func updateAvailableContent(_ release: GitHubRelease) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: "arrow.down.circle.fill")
+                .foregroundStyle(accentColor)
+            Text("A new version was found")
+                .foregroundStyle(.primary)
+        }
+        .font(.title2.bold())
+
+        Text(release.name.flatMap { $0.isEmpty ? nil : $0 } ?? release.tagName)
+            .font(.headline)
+            .foregroundStyle(accentColor)
+
+        Divider()
+
+        ReleaseNotesMarkdownView(source: release.body, accentColor: accentColor)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .textSelection(.enabled)
+
+        Button {
+            dismiss()
+            openURL(release.htmlURL)
+        } label: {
+            Label("Download", systemImage: "arrow.down.circle.fill")
+                .font(.headline)
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 15)
+                .background(downloadButtonColor, in: Capsule())
+                .overlay {
+                    if environment.themeColor == .white {
+                        Capsule().stroke(.white.opacity(0.85), lineWidth: 1)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+
+        if let onRemindLater, let onSkipUpdate {
+            Button {
+                dismiss()
+                onRemindLater()
+            } label: {
+                Text("Remind Me Later")
+                    .font(.headline)
+                    .foregroundStyle(accentColor)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(accentColor.opacity(0.12), in: Capsule())
+                    .overlay {
+                        Capsule().stroke(accentColor.opacity(0.75), lineWidth: 1)
+                    }
+            }
+            .buttonStyle(.plain)
+
+            Button {
+                dismiss()
+                onSkipUpdate()
+            } label: {
+                Text("Skip This Update")
+                    .frame(maxWidth: .infinity)
+            }
+            .foregroundStyle(accentColor.opacity(0.7))
+        }
+    }
+
+    private func statusContent(icon: String, title: String, message: String) -> some View {
+        VStack(spacing: 14) {
+            Image(systemName: icon)
+                .font(.system(size: 48))
+                .foregroundStyle(accentColor)
+            Text(title)
+                .font(.title2.bold())
+            Text(message)
+                .multilineTextAlignment(.center)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 36)
+    }
+
+    private var accentColor: Color { environment.themeColor.color }
+
+    private var downloadButtonColor: Color {
+        environment.themeColor == .white ? .white.opacity(0.18) : accentColor
+    }
+}
+
+private struct ReleaseNotesMarkdownView: View {
+    let blocks: [ReleaseNotesMarkdownBlock]
+    let accentColor: Color
+
+    init(source: String, accentColor: Color) {
+        blocks = ReleaseNotesMarkdownParser.parse(source)
+        self.accentColor = accentColor
+    }
+
+    var body: some View {
+        LazyVStack(alignment: .leading, spacing: 14) {
+            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
+                blockView(block)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func blockView(_ block: ReleaseNotesMarkdownBlock) -> some View {
+        switch block {
+        case .heading(let level, let source):
+            VStack(alignment: .leading, spacing: 8) {
+                inlineText(source)
+                    .font(headingFont(for: level))
+                    .fontWeight(.bold)
+                if level <= 2 { Divider() }
+            }
+        case .paragraph(let source):
+            inlineText(source)
+                .font(.body)
+                .lineSpacing(3)
+        case .unorderedItem(let indentation, let source):
+            listRow(marker: "•", source: source, indentation: indentation)
+        case .orderedItem(let indentation, let marker, let source):
+            listRow(marker: marker, source: source, indentation: indentation)
+        case .quote(let source):
+            inlineText(source)
+                .italic()
+                .foregroundStyle(.secondary)
+                .padding(.leading, 14)
+                .overlay(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 2)
+                        .fill(accentColor)
+                        .frame(width: 4)
+                }
+        case .code(let source):
+            ScrollView(.horizontal, showsIndicators: false) {
+                Text(verbatim: source)
+                    .font(.system(.callout, design: .monospaced))
+                    .padding(12)
+            }
+            .background(.black.opacity(0.32), in: RoundedRectangle(cornerRadius: 10))
+        case .divider:
+            Divider()
+        }
+    }
+
+    private func listRow(marker: String, source: String, indentation: Int) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(marker)
+                .fontWeight(.semibold)
+                .foregroundStyle(accentColor)
+                .frame(minWidth: 18, alignment: .trailing)
+            inlineText(source)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .padding(.leading, CGFloat(indentation) * 18)
+    }
+
+    private func inlineText(_ source: String) -> Text {
+        let attributed = (try? AttributedString(
+            markdown: source,
+            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)
+        )) ?? AttributedString(source)
+        return Text(attributed)
+    }
+
+    private func headingFont(for level: Int) -> Font {
+        switch level {
+        case 1: .title
+        case 2: .title2
+        case 3: .title3
+        default: .headline
         }
     }
 }
@@ -1988,6 +2617,7 @@ struct PlayerScreen: View {
     @AppStorage("player.autoNext") private var autoNext = true
     @AppStorage("player.defaultQualityHeight") private var defaultQualityHeight = 0
     @AppStorage("player.defaultPlaybackRate") private var defaultPlaybackRate = 1.0
+    @AppStorage("player.orientation") private var playerOrientationRawValue = PlayerOrientationPreference.autoRotate.rawValue
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
@@ -2005,6 +2635,7 @@ struct PlayerScreen: View {
     var body: some View {
         NativePlayerController(
             player: session.player,
+            isBuffering: session.isBuffering,
             availableQualities: session.availableQualities,
             selectedQuality: session.selectedQuality,
             subtitleTimingOffset: session.subtitleTimingOffset,
@@ -2057,7 +2688,14 @@ struct PlayerScreen: View {
         .onChange(of: session.playbackRate) { _, rate in
             library.updatePlaybackRate(rate, for: model.request)
         }
-        .onDisappear { saveProgress(markNearEndFinished: true); session.stop() }
+        .onAppear {
+            AppOrientationController.shared.beginPlayback(using: playerOrientation)
+        }
+        .onDisappear {
+            saveProgress(markNearEndFinished: true)
+            session.stop()
+            AppOrientationController.shared.endPlayback()
+        }
         .statusBarHidden()
         .errorAlert($model.errorMessage)
     }
@@ -2138,6 +2776,10 @@ struct PlayerScreen: View {
 
     private var enabledSubtitleProviderIDs: Set<String> {
         thirdPartySubtitlesEnabled ? ["wizdom", "ktuvit"] : []
+    }
+
+    private var playerOrientation: PlayerOrientationPreference {
+        PlayerOrientationPreference(rawValue: playerOrientationRawValue) ?? .autoRotate
     }
 }
 
