@@ -32,7 +32,7 @@ From the repository root, run:
 
 Enter a release version such as `1.2.0`. The script permanently updates the version in both the Xcode project and `project.yml`, makes an unsigned device build, verifies the built version, and writes the IPA under `build/unsigned-ipa/<version>/`.
 
-The script requires Xcode with an iOS runtime installed under **Xcode → Settings → Components**.
+The script requires Xcode with iOS platform support installed under **Xcode → Settings → Components**.
 
 To create an archive, select **Any iOS Device (arm64)** and use **Product → Archive**. Xcode can then export a development or ad-hoc signed IPA according to the provisioning profiles in your account.
 

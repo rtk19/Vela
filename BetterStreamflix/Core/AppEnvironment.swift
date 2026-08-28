@@ -80,6 +80,10 @@ final class AppEnvironment: ObservableObject {
         )
     }
 
+    func cachedImageData(for url: URL) async throws -> Data {
+        try await tmdbClient.imageData(for: url)
+    }
+
     func tmdbLogoData(for title: TrendingTitle) async throws -> Data? {
         let token = try tmdbAccessToken()
         let language = Locale.preferredLanguages.first ?? "en-US"

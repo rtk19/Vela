@@ -1,5 +1,10 @@
 import Foundation
 
+private struct ProviderCacheEntry<Value: Sendable>: Sendable {
+    let value: Value
+    let loadedAt: Date
+}
+
 final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
     let id = "streamingcommunity.en"
     let displayName = "StreamingCommunity (EN)"
@@ -24,6 +29,9 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
         private let resolver: VixcloudResolver
         private var domain: String
         private var inertiaVersion: String?
+        private let catalogCacheLifetime: TimeInterval = 15 * 60
+        private var detailsCache: [String: ProviderCacheEntry<MediaItem>] = [:]
+        private var episodesCache: [String: ProviderCacheEntry<[MediaEpisode]>] = [:]
 
         private let blockedDomains = [
             "streamingcommunityz.green", "streamingunity.club",
@@ -102,18 +110,29 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
         }
 
         func details(for item: MediaItem) async throws -> MediaItem {
+            if let cached = detailsCache[item.id],
+               Date().timeIntervalSince(cached.loadedAt) <= catalogCacheLifetime {
+                return cached.value
+            }
             let page = try await fetchPage(path: "en/titles/\(item.id)")
             guard let show = page.props?.title else { throw AppError.decoding("Title details") }
             SubtitleDiagnostics.logger.info(
                 "Catalog subtitle metadata: title=\(show.name, privacy: .public) catalogID=\(show.id, privacy: .public) imdb=\(show.imdbID ?? "missing", privacy: .public) tmdb=\(show.tmdbID.map(String.init) ?? "missing", privacy: .public)"
             )
-            return media(from: show, providerID: item.providerID, forcedKind: item.kind)
+            let details = media(from: show, providerID: item.providerID, forcedKind: item.kind)
+            detailsCache[item.id] = ProviderCacheEntry(value: details, loadedAt: .now)
+            return details
         }
 
         func episodes(for season: MediaSeason, show: MediaItem) async throws -> [MediaEpisode] {
+            let cacheKey = "\(show.id)|\(season.id)"
+            if let cached = episodesCache[cacheKey],
+               Date().timeIntervalSince(cached.loadedAt) <= catalogCacheLifetime {
+                return cached.value
+            }
             let page = try await fetchPage(path: "en/titles/\(season.id)")
             let episodes = page.props?.loadedSeason?.episodes ?? []
-            return episodes.enumerated().map { index, episode in
+            let result = episodes.enumerated().map { index, episode in
                 MediaEpisode(
                     id: "\(show.id.components(separatedBy: "-").first ?? show.id)?episode_id=\(episode.id)",
                     providerID: show.providerID,
@@ -125,6 +144,8 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
                     posterURL: imageURL(episode.images.first(where: { $0.type == "cover" })?.filename)
                 )
             }
+            episodesCache[cacheKey] = ProviderCacheEntry(value: result, loadedAt: .now)
+            return result
         }
 
         func playbackSource(for playbackRequest: PlaybackRequest) async throws -> PlaybackSource {

@@ -485,6 +485,30 @@ struct HTMLPayloadParserTests {
         let showWithStringID = try JSONDecoder.provider.decode(SCShow.self, from: Data(stringIDJSON.utf8))
         #expect(showWithStringID.tmdbID == 123_456)
     }
+
+    @Test("Reuses cached title details and season episodes")
+    func reusesCachedProviderDetails() async throws {
+        let client = ProviderCacheHTTPClient()
+        let provider = StreamingCommunityProvider(client: client, domain: "example.com")
+        let item = MediaItem(
+            id: "101-cached-show",
+            providerID: provider.id,
+            kind: .series,
+            title: "Cached Show"
+        )
+
+        let firstDetails = try await provider.details(for: item)
+        let secondDetails = try await provider.details(for: item)
+        let season = try #require(firstDetails.seasons.first)
+        let firstEpisodes = try await provider.episodes(for: season, show: firstDetails)
+        let secondEpisodes = try await provider.episodes(for: season, show: secondDetails)
+
+        #expect(firstDetails == secondDetails)
+        #expect(firstEpisodes == secondEpisodes)
+        #expect(firstEpisodes.first?.posterURL?.absoluteString == "https://cdn.example.com/images/episode.jpg")
+        #expect(await client.requestCount(for: "/en/titles/101-cached-show") == 1)
+        #expect(await client.requestCount(for: "/en/titles/101-cached-show/season-1") == 1)
+    }
 }
 
 private struct StubHTTPClient: HTTPClientProtocol {
@@ -520,6 +544,41 @@ private actor CapturingHTTPClient: HTTPClientProtocol {
             headerFields: ["Content-Type": "application/json"]
         ))
         return HTTPResponse(data: body, response: response)
+    }
+}
+
+private actor ProviderCacheHTTPClient: HTTPClientProtocol {
+    private var requestCounts: [String: Int] = [:]
+
+    func data(for request: URLRequest) async throws -> HTTPResponse {
+        let url = try #require(request.url)
+        requestCounts[url.path, default: 0] += 1
+
+        let body: Data
+        let contentType: String
+        if url.path.hasSuffix("/season-1") {
+            body = Data(
+                #"{"version":"cache-test","props":{"loadedSeason":{"episodes":[{"id":"501","images":[{"filename":"episode.jpg","type":"cover"}],"name":"Pilot","number":"1","plot":"First episode"}]}}}"#.utf8
+            )
+            contentType = "application/json"
+        } else {
+            let page = #"{"version":"cache-test","props":{"title":{"id":"101","name":"Cached Show","type":"tv","slug":"cached-show","images":[],"seasons":[{"number":"1","name":"Season 1"}]}}}"#
+            let escapedPage = page.replacingOccurrences(of: "\"", with: "&quot;")
+            body = Data(#"<main id="app" data-page="\#(escapedPage)"></main>"#.utf8)
+            contentType = "text/html"
+        }
+
+        let response = try #require(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/2",
+            headerFields: ["Content-Type": contentType]
+        ))
+        return HTTPResponse(data: body, response: response)
+    }
+
+    func requestCount(for path: String) -> Int {
+        requestCounts[path, default: 0]
     }
 }
 

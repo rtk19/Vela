@@ -908,17 +908,15 @@ private struct ContinueWatchingCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             ZStack(alignment: .bottom) {
-                AsyncImage(url: imageURL) { phase in
-                    if let image = phase.image {
-                        image.resizable().scaledToFill()
-                    } else {
-                        Rectangle()
-                            .fill(.gray.opacity(0.22))
-                            .overlay {
-                                Image(systemName: progress.media.kind == .movie ? "film" : "tv")
-                                    .font(.title)
-                            }
-                    }
+                CachedRemoteImage(url: imageURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Rectangle()
+                        .fill(.gray.opacity(0.22))
+                        .overlay {
+                            Image(systemName: progress.media.kind == .movie ? "film" : "tv")
+                                .font(.title)
+                        }
                 }
                 .frame(width: width, height: imageHeight)
                 .clipped()
@@ -1164,19 +1162,56 @@ private struct PosterGridCard: View {
     }
 }
 
+private struct CachedRemoteImage<Content: View, Placeholder: View>: View {
+    @EnvironmentObject private var environment: AppEnvironment
+    let url: URL?
+    private let content: (Image) -> Content
+    private let placeholder: () -> Placeholder
+    @State private var loadedURL: URL?
+    @State private var image: UIImage?
+
+    init(
+        url: URL?,
+        @ViewBuilder content: @escaping (Image) -> Content,
+        @ViewBuilder placeholder: @escaping () -> Placeholder
+    ) {
+        self.url = url
+        self.content = content
+        self.placeholder = placeholder
+    }
+
+    var body: some View {
+        Group {
+            if loadedURL == url, let image {
+                content(Image(uiImage: image))
+            } else {
+                placeholder()
+            }
+        }
+        .task(id: url) {
+            loadedURL = nil
+            image = nil
+            guard let url,
+                  let data = try? await environment.cachedImageData(for: url),
+                  !Task.isCancelled,
+                  let decodedImage = UIImage(data: data) else { return }
+            image = decodedImage
+            loadedURL = url
+        }
+    }
+}
+
 private struct CanonicalPosterArtwork: View {
     @EnvironmentObject private var environment: AppEnvironment
     let item: MediaItem
     @State private var posterURL: URL?
 
     var body: some View {
-        AsyncImage(url: posterURL) { phase in
-            if let image = phase.image {
-                image.resizable().scaledToFill()
-            } else {
-                Rectangle().fill(.gray.opacity(0.22))
-                    .overlay { Image(systemName: item.kind == .movie ? "film" : "tv") }
-            }
+        CachedRemoteImage(url: posterURL) { image in
+            image.resizable().scaledToFill()
+        } placeholder: {
+            Rectangle().fill(.gray.opacity(0.22))
+                .overlay { Image(systemName: item.kind == .movie ? "film" : "tv") }
         }
         .task(id: item.artworkIdentityKey) {
             posterURL = await environment.canonicalPosterURL(for: item)
@@ -1235,13 +1270,11 @@ private struct TMDBPosterCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            AsyncImage(url: title.posterURL ?? title.backdropURL) { phase in
-                if let image = phase.image {
-                    image.resizable().scaledToFill()
-                } else {
-                    Rectangle().fill(.gray.opacity(0.22))
-                        .overlay { Image(systemName: title.kind == .movie ? "film" : "tv") }
-                }
+            CachedRemoteImage(url: title.posterURL ?? title.backdropURL) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                Rectangle().fill(.gray.opacity(0.22))
+                    .overlay { Image(systemName: title.kind == .movie ? "film" : "tv") }
             }
             .aspectRatio(2 / 3, contentMode: .fit)
             .frame(width: width)
@@ -1637,22 +1670,32 @@ struct DetailsView: View {
             // or network request can delay what the picker presents.
             selectedSeasonNumber = preferredSeasonNumber ?? initialItem.seasons.first?.number
 
-            async let initialArtwork = sourceLookup.resolveArtwork(
-                for: initialItem,
-                environment: environment
-            )
-            async let initialLogo = loadTitleLogo(for: initialItem)
-            async let detailsLoad: Void = model.load(
+            let artworkTask = Task { @MainActor in
+                let artwork = await sourceLookup.resolveArtwork(
+                    for: initialItem,
+                    environment: environment
+                )
+                guard !Task.isCancelled else { return }
+                tmdbHeroArtworkData = artwork
+                isHeroArtworkLoading = false
+            }
+            let logoTask = Task { @MainActor in
+                let logo = await loadTitleLogo(for: initialItem)
+                guard !Task.isCancelled else { return }
+                tmdbTitleLogoData = logo
+                isTitleLogoResolved = true
+            }
+            defer {
+                artworkTask.cancel()
+                logoTask.cancel()
+            }
+
+            await model.load(
                 environment: environment,
                 preferredSeasonNumber: preferredSeasonNumber
             )
-
-            tmdbTitleLogoData = await initialLogo
-            isTitleLogoResolved = true
-            guard !Task.isCancelled else { return }
-            tmdbHeroArtworkData = await initialArtwork
-            isHeroArtworkLoading = false
-            await detailsLoad
+            await artworkTask.value
+            await logoTask.value
             guard !Task.isCancelled else { return }
 
             if model.item.tmdbID != initialItem.tmdbID {
@@ -1784,12 +1827,8 @@ struct DetailsView: View {
             while let event = await group.next() {
                 switch event {
                 case .loaded(let data):
-                    if let data {
-                        group.cancelAll()
-                        return data
-                    }
-                    // A negative lookup still waits for the five-second fallback
-                    // threshold so text never flashes during normal loading.
+                    group.cancelAll()
+                    return data
                 case .timeout:
                     group.cancelAll()
                     return nil
@@ -1845,8 +1884,10 @@ struct DetailsView: View {
                     } label: {
                         HStack(spacing: 12) {
                             ZStack(alignment: .bottom) {
-                                AsyncImage(url: episode.posterURL) { phase in
-                                    if let image = phase.image { image.resizable().scaledToFill() } else { Rectangle().fill(.gray.opacity(0.2)) }
+                                CachedRemoteImage(url: episode.posterURL) { image in
+                                    image.resizable().scaledToFill()
+                                } placeholder: {
+                                    Rectangle().fill(.gray.opacity(0.2))
                                 }
                                 .frame(width: 120, height: 68)
                                 .clipped()

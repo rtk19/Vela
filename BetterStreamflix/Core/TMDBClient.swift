@@ -290,11 +290,7 @@ actor TMDBClient {
             return cachedData
         }
         if let existingTask = imageDownloadTasks[url] {
-            return try await withTaskCancellationHandler {
-                try await existingTask.value
-            } onCancel: {
-                existingTask.cancel()
-            }
+            return try await existingTask.value
         }
 
         let client = self.client
@@ -313,11 +309,9 @@ actor TMDBClient {
         }
         imageDownloadTasks[url] = task
         defer { imageDownloadTasks[url] = nil }
-        return try await withTaskCancellationHandler {
-            try await task.value
-        } onCancel: {
-            task.cancel()
-        }
+        // Keep filling the shared disk cache even if the requesting view scrolls
+        // away or is dismissed before this download completes.
+        return try await task.value
     }
 
     func logoData(
