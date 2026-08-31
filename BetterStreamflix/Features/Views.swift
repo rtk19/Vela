@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 private extension AppThemeColor {
     var color: Color {
@@ -222,8 +223,8 @@ struct HomeView: View {
                         titles: model.trendingTitles,
                         assets: model.carouselAssets,
                         resolvingKeys: sourceLookup.activeKeys,
-                        onPlay: openForPlayback,
-                        onDetails: openDetails
+                        onDetails: openDetails,
+                        onToggleWatchlist: toggleWatchlist
                     )
                 } else if model.isTrendingLoading {
                     TrendingHeroLoadingView()
@@ -271,11 +272,8 @@ struct HomeView: View {
         .background(Color.black)
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
-        .overlay { if model.isLoading && model.shelves.isEmpty { ProgressView("Loading StreamingCommunity…") } }
         .task {
-            async let shelves: Void = model.load(registry: environment.registry)
-            async let trending: Void = model.loadTrending(environment: environment)
-            _ = await (shelves, trending)
+            await model.loadTrending(environment: environment)
             onInitialLoadCompleted()
         }
         .navigationDestination(for: MediaItem.self) { DetailsView(item: $0) }
@@ -294,19 +292,23 @@ struct HomeView: View {
     }
 
     private func openDetails(_ trending: TrendingTitle) {
-        Task {
-            selectedDetails = await sourceLookup.resolve(trending, registry: environment.registry)
-        }
+        selectedDetails = ResolvedMediaItem(
+            media: .tmdbCatalogItem(from: trending),
+            tmdbMetadata: trending
+        )
     }
 
-    private func openForPlayback(_ trending: TrendingTitle) {
-        Task {
-            guard let item = await sourceLookup.resolve(trending, registry: environment.registry) else { return }
-            if item.media.kind == .movie {
-                playback = PlaybackRequest(media: item.media, episode: nil)
-            } else {
-                selectedDetails = item
-            }
+    private func toggleWatchlist(_ trending: TrendingTitle) {
+        if let existingItem = library.watchlist.first(where: {
+            $0.kind == trending.kind && $0.tmdbID == trending.id
+        }) {
+            library.toggleWatchlist(existingItem)
+            return
+        }
+
+        let item = MediaItem.tmdbCatalogItem(from: trending)
+        if !library.isInWatchlist(item) {
+            library.toggleWatchlist(item)
         }
     }
 
@@ -329,11 +331,12 @@ struct HomeView: View {
 private struct TrendingHeroCarousel: View {
     private let interval: TimeInterval = 5
 
+    @EnvironmentObject private var library: LibraryStore
     let titles: [TrendingTitle]
     let assets: TMDBCarouselAssets
     let resolvingKeys: Set<String>
-    let onPlay: (TrendingTitle) -> Void
     let onDetails: (TrendingTitle) -> Void
+    let onToggleWatchlist: (TrendingTitle) -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.scenePhase) private var scenePhase
@@ -341,9 +344,16 @@ private struct TrendingHeroCarousel: View {
     @State private var slideStartedAt = Date()
     @State private var isInteracting = false
     @State private var timerVersion = 0
+    @State private var titleContentOffset: CGFloat = 0
+    @State private var titleContentOpacity = 1.0
 
     private var currentTitle: TrendingTitle { titles[currentIndex % titles.count] }
     private var isCurrentTitleResolving: Bool { resolvingKeys.contains(currentTitle.lookupKey) }
+    private var isCurrentTitleInWatchlist: Bool {
+        library.watchlist.contains {
+            $0.kind == currentTitle.kind && $0.tmdbID == currentTitle.id
+        }
+    }
 
     var body: some View {
         GeometryReader { proxy in
@@ -382,8 +392,12 @@ private struct TrendingHeroCarousel: View {
                 )
                 .allowsHitTesting(false)
 
+                Color.clear
+                    .contentShape(Rectangle())
+                    .onTapGesture(perform: openCurrentDetails)
+                    .accessibilityHidden(true)
+
                 heroContent
-                    .opacity(isInteracting ? 0 : 1)
                     .padding(.horizontal, 22)
                     .padding(.bottom, 44)
 
@@ -407,6 +421,7 @@ private struct TrendingHeroCarousel: View {
         .background {
             HorizontalCarouselPanRecognizer(
                 onBegan: beginHorizontalInteraction,
+                onChanged: updateHorizontalInteraction,
                 onEnded: endHorizontalInteraction
             )
         }
@@ -439,50 +454,54 @@ private struct TrendingHeroCarousel: View {
     private var heroContent: some View {
         VStack(spacing: 13) {
             Spacer()
-            Text("TRENDING NOW")
-                .font(.caption2.weight(.bold))
-                .tracking(1.8)
-                .foregroundStyle(.white.opacity(0.74))
+            VStack(spacing: 13) {
+                Text("TRENDING NOW")
+                    .font(.caption2.weight(.bold))
+                    .tracking(1.8)
+                    .foregroundStyle(.white.opacity(0.74))
 
-            TitleLogoView(
-                title: currentTitle.title,
-                logoData: assets.logoDataByKey[currentTitle.lookupKey],
-                showsFallback: true
-            ) {
-                Text(currentTitle.title)
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .minimumScaleFactor(0.72)
-                    .contentTransition(.opacity)
+                TitleLogoView(
+                    title: currentTitle.title,
+                    logoData: assets.logoDataByKey[currentTitle.lookupKey],
+                    showsFallback: true
+                ) {
+                    Text(currentTitle.title)
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.72)
+                        .contentTransition(.opacity)
+                }
+                .id(currentTitle.id)
+
+                metadata
+
+                if !currentTitle.overview.isEmpty {
+                    Text(currentTitle.overview)
+                        .font(.subheadline)
+                        .foregroundStyle(.white.opacity(0.78))
+                        .multilineTextAlignment(.center)
+                        .lineLimit(2)
+                        .padding(.horizontal, 12)
+                }
             }
-            .id(currentTitle.id)
-
-            metadata
-
-            if !currentTitle.overview.isEmpty {
-                Text(currentTitle.overview)
-                    .font(.subheadline)
-                    .foregroundStyle(.white.opacity(0.78))
-                    .multilineTextAlignment(.center)
-                    .lineLimit(2)
-                    .padding(.horizontal, 12)
-            }
+            .offset(x: titleContentOffset)
+            .opacity(titleContentOpacity)
 
             HStack(spacing: 12) {
                 Button {
-                    onPlay(currentTitle)
+                    onDetails(currentTitle)
                 } label: {
                     Group {
                         if isCurrentTitleResolving {
                             ProgressView().tint(.black)
                         } else {
-                            Label("Watch Now", systemImage: "play.fill")
+                            Text("View Details")
                         }
                     }
                     .font(.headline)
                     .frame(maxWidth: .infinity)
-                    .frame(height: 50)
+                    .frame(height: 36)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.white)
@@ -491,17 +510,19 @@ private struct TrendingHeroCarousel: View {
                 .allowsHitTesting(!isCurrentTitleResolving)
 
                 Button {
-                    onDetails(currentTitle)
+                    onToggleWatchlist(currentTitle)
                 } label: {
-                    Image(systemName: "info")
+                    Image(systemName: isCurrentTitleInWatchlist ? "checkmark" : "plus")
                         .font(.title3.weight(.semibold))
-                        .frame(width: 50, height: 50)
+                        .frame(width: 36, height: 36)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(.white.opacity(0.18))
                 .clipShape(Circle())
                 .allowsHitTesting(!isCurrentTitleResolving)
-                .accessibilityLabel("More information")
+                .accessibilityLabel(
+                    isCurrentTitleInWatchlist ? "Remove from Watchlist" : "Add to Watchlist"
+                )
             }
             .padding(.horizontal, 22)
 
@@ -533,23 +554,47 @@ private struct TrendingHeroCarousel: View {
         .minimumScaleFactor(0.75)
     }
 
+    private func openCurrentDetails() {
+        guard !isInteracting, !isCurrentTitleResolving else { return }
+        onDetails(currentTitle)
+    }
+
     private func beginHorizontalInteraction() {
         guard !isInteracting else { return }
         timerVersion += 1
-        withAnimation(reduceMotion ? nil : .easeOut(duration: 0.16)) {
-            isInteracting = true
-        }
+        isInteracting = true
+    }
+
+    private func updateHorizontalInteraction(translation: CGFloat) {
+        guard isInteracting else { return }
+        let progress = min(abs(translation) / 72, 1)
+        titleContentOffset = reduceMotion ? 0 : translation * 0.34
+        titleContentOpacity = 1 - progress
     }
 
     private func endHorizontalInteraction(translation: CGFloat) {
         guard isInteracting else { return }
         if abs(translation) > 34 {
-            select(index: translation < 0 ? nextIndex : previousIndex)
+            let direction: CGFloat = translation < 0 ? -1 : 1
+            slideStartedAt = Date()
+            withAnimation(nil) {
+                currentIndex = direction < 0 ? nextIndex : previousIndex
+                titleContentOffset = reduceMotion ? 0 : -direction * 28
+                titleContentOpacity = reduceMotion ? 1 : 0
+                isInteracting = false
+            }
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.3)) {
+                titleContentOffset = 0
+                titleContentOpacity = 1
+            }
+            timerVersion += 1
         } else {
-            restartTimer()
-        }
-        withAnimation(reduceMotion ? nil : .easeIn(duration: 0.28).delay(0.12)) {
             isInteracting = false
+            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+                titleContentOffset = 0
+                titleContentOpacity = 1
+            }
+            restartTimer()
         }
     }
 
@@ -720,10 +765,11 @@ private struct PageTitleText: View {
 
 private struct HorizontalCarouselPanRecognizer: UIViewRepresentable {
     let onBegan: () -> Void
+    let onChanged: (CGFloat) -> Void
     let onEnded: (CGFloat) -> Void
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(onBegan: onBegan, onEnded: onEnded)
+        Coordinator(onBegan: onBegan, onChanged: onChanged, onEnded: onEnded)
     }
 
     func makeUIView(context: Context) -> AttachmentView {
@@ -737,6 +783,7 @@ private struct HorizontalCarouselPanRecognizer: UIViewRepresentable {
 
     func updateUIView(_ uiView: AttachmentView, context: Context) {
         context.coordinator.onBegan = onBegan
+        context.coordinator.onChanged = onChanged
         context.coordinator.onEnded = onEnded
         context.coordinator.install(marker: uiView)
     }
@@ -758,6 +805,7 @@ private struct HorizontalCarouselPanRecognizer: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject, UIGestureRecognizerDelegate {
         var onBegan: () -> Void
+        var onChanged: (CGFloat) -> Void
         var onEnded: (CGFloat) -> Void
         private weak var host: UIView?
         private weak var marker: AttachmentView?
@@ -768,8 +816,13 @@ private struct HorizontalCarouselPanRecognizer: UIViewRepresentable {
             return recognizer
         }()
 
-        init(onBegan: @escaping () -> Void, onEnded: @escaping (CGFloat) -> Void) {
+        init(
+            onBegan: @escaping () -> Void,
+            onChanged: @escaping (CGFloat) -> Void,
+            onEnded: @escaping (CGFloat) -> Void
+        ) {
             self.onBegan = onBegan
+            self.onChanged = onChanged
             self.onEnded = onEnded
         }
 
@@ -807,6 +860,8 @@ private struct HorizontalCarouselPanRecognizer: UIViewRepresentable {
             switch recognizer.state {
             case .began:
                 onBegan()
+            case .changed:
+                onChanged(recognizer.translation(in: recognizer.view).x)
             case .ended:
                 onEnded(recognizer.translation(in: recognizer.view).x)
             case .cancelled, .failed:
@@ -882,6 +937,7 @@ private struct ContinueWatchingShelfView: View {
                             } label: {
                                 Label("Remove from Continue Watching", systemImage: "trash")
                             }
+                            .tint(.red)
                         }
                     }
                 }
@@ -1038,6 +1094,7 @@ struct MediaShelfView: View {
                                 } label: {
                                     Label("Remove from Continue Watching", systemImage: "trash")
                                 }
+                                .tint(.red)
                             }
                         }
                     }
@@ -1080,6 +1137,7 @@ private struct MediaGridView: View {
                             } label: {
                                 Label("Remove from Continue Watching", systemImage: "trash")
                             }
+                            .tint(.red)
                         }
                     }
                 }
@@ -1432,7 +1490,7 @@ private struct TMDBCollectionGridView: View {
     }
 
     private func open(_ title: TrendingTitle) {
-        Task { selectedDetails = await sourceLookup.resolve(title, registry: environment.registry) }
+        selectedDetails = ResolvedMediaItem(media: .tmdbCatalogItem(from: title), tmdbMetadata: title)
     }
 }
 
@@ -1480,7 +1538,7 @@ struct CatalogView: View {
     }
 
     private func open(_ title: TrendingTitle) {
-        Task { selectedDetails = await sourceLookup.resolve(title, registry: environment.registry) }
+        selectedDetails = ResolvedMediaItem(media: .tmdbCatalogItem(from: title), tmdbMetadata: title)
     }
 }
 
@@ -1557,7 +1615,7 @@ struct SearchView: View {
         .background(.black)
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
-        .onChange(of: model.query) { _, _ in model.search(registry: environment.registry) }
+        .onChange(of: model.query) { _, _ in model.search(environment: environment) }
         .onChange(of: isSearchPresented) { _, presented in
             if presented { searchFieldIsFocused = true }
         }
@@ -1577,7 +1635,7 @@ struct SearchView: View {
     }
 
     private func open(_ title: TrendingTitle) {
-        Task { selectedDetails = await sourceLookup.resolve(title, registry: environment.registry) }
+        selectedDetails = ResolvedMediaItem(media: .tmdbCatalogItem(from: title), tmdbMetadata: title)
     }
 }
 
@@ -1623,7 +1681,7 @@ struct DetailsView: View {
                         .buttonStyle(.borderedProminent)
                         .disabled(primaryPlaybackRequest == nil)
                         Button { library.toggleWatchlist(model.item) } label: {
-                            Image(systemName: library.isInWatchlist(model.item) ? "bookmark.fill" : "bookmark")
+                            Image(systemName: library.isInWatchlist(model.item) ? "checkmark" : "plus")
                                 .frame(width: 44)
                         }
                         .buttonStyle(.bordered)
@@ -1867,7 +1925,7 @@ struct DetailsView: View {
                 Picker("Season", selection: Binding(get: { selectedSeasonNumber ?? firstSeason.number }, set: { seasonNumber in
                     selectedSeasonNumber = seasonNumber
                     guard let season = model.item.seasons.first(where: { $0.number == seasonNumber }) else { return }
-                    Task { await model.loadEpisodes(season, registry: environment.registry) }
+                    Task { await model.loadEpisodes(season, environment: environment) }
                 })) {
                     ForEach(model.item.seasons) { Text($0.title ?? "Season \($0.number)").tag($0.number) }
                 }
@@ -2007,7 +2065,7 @@ struct DetailsView: View {
            episodes.last == episode,
            let seasonIndex = model.item.seasons.firstIndex(of: season),
            model.item.seasons.indices.contains(seasonIndex + 1) {
-            await model.loadEpisodes(model.item.seasons[seasonIndex + 1], registry: environment.registry)
+            await model.loadEpisodes(model.item.seasons[seasonIndex + 1], environment: environment)
         }
         guard !Task.isCancelled else { return }
         playback = request
@@ -2154,6 +2212,11 @@ struct SettingsView: View {
     @State private var providerMessage: String?
     @State private var isCheckingForUpdates = false
     @State private var updateCheckResult: UpdateCheckResult?
+    @State private var exportDocument: UserDataJSONDocument?
+    @State private var isExportingUserData = false
+    @State private var isImportingUserData = false
+    @State private var pendingImport: PendingUserDataImport?
+    @State private var backupNotice: UserDataBackupNotice?
 
     var body: some View {
         Form {
@@ -2243,6 +2306,21 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
+            Section("Backup & Restore") {
+                Button {
+                    prepareExport()
+                } label: {
+                    Label("Export progress and settings", systemImage: "square.and.arrow.up")
+                }
+                Button {
+                    isImportingUserData = true
+                } label: {
+                    Label("Import progress and settings", systemImage: "square.and.arrow.down")
+                }
+                Text("A backup includes all settings, watchlist entries, watched history, resume positions, Continue Watching selections, and saved title playback speeds. Importing replaces the current app data with the backup.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
             Section("About") {
                 Text("BetterStreamflix for iOS")
                 LabeledContent("Version", value: Bundle.main.object(
@@ -2297,6 +2375,93 @@ struct SettingsView: View {
                 .presentationDetents([.medium, .large])
                 .presentationDragIndicator(.visible)
         }
+        .fileExporter(
+            isPresented: $isExportingUserData,
+            document: exportDocument,
+            contentType: .json,
+            defaultFilename: exportFilename
+        ) { result in
+            exportDocument = nil
+            switch result {
+            case .success:
+                backupNotice = UserDataBackupNotice(
+                    title: "Backup exported",
+                    message: "Your progress, history, watchlist, playback speeds, and settings were saved."
+                )
+            case let .failure(error):
+                backupNotice = UserDataBackupNotice(title: "Export failed", message: error.localizedDescription)
+            }
+        }
+        .fileImporter(
+            isPresented: $isImportingUserData,
+            allowedContentTypes: [.json],
+            allowsMultipleSelection: false
+        ) { result in
+            prepareImport(from: result)
+        }
+        .alert(
+            "Replace current app data?",
+            isPresented: Binding(
+                get: { pendingImport != nil },
+                set: { if !$0 { pendingImport = nil } }
+            ),
+            presenting: pendingImport
+        ) { pending in
+            Button("Import", role: .destructive) {
+                restore(pending)
+            }
+            Button("Cancel", role: .cancel) {
+                pendingImport = nil
+            }
+        } message: { pending in
+            Text("This backup was exported with BetterStreamflix \(pending.summary.appVersion) on \(pending.summary.exportedAt.formatted(date: .abbreviated, time: .shortened)). Your current progress, history, watchlist, playback speeds, and settings will be replaced.")
+        }
+        .alert(item: $backupNotice) { notice in
+            Alert(title: Text(notice.title), message: Text(notice.message), dismissButton: .default(Text("OK")))
+        }
+    }
+
+    private var exportFilename: String {
+        "BetterStreamflix-Backup-\(Date.now.formatted(.iso8601.year().month().day()))"
+    }
+
+    private func prepareExport() {
+        do {
+            exportDocument = UserDataJSONDocument(data: try environment.library.exportUserData())
+            isExportingUserData = true
+        } catch {
+            backupNotice = UserDataBackupNotice(title: "Export failed", message: error.localizedDescription)
+        }
+    }
+
+    private func prepareImport(from result: Result<[URL], any Error>) {
+        do {
+            guard let url = try result.get().first else { return }
+            let hasAccess = url.startAccessingSecurityScopedResource()
+            defer { if hasAccess { url.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: url)
+            let summary = try environment.library.backupSummary(for: data)
+            pendingImport = PendingUserDataImport(data: data, summary: summary)
+        } catch {
+            backupNotice = UserDataBackupNotice(title: "Import failed", message: error.localizedDescription)
+        }
+    }
+
+    private func restore(_ pending: PendingUserDataImport) {
+        pendingImport = nil
+        do {
+            try environment.library.importUserData(pending.data)
+            Task {
+                await environment.reloadAfterUserDataImport()
+                providerDomain = environment.providerDomain
+                backupNotice = UserDataBackupNotice(
+                    title: "Backup imported",
+                    message: "All progress, history, watchlist entries, playback speeds, and settings were restored."
+                )
+            }
+        } catch {
+            backupNotice = UserDataBackupNotice(title: "Import failed", message: error.localizedDescription)
+        }
     }
 
     private func languagePicker(
@@ -2342,6 +2507,38 @@ struct SettingsView: View {
             updateCheckResult = .failed
         }
     }
+}
+
+private struct UserDataJSONDocument: FileDocument {
+    static var readableContentTypes: [UTType] { [.json] }
+
+    let data: Data
+
+    init(data: Data) {
+        self.data = data
+    }
+
+    init(configuration: ReadConfiguration) throws {
+        guard let data = configuration.file.regularFileContents else {
+            throw UserDataBackupError.invalidFile
+        }
+        self.data = data
+    }
+
+    func fileWrapper(configuration: WriteConfiguration) throws -> FileWrapper {
+        FileWrapper(regularFileWithContents: data)
+    }
+}
+
+private struct PendingUserDataImport {
+    let data: Data
+    let summary: UserDataBackupSummary
+}
+
+private struct UserDataBackupNotice: Identifiable {
+    let id = UUID()
+    let title: String
+    let message: String
 }
 
 private enum UpdateCheckResult: Identifiable {
@@ -2597,9 +2794,8 @@ private func nextUnwatchedPlaybackRequest(
 ) async -> PlaybackRequest? {
     guard request.media.kind == .series, let currentEpisode = request.episode else { return nil }
     do {
-        let provider = try await environment.registry.provider(id: request.media.providerID)
         let show = request.media.seasons.isEmpty
-            ? try await provider.details(for: request.media)
+            ? try await environment.tmdbDetails(for: request.media)
             : request.media
         guard let startingSeasonIndex = show.seasons.firstIndex(where: {
             $0.number == currentEpisode.seasonNumber
@@ -2607,7 +2803,7 @@ private func nextUnwatchedPlaybackRequest(
 
         for seasonIndex in startingSeasonIndex..<show.seasons.count {
             let season = show.seasons[seasonIndex]
-            let episodes = try await provider.episodes(for: season, show: show)
+            let episodes = try await environment.tmdbEpisodes(for: season, show: show)
             let candidates: ArraySlice<MediaEpisode>
 
             if seasonIndex == startingSeasonIndex {
@@ -2676,13 +2872,15 @@ struct PlayerScreen: View {
     var body: some View {
         NativePlayerController(
             player: session.player,
-            isBuffering: session.isBuffering,
+            isBuffering: session.isBuffering || model.isLoading,
+            playbackErrorMessage: session.playbackErrorMessage,
             availableQualities: session.availableQualities,
             selectedQuality: session.selectedQuality,
             subtitleTimingOffset: session.subtitleTimingOffset,
             canAdjustSubtitleTiming: session.canAdjustSubtitleTiming,
             onQualityChanged: { session.setQuality($0) },
             onAdjustSubtitleTiming: { session.adjustSubtitleTiming(by: $0) },
+            onRetryPlayback: { session.retryPlayback() },
             onDismiss: {
                 saveProgress(markNearEndFinished: true)
                 dismiss()
@@ -2694,11 +2892,12 @@ struct PlayerScreen: View {
             library.markPlaybackStarted(request: model.request)
             await model.load(
                 registry: environment.registry,
+                sourceLookup: environment.sourceLookup,
                 subtitleRegistry: environment.subtitleRegistry,
                 enabledSubtitleProviderIDs: enabledSubtitleProviderIDs
             )
         }
-        .task(id: model.source?.url) {
+        .task(id: model.sourceRevision) {
             guard let source = model.source else { return }
             let initialPlaybackRate = library.playbackRate(
                 for: model.request,
@@ -2724,15 +2923,33 @@ struct PlayerScreen: View {
         }
         .task { await saveProgressEverySecond() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { saveProgress() }
+            switch phase {
+            case .active:
+                session.prepareForForegroundResume()
+            case .background:
+                saveProgress()
+                session.prepareForBackground()
+            case .inactive:
+                saveProgress()
+            @unknown default:
+                saveProgress()
+            }
         }
         .onChange(of: session.playbackRate) { _, rate in
             library.updatePlaybackRate(rate, for: model.request)
         }
         .onAppear {
+            session.onSourceRefreshNeeded = {
+                saveProgress()
+                return await model.refreshPlaybackSource(
+                    registry: environment.registry,
+                    sourceLookup: environment.sourceLookup
+                )
+            }
             AppOrientationController.shared.beginPlayback(using: playerOrientation)
         }
         .onDisappear {
+            session.onSourceRefreshNeeded = nil
             saveProgress(markNearEndFinished: true)
             session.stop()
             AppOrientationController.shared.endPlayback()
@@ -2800,6 +3017,7 @@ struct PlayerScreen: View {
             await model.play(
                 request,
                 registry: environment.registry,
+                sourceLookup: environment.sourceLookup,
                 subtitleRegistry: environment.subtitleRegistry,
                 enabledSubtitleProviderIDs: enabledSubtitleProviderIDs
             )

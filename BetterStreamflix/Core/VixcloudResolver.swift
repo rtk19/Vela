@@ -9,6 +9,7 @@ actor VixcloudResolver {
 
     func resolve(iframeURL: URL, referer: URL) async throws -> PlaybackSource {
         var request = URLRequest.providerRequest(url: iframeURL, referer: referer)
+        request.cachePolicy = .reloadIgnoringLocalCacheData
         request.setValue("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8", forHTTPHeaderField: "Accept")
         let response = try await client.data(for: request)
         let script = try HTMLPayloadParser.scriptContaining("window.video", from: response.data)

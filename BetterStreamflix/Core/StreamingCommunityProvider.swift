@@ -158,7 +158,11 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
             }
             components?.queryItems = query
             guard let iframeEndpoint = components?.url else { throw AppError.invalidURL }
-            let response = try await request(url: iframeEndpoint, acceptsJSON: true)
+            let response = try await request(
+                url: iframeEndpoint,
+                acceptsJSON: true,
+                cachePolicy: .reloadIgnoringLocalCacheData
+            )
             let playerURL = try HTMLPayloadParser.firstIFrameURL(from: response.data, relativeTo: iframeEndpoint)
             do {
                 return try await resolver.resolve(iframeURL: playerURL, referer: iframeEndpoint)
@@ -166,7 +170,11 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
                 throw error
             } catch {
                 // Player tokens are short-lived. Refetch once before surfacing the error.
-                let retry = try await request(url: iframeEndpoint, acceptsJSON: true)
+                let retry = try await request(
+                    url: iframeEndpoint,
+                    acceptsJSON: true,
+                    cachePolicy: .reloadIgnoringLocalCacheData
+                )
                 let refreshedURL = try HTMLPayloadParser.firstIFrameURL(from: retry.data, relativeTo: iframeEndpoint)
                 return try await resolver.resolve(iframeURL: refreshedURL, referer: iframeEndpoint)
             }
@@ -193,13 +201,20 @@ final class StreamingCommunityProvider: MediaProvider, @unchecked Sendable {
             return page
         }
 
-        private func request(url: URL, inertiaVersion: String? = nil, acceptsJSON: Bool = false) async throws -> HTTPResponse {
-            let response = try await client.data(for: .providerRequest(
+        private func request(
+            url: URL,
+            inertiaVersion: String? = nil,
+            acceptsJSON: Bool = false,
+            cachePolicy: URLRequest.CachePolicy? = nil
+        ) async throws -> HTTPResponse {
+            var request = URLRequest.providerRequest(
                 url: url,
                 referer: try? baseURL(),
                 inertiaVersion: inertiaVersion,
                 acceptsJSON: acceptsJSON
-            ))
+            )
+            if let cachePolicy { request.cachePolicy = cachePolicy }
+            let response = try await client.data(for: request)
             if let finalHost = response.response.url?.host,
                finalHost != domain,
                !blockedDomains.contains(where: { finalHost.contains($0) }) {

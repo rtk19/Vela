@@ -6,29 +6,38 @@ enum TMDBCatalogMatcher {
         using provider: any MediaProvider,
         searchPageLimit: Int = 3
     ) async throws -> MediaItem? {
-        for page in 1...max(searchPageLimit, 1) {
-            try Task.checkCancellation()
-            let results = try await provider.search(query: title.title, page: page)
-            guard !results.isEmpty else { break }
-            let candidates = results.filter { $0.kind == title.kind }
-
-            if let identifierMatch = candidates.first(where: { $0.tmdbID == title.id }) {
-                return identifierMatch.applyingTMDBMetadata(title)
+        let queries = [title.originalTitle, title.title]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .reduce(into: [String]()) { values, query in
+                guard !query.isEmpty,
+                      !values.contains(where: { $0.caseInsensitiveCompare(query) == .orderedSame }) else { return }
+                values.append(query)
             }
-
-            // Search payloads sometimes omit TMDB metadata. Verify those candidates
-            // against their full detail payload before accepting them.
-            for candidate in candidates where candidate.tmdbID == nil {
+        for query in queries {
+            for page in 1...max(searchPageLimit, 1) {
                 try Task.checkCancellation()
-                do {
-                    let details = try await provider.details(for: candidate)
-                    if details.kind == title.kind, details.tmdbID == title.id {
-                        return details.applyingTMDBMetadata(title)
+                let results = try await provider.search(query: query, page: page)
+                guard !results.isEmpty else { break }
+                let candidates = results.filter { $0.kind == title.kind }
+
+                if let identifierMatch = candidates.first(where: { $0.tmdbID == title.id }) {
+                    return identifierMatch.applyingTMDBMetadata(title)
+                }
+
+                // Search payloads sometimes omit TMDB metadata. Verify those candidates
+                // against their full detail payload before accepting them.
+                for candidate in candidates where candidate.tmdbID == nil {
+                    try Task.checkCancellation()
+                    do {
+                        let details = try await provider.details(for: candidate)
+                        if details.kind == title.kind, details.tmdbID == title.id {
+                            return details.applyingTMDBMetadata(title)
+                        }
+                    } catch where error.isCancellation {
+                        throw error
+                    } catch {
+                        continue
                     }
-                } catch where error.isCancellation {
-                    throw error
-                } catch {
-                    continue
                 }
             }
         }
@@ -71,49 +80,39 @@ final class SourceLookupCoordinator: ObservableObject {
     private var artworkTasks: [String: Task<ArtworkOutcome, Never>] = [:]
     private var artworkOperationIDs: [String: UUID] = [:]
     private var failureDismissTask: Task<Void, Never>?
+    private var playbackTask: Task<PlaybackSource, Error>?
+    private var playbackOperationID: UUID?
 
     var activeKeys: Set<String> { Set(activeTitles.keys) }
     var activeCount: Int { activeTitles.count }
 
     func resolve(_ title: TrendingTitle, registry: ProviderRegistry) async -> ResolvedMediaItem? {
-        let key = title.lookupKey
-        guard tasks[key] == nil else { return nil }
+        ResolvedMediaItem(media: .tmdbCatalogItem(from: title), tmdbMetadata: title)
+    }
 
+    func resolvePlaybackSource(
+        for request: PlaybackRequest,
+        registry: ProviderRegistry
+    ) async throws -> PlaybackSource {
+        playbackTask?.cancel()
         let operationID = UUID()
-        let task = Task { () -> Outcome in
-            do {
-                let provider = try await registry.selected()
-                guard let item = try await TMDBCatalogMatcher.resolve(title, using: provider) else {
-                    return .failed("\(title.title) (TMDB ID \(title.id)) is not available in the current streaming catalog.")
-                }
-                try Task.checkCancellation()
-                return .found(ResolvedMediaItem(media: item, tmdbMetadata: title))
-            } catch where error.isCancellation {
-                return .cancelled
-            } catch {
-                return .failed(error.localizedDescription)
+        playbackOperationID = operationID
+        let task = Task<PlaybackSource, Error> {
+            let provider = try await registry.selected()
+            let providerRequest = try await Self.providerRequest(for: request, using: provider)
+            try Task.checkCancellation()
+            return try await provider.playbackSource(for: providerRequest)
+        }
+        playbackTask = task
+        defer {
+            if playbackOperationID == operationID {
+                playbackTask = nil
+                playbackOperationID = nil
             }
         }
-
-        activeTitles[key] = title
-        operationIDs[key] = operationID
-        tasks[key] = task
-
-        let outcome = await task.value
-        guard operationIDs[key] == operationID else { return nil }
-        activeTitles[key] = nil
-        operationIDs[key] = nil
-        tasks[key] = nil
-
-        switch outcome {
-        case .found(let item):
-            return item
-        case .failed(let message):
-            showFailure(message)
-            return nil
-        case .cancelled:
-            return nil
-        }
+        let source = try await task.value
+        guard playbackOperationID == operationID else { throw CancellationError() }
+        return source
     }
 
     func resolveArtwork(for item: MediaItem, environment: AppEnvironment) async -> Data? {
@@ -157,6 +156,47 @@ final class SourceLookupCoordinator: ObservableObject {
         artworkOperationIDs.removeAll()
         activeTitles.removeAll()
         activeArtworkKeys.removeAll()
+        playbackTask?.cancel()
+        playbackTask = nil
+        playbackOperationID = nil
+    }
+
+    private static func providerRequest(
+        for request: PlaybackRequest,
+        using provider: any MediaProvider
+    ) async throws -> PlaybackRequest {
+        let media = request.media
+        let title = TrendingTitle(
+            id: media.tmdbID ?? -1,
+            kind: media.kind,
+            title: media.title,
+            originalTitle: media.originalTitle,
+            overview: media.overview ?? "",
+            releaseDate: media.releaseDate,
+            rating: media.rating,
+            genreNames: media.genres.map(\.name),
+            posterURL: media.posterURL,
+            backdropURL: media.backdropURL
+        )
+        guard title.id >= 0,
+              let providerSummary = try await TMDBCatalogMatcher.resolve(title, using: provider) else {
+            throw AppError.noStream
+        }
+        try Task.checkCancellation()
+        guard media.kind == .series, let episode = request.episode else {
+            return PlaybackRequest(media: providerSummary, episode: nil)
+        }
+
+        let providerShow = try await provider.details(for: providerSummary)
+        guard let providerSeason = providerShow.seasons.first(where: {
+            $0.number == episode.seasonNumber
+        }) else { throw AppError.noStream }
+        let providerEpisodes = try await provider.episodes(for: providerSeason, show: providerShow)
+        try Task.checkCancellation()
+        guard let providerEpisode = providerEpisodes.first(where: {
+            $0.number == episode.number && $0.seasonNumber == episode.seasonNumber
+        }) else { throw AppError.noStream }
+        return PlaybackRequest(media: providerShow, episode: providerEpisode)
     }
 
     private func showFailure(_ message: String) {
@@ -185,20 +225,6 @@ final class HomeViewModel: ObservableObject {
     @Published private(set) var isTrendingLoading = false
     @Published var errorMessage: String?
     @Published var trendingMessage: String?
-
-    func load(registry: ProviderRegistry, force: Bool = false) async {
-        guard force || shelves.isEmpty else { return }
-        isLoading = true
-        defer { isLoading = false }
-        do {
-            let provider = try await registry.selected()
-            shelves = try await provider.home().filter {
-                !$0.title.localizedCaseInsensitiveContains("trending")
-            }
-        }
-        catch where error.isCancellation { }
-        catch { errorMessage = error.localizedDescription }
-    }
 
     func loadTrending(environment: AppEnvironment, force: Bool = false) async {
         guard force || trendingTitles.isEmpty else { return }
@@ -309,7 +335,7 @@ final class SearchViewModel: ObservableObject {
     @Published var errorMessage: String?
     private var task: Task<Void, Never>?
 
-    func search(registry: ProviderRegistry) {
+    func search(environment: AppEnvironment) {
         task?.cancel()
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !value.isEmpty else { results = []; return }
@@ -319,8 +345,9 @@ final class SearchViewModel: ObservableObject {
             isLoading = true
             defer { isLoading = false }
             do {
-                let provider = try await registry.selected()
-                results = try await provider.search(query: value, page: 1)
+                results = try await environment.tmdbSearch(query: value).titles.map {
+                    MediaItem.tmdbCatalogItem(from: $0)
+                }
             }
             catch where error.isCancellation { }
             catch { errorMessage = error.localizedDescription }
@@ -346,38 +373,20 @@ final class DetailsViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         do {
-            let provider = try await environment.registry.provider(id: item.providerID)
-            let providerItem = try await provider.details(for: item)
-            if let tmdbMetadataSnapshot {
-                item = providerItem.applyingTMDBMetadata(tmdbMetadataSnapshot)
-            } else {
-                do {
-                    if let metadata = try await environment.tmdbTitleMetadata(for: providerItem) {
-                        item = providerItem.applyingTMDBMetadata(metadata)
-                    } else {
-                        item = providerItem
-                    }
-                } catch where error.isCancellation {
-                    throw error
-                } catch {
-                    item = providerItem
-                    errorMessage = "TMDB metadata could not be loaded: \(error.localizedDescription)"
-                }
-            }
+            item = try await environment.tmdbDetails(for: item)
             if let season = preferredSeasonNumber.flatMap({ preferredNumber in
                 item.seasons.first { $0.number == preferredNumber }
             }) ?? item.seasons.first {
-                await loadEpisodes(season, registry: environment.registry)
+                await loadEpisodes(season, environment: environment)
             }
         } catch where error.isCancellation { }
         catch { errorMessage = error.localizedDescription }
     }
 
-    func loadEpisodes(_ season: MediaSeason, registry: ProviderRegistry) async {
+    func loadEpisodes(_ season: MediaSeason, environment: AppEnvironment) async {
         guard episodes[season.id] == nil else { return }
         do {
-            let provider = try await registry.provider(id: item.providerID)
-            episodes[season.id] = try await provider.episodes(for: season, show: item)
+            episodes[season.id] = try await environment.tmdbEpisodes(for: season, show: item)
         } catch where error.isCancellation { }
         catch { errorMessage = error.localizedDescription }
     }
@@ -388,6 +397,7 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var source: PlaybackSource?
     @Published private(set) var thirdPartySubtitles: [SubtitleSource] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var sourceRevision = 0
     @Published var errorMessage: String?
 
     @Published private(set) var request: PlaybackRequest
@@ -396,6 +406,7 @@ final class PlayerViewModel: ObservableObject {
 
     func load(
         registry: ProviderRegistry,
+        sourceLookup: SourceLookupCoordinator,
         subtitleRegistry: SubtitleProviderRegistry,
         enabledSubtitleProviderIDs: Set<String>,
         force: Bool = false
@@ -418,8 +429,11 @@ final class PlayerViewModel: ObservableObject {
                     "Subtitle lookup skipped: missing or invalid IMDb ID"
                 )
             }
-            let provider = try await registry.provider(id: playbackRequest.media.providerID)
-            async let playbackSource = provider.playbackSource(for: playbackRequest)
+            async let playbackSource = playbackSourceWithRetry(
+                sourceLookup: sourceLookup,
+                registry: registry,
+                request: playbackRequest
+            )
             async let fetchedSubtitles: [SubtitleSource] = {
                 guard let subtitleLookup else { return [] }
                 return await subtitleRegistry.subtitles(
@@ -433,6 +447,7 @@ final class PlayerViewModel: ObservableObject {
             guard !Task.isCancelled else { return }
             thirdPartySubtitles = resolvedSubtitles
             source = resolvedSource
+            sourceRevision &+= 1
         } catch where error.isCancellation { }
         catch { errorMessage = error.localizedDescription }
     }
@@ -440,6 +455,7 @@ final class PlayerViewModel: ObservableObject {
     func play(
         _ request: PlaybackRequest,
         registry: ProviderRegistry,
+        sourceLookup: SourceLookupCoordinator,
         subtitleRegistry: SubtitleProviderRegistry,
         enabledSubtitleProviderIDs: Set<String>
     ) async {
@@ -448,9 +464,53 @@ final class PlayerViewModel: ObservableObject {
         thirdPartySubtitles = []
         await load(
             registry: registry,
+            sourceLookup: sourceLookup,
             subtitleRegistry: subtitleRegistry,
             enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
             force: true
         )
+    }
+
+    func refreshPlaybackSource(
+        registry: ProviderRegistry,
+        sourceLookup: SourceLookupCoordinator
+    ) async -> Bool {
+        guard !isLoading else { return false }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let refreshedSource = try await playbackSourceWithRetry(
+                sourceLookup: sourceLookup,
+                registry: registry,
+                request: request
+            )
+            guard !Task.isCancelled else { return false }
+            source = refreshedSource
+            sourceRevision &+= 1
+            return true
+        } catch where error.isCancellation { }
+        catch { return false }
+        return false
+    }
+
+    private func playbackSourceWithRetry(
+        sourceLookup: SourceLookupCoordinator,
+        registry: ProviderRegistry,
+        request: PlaybackRequest,
+        maximumAttempts: Int = 3
+    ) async throws -> PlaybackSource {
+        var lastError: (any Error)?
+        for attempt in 0..<maximumAttempts {
+            do {
+                return try await sourceLookup.resolvePlaybackSource(for: request, registry: registry)
+            } catch where error.isCancellation {
+                throw error
+            } catch {
+                lastError = error
+                guard attempt < maximumAttempts - 1 else { break }
+                try await Task.sleep(for: .seconds(attempt + 1))
+            }
+        }
+        throw lastError ?? AppError.providerUnavailable("The video source is unavailable.")
     }
 }

@@ -554,9 +554,9 @@ enum HLSSubtitleInjector {
         source: PlaybackSource,
         renditions: [HLSSubtitleRendition],
         timingOffset: Double = 0,
+        selectedQualityHeight: Int? = nil,
         client: any HTTPClientProtocol
     ) async throws -> InjectedHLSSubtitleAsset {
-        guard !renditions.isEmpty else { throw AppError.decoding("HLS subtitle renditions") }
         var request = URLRequest(url: source.url)
         request.setValue("application/vnd.apple.mpegurl,application/x-mpegURL,*/*;q=0.8", forHTTPHeaderField: "Accept")
         for (name, value) in source.headers { request.setValue(value, forHTTPHeaderField: name) }
@@ -589,7 +589,8 @@ enum HLSSubtitleInjector {
                 playlist,
                 sourceURL: sourceURL,
                 renditions: manifestRenditions,
-                preferredPeakBitRate: source.preferredPeakBitRate
+                preferredPeakBitRate: source.preferredPeakBitRate,
+                selectedQualityHeight: selectedQualityHeight
             )
             try Data(master.utf8).write(to: masterURL, options: .atomic)
             for (index, rendition) in renditions.enumerated() {
@@ -624,9 +625,16 @@ enum HLSSubtitleInjector {
         _ playlist: String,
         sourceURL: URL,
         renditions: [HLSSubtitleManifestRendition],
-        preferredPeakBitRate: Double? = nil
+        preferredPeakBitRate: Double? = nil,
+        selectedQualityHeight: Int? = nil
     ) -> String {
-        let lines = playlist.components(separatedBy: .newlines)
+        let qualityFilteredPlaylist = selectedQualityHeight.map {
+            HLSMasterPlaylistParser.playlist(
+                playlist,
+                filteredToHeight: $0
+            )
+        } ?? playlist
+        let lines = qualityFilteredPlaylist.components(separatedBy: .newlines)
         let isMasterPlaylist = lines.contains { $0.hasPrefix("#EXT-X-STREAM-INF:") }
 
         guard isMasterPlaylist else {

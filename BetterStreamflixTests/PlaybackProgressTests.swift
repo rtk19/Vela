@@ -189,6 +189,25 @@ struct PlaybackProgressTests {
     }
 
     @MainActor
+    @Test("An unreleased queued episode is removed while the completed-series checkpoint is restored")
+    func unreleasedQueuedEpisodeIsDeferred() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let released = request(episodeNumber: 2)
+        let unreleased = request(episodeNumber: 3)
+        let library = LibraryStore(directory: directory)
+
+        library.markWatched(request: released)
+        library.promoteToContinueWatching(unreleased)
+        library.deferUnavailableNextUp(try #require(library.continueWatching.first))
+
+        #expect(library.continueWatching.isEmpty)
+        #expect(library.completedSeriesRequests.first?.episode?.number == 2)
+        #expect(LibraryStore(directory: directory).completedSeriesRequests.first?.episode?.number == 2)
+    }
+
+    @MainActor
     @Test("Playback speed persists per title and removal resets it to Settings")
     func playbackSpeedMemory() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -256,6 +275,56 @@ struct PlaybackProgressTests {
 
         #expect(reloadedLibrary.watchlist == [newItem, legacyItem])
         #expect(reloadedLibrary.isInWatchlist(newItem))
+    }
+
+    @Test("User data backup restores preferences and all application-support files exactly")
+    func userDataBackupRoundTrip() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let dataDirectory = root.appending(path: "BetterStreamflix", directoryHint: .isDirectory)
+        let suiteName = "BetterStreamflixTests.Backup.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        try Data("progress-before-export".utf8).write(
+            to: dataDirectory.appending(path: "progress.json")
+        )
+        let nestedDirectory = dataDirectory.appending(path: "future-feature", directoryHint: .isDirectory)
+        try FileManager.default.createDirectory(at: nestedDirectory, withIntermediateDirectories: true)
+        try Data([0, 1, 2, 3]).write(to: nestedDirectory.appending(path: ".history-data"))
+        defaults.set("purple", forKey: "appearance.themeColor")
+        defaults.set(1.75, forKey: "player.defaultPlaybackRate")
+
+        let service = UserDataBackupService(
+            applicationSupportDirectory: dataDirectory,
+            userDefaults: defaults,
+            preferencesDomain: suiteName,
+            appVersion: "9.9.9"
+        )
+        let exportedAt = Date(timeIntervalSince1970: 1_800_000_000)
+        let backup = try service.exportData(now: exportedAt)
+
+        try Data("changed".utf8).write(to: dataDirectory.appending(path: "progress.json"))
+        try Data("remove-me".utf8).write(to: dataDirectory.appending(path: "created-after-export.json"))
+        defaults.set("green", forKey: "appearance.themeColor")
+        defaults.set(true, forKey: "future.setting")
+
+        try service.restore(from: backup)
+
+        #expect(try Data(contentsOf: dataDirectory.appending(path: "progress.json")) == Data("progress-before-export".utf8))
+        #expect(try Data(contentsOf: nestedDirectory.appending(path: ".history-data")) == Data([0, 1, 2, 3]))
+        #expect(!FileManager.default.fileExists(atPath: dataDirectory.appending(path: "created-after-export.json").path))
+        #expect(defaults.string(forKey: "appearance.themeColor") == "purple")
+        #expect(defaults.double(forKey: "player.defaultPlaybackRate") == 1.75)
+        #expect(defaults.object(forKey: "future.setting") == nil)
+        #expect(try service.summary(for: backup) == UserDataBackupSummary(
+            exportedAt: exportedAt,
+            appVersion: "9.9.9",
+            fileCount: 2
+        ))
     }
 
     private func request(seasonNumber: Int = 1, episodeNumber: Int) -> PlaybackRequest {

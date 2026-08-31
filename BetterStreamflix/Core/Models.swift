@@ -10,6 +10,7 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
     let providerID: String
     let kind: MediaKind
     let title: String
+    let originalTitle: String?
     let overview: String?
     let releaseDate: String?
     let rating: Double?
@@ -28,6 +29,7 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
         providerID: String,
         kind: MediaKind,
         title: String,
+        originalTitle: String? = nil,
         overview: String? = nil,
         releaseDate: String? = nil,
         rating: Double? = nil,
@@ -45,6 +47,7 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
         self.providerID = providerID
         self.kind = kind
         self.title = title
+        self.originalTitle = originalTitle
         self.overview = overview
         self.releaseDate = releaseDate
         self.rating = rating
@@ -61,6 +64,8 @@ struct MediaItem: Identifiable, Codable, Hashable, Sendable {
 }
 
 extension MediaItem {
+    static let tmdbCatalogProviderID = "tmdb"
+
     var artworkIdentityKey: String {
         if let tmdbID {
             return "tmdb:\(kind.rawValue):\(tmdbID)"
@@ -76,6 +81,7 @@ extension MediaItem {
             providerID: providerID,
             kind: kind,
             title: metadata.title,
+            originalTitle: metadata.originalTitle ?? originalTitle,
             overview: tmdbOverview.isEmpty ? nil : tmdbOverview,
             releaseDate: metadata.releaseDate,
             rating: metadata.rating,
@@ -90,6 +96,25 @@ extension MediaItem {
             },
             cast: cast,
             seasons: seasons
+        )
+    }
+
+    static func tmdbCatalogItem(from title: TrendingTitle) -> MediaItem {
+        MediaItem(
+            id: "tmdb:\(title.kind.rawValue):\(title.id)",
+            providerID: tmdbCatalogProviderID,
+            kind: title.kind,
+            title: title.title,
+            originalTitle: title.originalTitle,
+            overview: title.overview.isEmpty ? nil : title.overview,
+            releaseDate: title.releaseDate,
+            rating: title.rating,
+            tmdbID: title.id,
+            posterURL: title.posterURL,
+            backdropURL: title.backdropURL,
+            genres: title.genreNames.enumerated().map { index, name in
+                MediaGenre(id: "tmdb-\(title.id)-genre-\(index)", name: name)
+            }
         )
     }
 }

@@ -95,7 +95,7 @@ struct TMDBCatalogMatcherTests {
     }
 
     @MainActor
-    @Test("Carries the exact TMDB list snapshot into title details")
+    @Test("Opens a TMDB title without consulting the streaming provider")
     func carriesTMDBSnapshotIntoDetails() async throws {
         let providerItem = MediaItem(
             id: "mutiny",
@@ -124,7 +124,31 @@ struct TMDBCatalogMatcherTests {
 
         #expect(resolved?.tmdbMetadata?.rating == 6.4)
         #expect(resolved?.media.rating == 6.4)
-        #expect(resolved?.media.quality == "HD")
+        #expect(resolved?.media.providerID == MediaItem.tmdbCatalogProviderID)
+        #expect(resolved?.media.id == "tmdb:movie:1234")
+        #expect(await provider.searchRequestCount == 0)
+    }
+
+    @MainActor
+    @Test("A newer playback lookup cancels the previous title lookup")
+    func latestPlaybackLookupWins() async throws {
+        let provider = LatestPlaybackProvider()
+        let registry = ProviderRegistry(providers: [provider], selectedProviderID: provider.id)
+        let coordinator = SourceLookupCoordinator()
+        let first = PlaybackRequest(media: .tmdbCatalogItem(from: tmdbTitle(id: 1, title: "First")), episode: nil)
+        let second = PlaybackRequest(media: .tmdbCatalogItem(from: tmdbTitle(id: 2, title: "Second")), episode: nil)
+
+        let firstTask = Task {
+            try await coordinator.resolvePlaybackSource(for: first, registry: registry)
+        }
+        try await Task.sleep(for: .milliseconds(50))
+        let secondSource = try await coordinator.resolvePlaybackSource(for: second, registry: registry)
+
+        await #expect(throws: CancellationError.self) {
+            _ = try await firstTask.value
+        }
+        #expect(secondSource.url.absoluteString == "https://stream.example/2.m3u8")
+        #expect(await provider.didCancelFirstLookup)
     }
 
     private func tmdbTitle(id: Int, title: String) -> TrendingTitle {
@@ -152,12 +176,53 @@ struct TMDBCatalogMatcherTests {
     }
 }
 
-private struct MatcherProvider: MediaProvider {
+private actor LatestPlaybackProvider: MediaProvider {
+    let id = "latest-playback"
+    let displayName = "Latest Playback"
+    let languageCode = "en"
+    private(set) var didCancelFirstLookup = false
+
+    func home() async throws -> [MediaShelf] { [] }
+    func movies(page: Int) async throws -> [MediaItem] { [] }
+    func series(page: Int) async throws -> [MediaItem] { [] }
+    func search(query: String, page: Int) async throws -> [MediaItem] {
+        let tmdbID = query == "First" ? 1 : 2
+        return [MediaItem(
+            id: "provider-\(tmdbID)",
+            providerID: id,
+            kind: .movie,
+            title: query,
+            tmdbID: tmdbID
+        )]
+    }
+    func details(for item: MediaItem) async throws -> MediaItem { item }
+    func episodes(for season: MediaSeason, show: MediaItem) async throws -> [MediaEpisode] { [] }
+    func playbackSource(for request: PlaybackRequest) async throws -> PlaybackSource {
+        if request.media.tmdbID == 1 {
+            do {
+                try await Task.sleep(for: .seconds(10))
+            } catch {
+                didCancelFirstLookup = true
+                throw error
+            }
+        }
+        let id = request.media.tmdbID ?? 0
+        return PlaybackSource(
+            url: URL(string: "https://stream.example/\(id).m3u8")!,
+            headers: [:],
+            subtitles: [],
+            preferredPeakBitRate: nil
+        )
+    }
+}
+
+private actor MatcherProvider: MediaProvider {
     let id = "matcher"
     let displayName = "Matcher"
     let languageCode = "en"
     let searchPages: [Int: [MediaItem]]
     let detailsByID: [String: MediaItem]
+    private(set) var searchRequestCount = 0
 
     init(searchPages: [Int: [MediaItem]], detailsByID: [String: MediaItem] = [:]) {
         self.searchPages = searchPages
@@ -167,7 +232,10 @@ private struct MatcherProvider: MediaProvider {
     func home() async throws -> [MediaShelf] { [] }
     func movies(page: Int) async throws -> [MediaItem] { [] }
     func series(page: Int) async throws -> [MediaItem] { [] }
-    func search(query: String, page: Int) async throws -> [MediaItem] { searchPages[page] ?? [] }
+    func search(query: String, page: Int) async throws -> [MediaItem] {
+        searchRequestCount += 1
+        return searchPages[page] ?? []
+    }
     func details(for item: MediaItem) async throws -> MediaItem { detailsByID[item.id] ?? item }
     func episodes(for season: MediaSeason, show: MediaItem) async throws -> [MediaEpisode] { [] }
     func playbackSource(for request: PlaybackRequest) async throws -> PlaybackSource {

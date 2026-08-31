@@ -183,6 +183,157 @@ struct TMDBClientTests {
         #expect(request?.url?.path == "/3/tv/202")
     }
 
+    @Test("Builds a complete TMDB series detail page")
+    func seriesDetails() async throws {
+        let transport = RecordingTMDBTransport(data: Data(
+            """
+            {
+              "id": 202,
+              "name": "TMDB Series",
+              "overview": "Authoritative synopsis.",
+              "first_air_date": "2024-05-08",
+              "vote_average": 8.1,
+              "episode_run_time": [52],
+              "external_ids": {"imdb_id": "tt1234567"},
+              "genres": [{"id": 18, "name": "Drama"}],
+              "poster_path": "/poster.jpg",
+              "backdrop_path": "/backdrop.jpg",
+              "seasons": [
+                {"id": 10, "name": "Specials", "season_number": 0, "episode_count": 0, "poster_path": null},
+                {"id": 11, "name": "Season 1", "season_number": 1, "episode_count": 8, "poster_path": "/season.jpg"}
+              ],
+              "credits": {"cast": [{"id": 99, "name": "Example Actor", "profile_path": "/actor.jpg"}]}
+            }
+            """.utf8
+        ))
+        let client = TMDBClient(client: transport)
+        let summary = MediaItem.tmdbCatalogItem(from: TrendingTitle(
+            id: 202,
+            kind: .series,
+            title: "Summary Name",
+            overview: "",
+            releaseDate: nil,
+            rating: nil,
+            genreNames: [],
+            posterURL: nil,
+            backdropURL: nil
+        ))
+
+        let details = try await client.details(for: summary, accessToken: "secret-token")
+
+        #expect(details.id == summary.id)
+        #expect(details.providerID == MediaItem.tmdbCatalogProviderID)
+        #expect(details.title == "TMDB Series")
+        #expect(details.imdbID == "tt1234567")
+        #expect(details.runtimeMinutes == 52)
+        #expect(details.seasons.map(\.number) == [1])
+        #expect(details.seasons.first?.posterURL?.absoluteString.hasSuffix("/season.jpg") == true)
+        #expect(details.cast.first?.name == "Example Actor")
+        let request = await transport.lastRequest
+        #expect(request?.url?.path == "/3/tv/202")
+        #expect(request?.url?.query?.contains("append_to_response=external_ids,credits") == true)
+    }
+
+    @Test("Loads episode names, synopses and stills from TMDB")
+    func seasonEpisodes() async throws {
+        let transport = RecordingTMDBTransport(data: Data(
+            """
+            {
+              "episodes": [{
+                "id": 701,
+                "name": "Pilot",
+                "overview": "The story begins.",
+                "season_number": 1,
+                "episode_number": 1,
+                "air_date": "2020-01-01",
+                "still_path": "/pilot.jpg"
+              }]
+            }
+            """.utf8
+        ))
+        let client = TMDBClient(client: transport)
+        let show = MediaItem(
+            id: "tmdb:tv:202",
+            providerID: MediaItem.tmdbCatalogProviderID,
+            kind: .series,
+            title: "Example",
+            tmdbID: 202
+        )
+        let season = MediaSeason(id: "season-1", number: 1, title: "Season 1", posterURL: nil)
+
+        let episodes = try await client.episodes(
+            for: season,
+            show: show,
+            accessToken: "secret-token"
+        )
+
+        #expect(episodes.first?.title == "Pilot")
+        #expect(episodes.first?.overview == "The story begins.")
+        #expect(episodes.first?.id == "tmdb:tv:202/tmdb-s1e1")
+        #expect(episodes.first?.posterURL?.absoluteString.hasSuffix("/pilot.jpg") == true)
+        #expect(await transport.lastRequest?.url?.path == "/3/tv/202/season/1")
+    }
+
+    @Test("Season episodes include only episodes released by the selected date")
+    func seasonEpisodesExcludeUnreleasedEpisodes() async throws {
+        let transport = RecordingTMDBTransport(data: Data(
+            """
+            {
+              "episodes": [
+                {"id": 701, "name": "Released", "season_number": 1, "episode_number": 1, "air_date": "2026-08-30"},
+                {"id": 702, "name": "Today", "season_number": 1, "episode_number": 2, "air_date": "2026-08-31"},
+                {"id": 703, "name": "Scheduled", "season_number": 1, "episode_number": 3, "air_date": "2026-09-01"},
+                {"id": 704, "name": "Undated", "season_number": 1, "episode_number": 4, "air_date": null}
+              ]
+            }
+            """.utf8
+        ))
+        let client = TMDBClient(client: transport)
+        let show = MediaItem(
+            id: "tmdb:tv:202",
+            providerID: MediaItem.tmdbCatalogProviderID,
+            kind: .series,
+            title: "Example",
+            tmdbID: 202
+        )
+        let season = MediaSeason(id: "season-1", number: 1, title: "Season 1", posterURL: nil)
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = TimeZone(secondsFromGMT: 0)!
+        let date = calendar.date(from: DateComponents(year: 2026, month: 8, day: 31))!
+
+        let episodes = try await client.episodes(
+            for: season,
+            show: show,
+            accessToken: "secret-token",
+            asOf: date
+        )
+
+        #expect(episodes.map(\.number) == [1, 2])
+    }
+
+    @Test("Search uses TMDB multi search and ignores people")
+    func multiSearch() async throws {
+        let transport = RecordingTMDBTransport(data: Data(
+            """
+            {
+              "page": 1,
+              "total_pages": 1,
+              "results": [
+                {"id": 1, "media_type": "person", "name": "Someone"},
+                {"id": 2, "media_type": "movie", "title": "A Movie", "overview": "", "genre_ids": [], "poster_path": "/movie.jpg", "adult": false}
+              ]
+            }
+            """.utf8
+        ))
+        let client = TMDBClient(client: transport)
+
+        let result = try await client.search(query: "A Movie", accessToken: "secret-token")
+
+        #expect(result.titles.map(\.title) == ["A Movie"])
+        #expect(await transport.lastRequest?.url?.path == "/3/search/multi")
+        #expect(await transport.lastRequest?.url?.query?.contains("query=A%20Movie") == true)
+    }
+
     @Test("Searches TMDB for provider titles that have no TMDB ID")
     func artworkSearchFallback() async throws {
         let transport = RecordingTMDBTransport(data: Data(

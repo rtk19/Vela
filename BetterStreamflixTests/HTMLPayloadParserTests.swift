@@ -211,6 +211,50 @@ struct HTMLPayloadParserTests {
         #expect(StreamQuality.closest(to: 0, in: qualities) == nil)
     }
 
+    @Test("Manual HLS quality keeps only the selected resolution")
+    func filtersHLSMasterPlaylistToSelectedQuality() {
+        let playlist = #"""
+        #EXTM3U
+        #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="audio",NAME="English",URI="audio/en.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=854x480,AUDIO="audio"
+        480/index.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720,AUDIO="audio"
+        720/index.m3u8
+        #EXT-X-I-FRAME-STREAM-INF:BANDWIDTH=300000,RESOLUTION=1280x720,URI="720/iframes.m3u8"
+        #EXT-X-STREAM-INF:BANDWIDTH=6200000,RESOLUTION=1920x1080,AUDIO="audio"
+        1080/index.m3u8
+        """#
+
+        let filtered = HLSMasterPlaylistParser.playlist(playlist, filteredToHeight: 720)
+
+        #expect(filtered.contains("720/index.m3u8"))
+        #expect(filtered.contains("720/iframes.m3u8"))
+        #expect(filtered.contains(#"TYPE=AUDIO,GROUP-ID="audio""#))
+        #expect(!filtered.contains("480/index.m3u8"))
+        #expect(!filtered.contains("1080/index.m3u8"))
+        #expect(HLSMasterPlaylistParser.qualities(from: filtered).map(\.height) == [720])
+    }
+
+    @Test("Escalates a stagnant stream from play retry to bounded source recovery")
+    func playbackRecoveryPolicy() {
+        #expect(PlaybackRecoveryPolicy.action(
+            stagnantChecks: 0,
+            sourceRefreshAttempts: 0
+        ) == .keepWaiting)
+        #expect(PlaybackRecoveryPolicy.action(
+            stagnantChecks: 1,
+            sourceRefreshAttempts: 0
+        ) == .retryPlay)
+        #expect(PlaybackRecoveryPolicy.action(
+            stagnantChecks: 2,
+            sourceRefreshAttempts: 0
+        ) == .refreshSource)
+        #expect(PlaybackRecoveryPolicy.action(
+            stagnantChecks: 2,
+            sourceRefreshAttempts: PlaybackRecoveryPolicy.maximumSourceRefreshes
+        ) == .fail)
+    }
+
     @Test("Builds Wizdom's movie and episode routes and maps its response")
     func wizdomRoutesAndResponse() async throws {
         let json = #"{"subtitles":[{"url":"https://example.com/42.srt","lang":"heb","id":"[WIZDOM]Example.Release.1080p"},{"url":"https://example.com/43.srt","lang":"heb","id":"[WIZDOM]Example.Release.1080p"}]}"#

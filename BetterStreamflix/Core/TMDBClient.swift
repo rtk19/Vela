@@ -6,6 +6,7 @@ struct TrendingTitle: Identifiable, Hashable, Sendable {
     let id: Int
     let kind: MediaKind
     let title: String
+    var originalTitle: String? = nil
     let overview: String
     let releaseDate: String?
     let rating: Double?
@@ -142,6 +143,89 @@ actor TMDBClient {
             )
         }
         return result
+    }
+
+    func search(
+        query: String,
+        accessToken: String,
+        language: String = "en-US",
+        page: Int = 1
+    ) async throws -> TMDBTitlePage {
+        let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedQuery.isEmpty else {
+            return TMDBTitlePage(titles: [], page: page, totalPages: page)
+        }
+        return try await fetch(
+            path: "search/multi",
+            accessToken: accessToken,
+            language: language,
+            page: page,
+            fallbackKind: nil,
+            extraQueryItems: [
+                URLQueryItem(name: "query", value: trimmedQuery),
+                URLQueryItem(name: "include_adult", value: "false"),
+            ]
+        )
+    }
+
+    func details(
+        for item: MediaItem,
+        accessToken: String,
+        language: String = "en-US"
+    ) async throws -> MediaItem {
+        guard let tmdbID = item.tmdbID else {
+            guard let metadata = try await titleMetadata(
+                for: item,
+                accessToken: accessToken,
+                language: language
+            ) else { throw AppError.decoding("TMDB title identity") }
+            return try await details(
+                for: item.applyingTMDBMetadata(metadata),
+                accessToken: accessToken,
+                language: language
+            )
+        }
+        guard !accessToken.isEmpty else { throw TMDBError.missingAccessToken }
+        var components = URLComponents(
+            string: "https://api.themoviedb.org/3/\(item.kind == .movie ? "movie" : "tv")/\(tmdbID)"
+        )
+        components?.queryItems = [
+            URLQueryItem(name: "language", value: language),
+            URLQueryItem(name: "append_to_response", value: "external_ids,credits"),
+        ]
+        guard let url = components?.url else { throw AppError.invalidURL }
+        let response = try await client.data(for: authorizedRequest(url: url, accessToken: accessToken))
+        do {
+            return try JSONDecoder().decode(TMDBDetailsPayload.self, from: response.data)
+                .mediaItem(replacing: item)
+        } catch {
+            throw AppError.decoding(error.localizedDescription)
+        }
+    }
+
+    func episodes(
+        for season: MediaSeason,
+        show: MediaItem,
+        accessToken: String,
+        language: String = "en-US",
+        asOf date: Date = Date()
+    ) async throws -> [MediaEpisode] {
+        guard show.kind == .series, let tmdbID = show.tmdbID else { return [] }
+        guard !accessToken.isEmpty else { throw TMDBError.missingAccessToken }
+        var components = URLComponents(
+            string: "https://api.themoviedb.org/3/tv/\(tmdbID)/season/\(season.number)"
+        )
+        components?.queryItems = [URLQueryItem(name: "language", value: language)]
+        guard let url = components?.url else { throw AppError.invalidURL }
+        let response = try await client.data(for: authorizedRequest(url: url, accessToken: accessToken))
+        do {
+            let payload = try JSONDecoder().decode(TMDBSeasonPayload.self, from: response.data)
+            return payload.episodes
+                .filter { $0.hasAired(asOf: date) }
+                .map { $0.mediaEpisode(show: show, fallbackSeason: season.number) }
+        } catch {
+            throw AppError.decoding(error.localizedDescription)
+        }
     }
 
     func titleMetadata(
@@ -451,6 +535,15 @@ actor TMDBClient {
         } catch {
             throw AppError.decoding(error.localizedDescription)
         }
+    }
+
+    private func authorizedRequest(url: URL, accessToken: String) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 20
+        request.cachePolicy = .returnCacheDataElseLoad
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.setValue("Bearer \(accessToken)", forHTTPHeaderField: "Authorization")
+        return request
     }
 
     private func artwork(
@@ -818,6 +911,8 @@ private struct TMDBMetadataPayload: Decodable, Sendable {
     let id: Int
     let title: String?
     let name: String?
+    let originalTitle: String?
+    let originalName: String?
     let overview: String?
     let releaseDate: String?
     let firstAirDate: String?
@@ -830,6 +925,8 @@ private struct TMDBMetadataPayload: Decodable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case id, title, name, overview, genres, adult
+        case originalTitle = "original_title"
+        case originalName = "original_name"
         case releaseDate = "release_date"
         case firstAirDate = "first_air_date"
         case voteAverage = "vote_average"
@@ -844,7 +941,7 @@ private struct TMDBMetadataPayload: Decodable, Sendable {
         guard adult != true, let displayTitle else { return nil }
         let names = genres?.map(\.name)
             ?? (genreIDs ?? []).compactMap { TMDBGenres.names[$0] }
-        return TrendingTitle(
+        var result = TrendingTitle(
             id: id,
             kind: kind,
             title: displayTitle,
@@ -855,10 +952,176 @@ private struct TMDBMetadataPayload: Decodable, Sendable {
             posterURL: posterPath.flatMap(Self.imageURL),
             backdropURL: backdropPath.flatMap(Self.imageURL)
         )
+        result.originalTitle = originalTitle ?? originalName
+        return result
     }
 
     private static func imageURL(path: String) -> URL? {
         URL(string: "https://image.tmdb.org/t/p/original\(path)")
+    }
+}
+
+private struct TMDBDetailsPayload: Decodable, Sendable {
+    struct Genre: Decodable, Sendable {
+        let id: Int
+        let name: String
+    }
+
+    struct Season: Decodable, Sendable {
+        let id: Int
+        let name: String?
+        let seasonNumber: Int
+        let episodeCount: Int?
+        let posterPath: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name
+            case seasonNumber = "season_number"
+            case episodeCount = "episode_count"
+            case posterPath = "poster_path"
+        }
+    }
+
+    struct ExternalIDs: Decodable, Sendable {
+        let imdbID: String?
+
+        enum CodingKeys: String, CodingKey { case imdbID = "imdb_id" }
+    }
+
+    struct Credits: Decodable, Sendable {
+        struct Person: Decodable, Sendable {
+            let id: Int
+            let name: String
+            let profilePath: String?
+
+            enum CodingKeys: String, CodingKey {
+                case id, name
+                case profilePath = "profile_path"
+            }
+        }
+        let cast: [Person]
+    }
+
+    let id: Int
+    let title: String?
+    let name: String?
+    let originalTitle: String?
+    let originalName: String?
+    let overview: String?
+    let releaseDate: String?
+    let firstAirDate: String?
+    let voteAverage: Double?
+    let runtime: Int?
+    let episodeRunTime: [Int]?
+    let imdbID: String?
+    let externalIDs: ExternalIDs?
+    let posterPath: String?
+    let backdropPath: String?
+    let genres: [Genre]
+    let seasons: [Season]?
+    let credits: Credits?
+
+    enum CodingKeys: String, CodingKey {
+        case id, title, name, overview, runtime, genres, seasons, credits
+        case originalTitle = "original_title"
+        case originalName = "original_name"
+        case releaseDate = "release_date"
+        case firstAirDate = "first_air_date"
+        case voteAverage = "vote_average"
+        case episodeRunTime = "episode_run_time"
+        case imdbID = "imdb_id"
+        case externalIDs = "external_ids"
+        case posterPath = "poster_path"
+        case backdropPath = "backdrop_path"
+    }
+
+    func mediaItem(replacing item: MediaItem) -> MediaItem {
+        MediaItem(
+            id: item.id,
+            providerID: item.providerID,
+            kind: item.kind,
+            title: title ?? name ?? item.title,
+            originalTitle: originalTitle ?? originalName ?? item.originalTitle,
+            overview: overview?.isEmpty == false ? overview : nil,
+            releaseDate: releaseDate ?? firstAirDate,
+            rating: voteAverage,
+            quality: item.quality,
+            runtimeMinutes: runtime ?? episodeRunTime?.first,
+            imdbID: imdbID ?? externalIDs?.imdbID ?? item.imdbID,
+            tmdbID: id,
+            posterURL: posterPath.flatMap(Self.imageURL) ?? item.posterURL,
+            backdropURL: backdropPath.flatMap(Self.imageURL) ?? item.backdropURL,
+            genres: genres.map { MediaGenre(id: "tmdb-\(id)-genre-\($0.id)", name: $0.name) },
+            cast: (credits?.cast ?? []).prefix(20).map {
+                CastMember(
+                    id: "tmdb-person-\($0.id)",
+                    name: $0.name,
+                    imageURL: $0.profilePath.flatMap(Self.imageURL)
+                )
+            },
+            seasons: (seasons ?? [])
+                .filter { ($0.episodeCount ?? 1) > 0 }
+                .map {
+                    MediaSeason(
+                        id: "\(item.id)/tmdb-season-\($0.seasonNumber)",
+                        number: $0.seasonNumber,
+                        title: $0.name,
+                        posterURL: $0.posterPath.flatMap(Self.imageURL)
+                    )
+                }
+        )
+    }
+
+    private static func imageURL(path: String) -> URL? {
+        URL(string: "https://image.tmdb.org/t/p/original\(path)")
+    }
+}
+
+private struct TMDBSeasonPayload: Decodable, Sendable {
+    let episodes: [Episode]
+
+    struct Episode: Decodable, Sendable {
+        let id: Int
+        let name: String?
+        let overview: String?
+        let seasonNumber: Int?
+        let episodeNumber: Int
+        let airDate: String?
+        let stillPath: String?
+
+        enum CodingKeys: String, CodingKey {
+            case id, name, overview
+            case seasonNumber = "season_number"
+            case episodeNumber = "episode_number"
+            case airDate = "air_date"
+            case stillPath = "still_path"
+        }
+
+        func hasAired(asOf date: Date, calendar: Calendar = .current) -> Bool {
+            guard let airDate, airDate.count == 10 else { return false }
+            let components = calendar.dateComponents([.year, .month, .day], from: date)
+            guard let year = components.year,
+                  let month = components.month,
+                  let day = components.day else { return false }
+            let currentDate = String(format: "%04d-%02d-%02d", year, month, day)
+            return airDate <= currentDate
+        }
+
+        func mediaEpisode(show: MediaItem, fallbackSeason: Int) -> MediaEpisode {
+            let season = seasonNumber ?? fallbackSeason
+            return MediaEpisode(
+                id: "\(show.id)/tmdb-s\(season)e\(episodeNumber)",
+                providerID: show.providerID,
+                showID: show.id,
+                seasonNumber: season,
+                number: episodeNumber,
+                title: name,
+                overview: overview?.isEmpty == false ? overview : nil,
+                posterURL: stillPath.flatMap {
+                    URL(string: "https://image.tmdb.org/t/p/original\($0)")
+                }
+            )
+        }
     }
 }
 
@@ -867,17 +1130,21 @@ private struct TMDBTrendingResult: Decodable, Sendable {
     let mediaType: String?
     let title: String?
     let name: String?
-    let overview: String
+    let originalTitle: String?
+    let originalName: String?
+    let overview: String?
     let releaseDate: String?
     let firstAirDate: String?
     let voteAverage: Double?
-    let genreIDs: [Int]
+    let genreIDs: [Int]?
     let posterPath: String?
     let backdropPath: String?
     let adult: Bool?
 
     enum CodingKeys: String, CodingKey {
         case id, title, name, overview, adult
+        case originalTitle = "original_title"
+        case originalName = "original_name"
         case mediaType = "media_type"
         case releaseDate = "release_date"
         case firstAirDate = "first_air_date"
@@ -889,21 +1156,22 @@ private struct TMDBTrendingResult: Decodable, Sendable {
 
     func trendingTitle(fallbackKind: MediaKind?) -> TrendingTitle? {
         guard adult != true,
-              posterPath != nil || backdropPath != nil,
               let kind = mediaType.flatMap(MediaKind.init(tmdbMediaType:)) ?? fallbackKind,
               let displayTitle = title ?? name else { return nil }
 
-        return TrendingTitle(
+        var result = TrendingTitle(
             id: id,
             kind: kind,
             title: displayTitle,
-            overview: overview,
+            overview: overview ?? "",
             releaseDate: releaseDate ?? firstAirDate,
             rating: voteAverage,
-            genreNames: genreIDs.compactMap { TMDBGenres.names[$0] },
+            genreNames: (genreIDs ?? []).compactMap { TMDBGenres.names[$0] },
             posterURL: posterPath.flatMap { imageURL(path: $0, size: "original") },
             backdropURL: backdropPath.flatMap { imageURL(path: $0, size: "original") }
         )
+        result.originalTitle = originalTitle ?? originalName
+        return result
     }
 
     private func imageURL(path: String, size: String) -> URL? {

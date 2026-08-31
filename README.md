@@ -51,6 +51,7 @@ To create an archive, select **Any iOS Device (arm64)** and use **Product → Ar
 - Live ±0.1-second timing adjustment for downloaded subtitle tracks
 - Preferred audio language with automatic English fallback
 - Resume position and continue-watching persistence
+- Versioned JSON export and import for all settings, watchlist entries, watched history, episode progress, Continue Watching selections, and title playback speeds
 - Automatic next-episode playback and next-episode Continue Watching handoff
 - Picture in Picture, AirPlay, background audio, and native full-screen playback
 - Swift Testing coverage for Inertia/HTML parsing, live response-shape compatibility, shared-model persistence, and Vixcloud token parsing
@@ -67,6 +68,10 @@ To add another source:
 4. Register the implementation in `AppEnvironment`.
 
 The rest of the application does not need provider-specific branching.
+
+### Persistence and backups
+
+User preferences belong in the app's `UserDefaults` domain. Durable user library and playback data belongs under `Application Support/BetterStreamflix`. The Settings backup feature snapshots both locations into a versioned JSON file and restores them as one unit, so new persisted features stored there are included automatically. If durable user data must live elsewhere, its implementation must extend `UserDataBackupService` and the backup round-trip test in the same change. Regenerable caches, temporary playback assets, bundled configuration, and non-user-created Keychain credentials are intentionally excluded.
 
 ## Provider maintenance
 

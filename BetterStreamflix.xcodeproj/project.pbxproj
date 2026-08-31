@@ -22,6 +22,7 @@
 		958CD8C260EA990C57B27042 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */; };
 		9BAEFDB74B157D6AFF6ED78C /* HTMLPayloadParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */; };
 		A86861C60B467A8B59D81A1F /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */; };
+		A86861C60B467A8B59D81A20 /* UserDataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */; };
 		AE0DA70541F5D1924829137C /* BetterStreamflixApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CAE86812F97E13B74F2B61D /* BetterStreamflixApp.swift */; };
 		BDDCBF2A651E7F7AC7C2370E /* HTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */; };
 		C96125C82320414436F98BCC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74A2EA851D7A16B77E578F8 /* Models.swift */; };
@@ -57,6 +58,7 @@
 		90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParser.swift; sourceTree = "<group>"; };
 		923EB46117EA703E173F5254 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDataBackup.swift; sourceTree = "<group>"; };
 		9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviders.swift; sourceTree = "<group>"; };
 		A111E97A6AAFBC8093B3567A /* ViewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModels.swift; sourceTree = "<group>"; };
 		ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClient.swift; sourceTree = "<group>"; };
@@ -127,6 +129,7 @@
 				90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */,
 				B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */,
 				960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */,
+				960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */,
 				C74A2EA851D7A16B77E578F8 /* Models.swift */,
 				23BFB819E1F6E6D0FDA303C5 /* Provider.swift */,
 				B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */,
@@ -246,6 +249,7 @@
 				9BAEFDB74B157D6AFF6ED78C /* HTMLPayloadParser.swift in Sources */,
 				BDDCBF2A651E7F7AC7C2370E /* HTTPClient.swift in Sources */,
 				A86861C60B467A8B59D81A1F /* LibraryStore.swift in Sources */,
+				A86861C60B467A8B59D81A20 /* UserDataBackup.swift in Sources */,
 				C96125C82320414436F98BCC /* Models.swift in Sources */,
 				60E9F697F477EE98E69F0762 /* NativePlayer.swift in Sources */,
 				1C34F5EEF952356309A73FB5 /* Provider.swift in Sources */,

@@ -181,20 +181,30 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var canAdjustSubtitleTiming = false
     @Published private(set) var playbackRate: Double = 1
     @Published private(set) var isBuffering = false
+    @Published private(set) var playbackErrorMessage: String?
 
     var onEnded: (() -> Void)?
+    var onSourceRefreshNeeded: (() async -> Bool)?
     nonisolated(unsafe) private var timeObserver: Any?
     nonisolated(unsafe) private var endObserver: NSObjectProtocol?
     nonisolated(unsafe) private var mediaSelectionObserver: NSObjectProtocol?
     nonisolated(unsafe) private var playbackStalledObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var playbackErrorLogObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var failedToPlayToEndObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var audioInterruptionObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var audioRouteChangeObserver: NSObjectProtocol?
     nonisolated(unsafe) private var rateObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var defaultRateObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var timeControlStatusObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var playbackBufferEmptyObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var playbackLikelyToKeepUpObservation: NSKeyValueObservation?
+    nonisolated(unsafe) private var itemStatusObservation: NSKeyValueObservation?
     private var mediaOptionsTask: Task<Void, Never>?
     private var subtitleAdjustmentTask: Task<Void, Never>?
+    private var qualitySwitchTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
+    private var recoveryWatchdogTask: Task<Void, Never>?
+    private var sourceRefreshTask: Task<Void, Never>?
     private var nowPlayingContentID: String?
     private var nowPlayingTitle: String?
     private var nowPlayingSubtitle: String?
@@ -207,6 +217,23 @@ final class PlayerSession: ObservableObject {
     private var primarySubtitleLanguage = ""
     private var secondarySubtitleLanguage = ""
     private var audioLanguage = "en"
+    private var playbackWasRequested = false
+    private var shouldResumeAfterBuffering = false
+    private var isPreparingPlayback = false
+    private var currentSourceURL: URL?
+    private var currentSourceExpiresAt: Date?
+    private var sourceRefreshRequestedForURL: URL?
+    private var needsSourceRefreshAfterBackground = false
+    private var automaticSourceRefreshAttempts = 0
+    private var recoveryBaselinePosition = 0.0
+    private var lastObservedBufferEnd = 0.0
+    private var stagnantBufferChecks = 0
+    private var wasPlayingBeforeInterruption = false
+    private var qualityPreferenceInitialized = false
+    private var preferredQualityHeight: Int?
+    private var automaticPeakBitRate: Double?
+    private var currentPlaybackSource: PlaybackSource?
+    private var currentExternalSubtitles: [SubtitleSource] = []
     private let playlistInspector = HLSPlaylistInspector()
     private let subtitleClient: any HTTPClientProtocol
     private let subtitleServer = HLSSubtitleLoopbackServer()
@@ -235,19 +262,33 @@ final class PlayerSession: ObservableObject {
                 let value = self.player.currentItem?.duration.seconds ?? 0
                 self.duration = value.isFinite ? value : 0
                 self.recordPlaybackRate(self.player.rate > 0 ? self.player.rate : self.player.defaultRate)
+                if self.automaticSourceRefreshAttempts > 0,
+                   self.player.timeControlStatus == .playing,
+                   self.position >= self.recoveryBaselinePosition + 5 {
+                    self.automaticSourceRefreshAttempts = 0
+                    self.playbackErrorMessage = nil
+                }
                 self.publishNowPlayingInfo()
             }
         }
+        observeAudioSessionEvents()
     }
 
     deinit {
         mediaOptionsTask?.cancel()
         subtitleAdjustmentTask?.cancel()
+        qualitySwitchTask?.cancel()
         nowPlayingArtworkTask?.cancel()
+        recoveryWatchdogTask?.cancel()
+        sourceRefreshTask?.cancel()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let mediaSelectionObserver { NotificationCenter.default.removeObserver(mediaSelectionObserver) }
         if let playbackStalledObserver { NotificationCenter.default.removeObserver(playbackStalledObserver) }
+        if let playbackErrorLogObserver { NotificationCenter.default.removeObserver(playbackErrorLogObserver) }
+        if let failedToPlayToEndObserver { NotificationCenter.default.removeObserver(failedToPlayToEndObserver) }
+        if let audioInterruptionObserver { NotificationCenter.default.removeObserver(audioInterruptionObserver) }
+        if let audioRouteChangeObserver { NotificationCenter.default.removeObserver(audioRouteChangeObserver) }
     }
 
     func load(
@@ -261,6 +302,10 @@ final class PlayerSession: ObservableObject {
         defaultQualityHeight: Int,
         defaultPlaybackRate: Float
     ) async {
+        recoveryWatchdogTask?.cancel()
+        qualitySwitchTask?.cancel()
+        isBuffering = true
+        playbackErrorMessage = nil
         await audioSessionController.activateForPlayback()
         guard !Task.isCancelled else { return }
         configureNowPlaying(for: playbackRequest)
@@ -270,16 +315,29 @@ final class PlayerSession: ObservableObject {
         subtitleTimingOffset = 0
         appliedSubtitleTimingOffset = 0
         let preparedSource = source.preferredForSubtitleLanguage(primarySubtitleLanguage)
-        async let discoveredQualities = playlistInspector.availableQualities(for: preparedSource)
-        async let preparedAsset = assetByInjectingSubtitles(
-            externalSubtitles,
-            into: preparedSource
-        )
-        let qualities = await discoveredQualities
-        let asset = await preparedAsset
+        let qualities = await playlistInspector.availableQualities(for: preparedSource)
         guard !Task.isCancelled else { return }
         availableQualities = qualities
-        selectedQuality = StreamQuality.closest(to: defaultQualityHeight, in: qualities)
+        if !qualityPreferenceInitialized {
+            preferredQualityHeight = defaultQualityHeight > 0 ? defaultQualityHeight : nil
+            qualityPreferenceInitialized = true
+        }
+        selectedQuality = preferredQualityHeight.flatMap {
+            StreamQuality.closest(to: $0, in: qualities)
+        }
+        let asset = await assetByInjectingSubtitles(
+            externalSubtitles,
+            into: preparedSource,
+            selectedQuality: selectedQuality
+        )
+        guard !Task.isCancelled else { return }
+        automaticPeakBitRate = source.preferredPeakBitRate
+        currentPlaybackSource = preparedSource
+        currentExternalSubtitles = externalSubtitles
+        sourceRefreshRequestedForURL = nil
+        currentSourceURL = source.url
+        currentSourceExpiresAt = Self.expirationDate(in: source.url)
+        needsSourceRefreshAfterBackground = false
         self.primarySubtitleLanguage = primarySubtitleLanguage
         self.secondarySubtitleLanguage = secondarySubtitleLanguage
         self.audioLanguage = audioLanguage
@@ -295,7 +353,21 @@ final class PlayerSession: ObservableObject {
 
     func stop() {
         subtitleAdjustmentTask?.cancel()
+        qualitySwitchTask?.cancel()
         nowPlayingArtworkTask?.cancel()
+        recoveryWatchdogTask?.cancel()
+        sourceRefreshTask?.cancel()
+        playbackWasRequested = false
+        shouldResumeAfterBuffering = false
+        isPreparingPlayback = false
+        currentSourceURL = nil
+        currentPlaybackSource = nil
+        currentExternalSubtitles = []
+        currentSourceExpiresAt = nil
+        sourceRefreshRequestedForURL = nil
+        needsSourceRefreshAfterBackground = false
+        automaticSourceRefreshAttempts = 0
+        playbackErrorMessage = nil
         player.pause()
         isBuffering = false
         removeInjectedSubtitleAsset()
@@ -309,10 +381,48 @@ final class PlayerSession: ObservableObject {
     func resetProgressTracking() {
         position = 0
         duration = 0
+        automaticSourceRefreshAttempts = 0
+        recoveryBaselinePosition = 0
+        playbackErrorMessage = nil
+    }
+
+    func prepareForForegroundResume() {
+        Task { [audioSessionController] in
+            await audioSessionController.activateForPlayback()
+        }
+        guard player.currentItem != nil,
+              player.timeControlStatus == .paused else { return }
+        // iOS can leave a paused HLS item attached after suspending its network
+        // requests. Recreate that item only when the user next asks it to play.
+        needsSourceRefreshAfterBackground = true
+        sourceRefreshRequestedForURL = nil
+    }
+
+    func prepareForBackground() {
+        guard player.timeControlStatus == .paused else { return }
+        Task { [audioSessionController] in
+            await audioSessionController.deactivate()
+        }
+    }
+
+    func retryPlayback() {
+        guard currentSourceURL != nil else { return }
+        playbackErrorMessage = nil
+        automaticSourceRefreshAttempts = 0
+        sourceRefreshRequestedForURL = nil
+        playbackWasRequested = true
+        shouldResumeAfterBuffering = true
+        isBuffering = true
+        requestSourceRefresh()
     }
 
     private func recordPlaybackRate(_ rate: Float) {
         guard rate.isFinite, rate > 0 else { return }
+        // Video content is dominated by dialogue. The time-domain processor
+        // preserves pitch with substantially less work than the default
+        // spectral processor, preventing its audio queue from falling behind
+        // the shared player clock during sustained accelerated playback.
+        player.currentItem?.audioTimePitchAlgorithm = .timeDomain
         let value = Double(rate)
         guard abs(playbackRate - value) > 0.001 else { return }
         playbackRate = value
@@ -320,9 +430,42 @@ final class PlayerSession: ObservableObject {
 
     func setQuality(_ quality: StreamQuality?) {
         guard selectedQuality != quality else { return }
+        preferredQualityHeight = quality?.height
+        qualityPreferenceInitialized = true
         selectedQuality = quality
-        guard let item = player.currentItem else { return }
-        applyQuality(to: item)
+        guard let source = currentPlaybackSource,
+              player.currentItem != nil else { return }
+
+        qualitySwitchTask?.cancel()
+        let requestedQuality = quality
+        let externalSubtitles = currentExternalSubtitles
+        let resumeAt = player.currentTime().seconds.isFinite
+            ? player.currentTime().seconds
+            : position
+        let shouldPlay = playbackWasRequested || player.timeControlStatus != .paused
+        let rate = player.rate > 0 ? player.rate : player.defaultRate
+        isBuffering = true
+
+        qualitySwitchTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            let preferredSubtitleDisplayName = await self.selectedSubtitleDisplayName()
+            let asset = await self.assetByInjectingSubtitles(
+                externalSubtitles,
+                into: source,
+                selectedQuality: requestedQuality
+            )
+            guard !Task.isCancelled,
+                  self.selectedQuality == requestedQuality else { return }
+            self.replaceCurrentItem(
+                with: asset,
+                resumeAt: resumeAt,
+                shouldPlay: shouldPlay,
+                playbackRate: rate,
+                preferredSubtitleDisplayName: preferredSubtitleDisplayName
+            )
+            self.qualitySwitchTask = nil
+            if !shouldPlay { self.isBuffering = false }
+        }
     }
 
     func adjustSubtitleTiming(by delta: Double) {
@@ -345,6 +488,7 @@ final class PlayerSession: ObservableObject {
                     source: source,
                     renditions: renditions,
                     timingOffset: updatedOffset,
+                    selectedQualityHeight: selectedQuality?.height,
                     client: self.subtitleClient
                 )
                 try Task.checkCancellation()
@@ -378,7 +522,8 @@ final class PlayerSession: ObservableObject {
 
     private func assetByInjectingSubtitles(
         _ subtitles: [SubtitleSource],
-        into source: PlaybackSource
+        into source: PlaybackSource,
+        selectedQuality: StreamQuality?
     ) async -> AVURLAsset {
         let originalAsset = AVURLAsset(
             url: source.url,
@@ -389,12 +534,14 @@ final class PlayerSession: ObservableObject {
             seenResources.insert("\($0.providerID):\($0.url.absoluteString)").inserted
         }
         let renditions = await loadSubtitleRenditions(uniqueSubtitles)
-        guard !Task.isCancelled, !renditions.isEmpty else { return originalAsset }
+        guard !Task.isCancelled else { return originalAsset }
+        guard !renditions.isEmpty || selectedQuality != nil else { return originalAsset }
 
         do {
             let injectedAsset = try await HLSSubtitleInjector.prepare(
                 source: source,
                 renditions: renditions,
+                selectedQualityHeight: selectedQuality?.height,
                 client: subtitleClient
             )
             try Task.checkCancellation()
@@ -402,11 +549,13 @@ final class PlayerSession: ObservableObject {
             try Task.checkCancellation()
             injectedSubtitleNames = injectedAsset.displayNames
             subtitleRenditions = renditions
-            subtitlePlaybackSource = source
+            subtitlePlaybackSource = renditions.isEmpty ? nil : source
             return AVURLAsset(
                 url: localMasterURL,
                 options: ["AVURLAssetHTTPHeaderFieldsKey": source.headers]
             )
+        } catch where error.isCancellation {
+            return originalAsset
         } catch {
             injectedSubtitleNames = []
             subtitleRenditions = []
@@ -474,7 +623,12 @@ final class PlayerSession: ObservableObject {
         preferredSubtitleDisplayName: String? = nil
     ) {
         mediaOptionsTask?.cancel()
+        playbackWasRequested = shouldPlay
+        shouldResumeAfterBuffering = false
+        isPreparingPlayback = shouldPlay && resumeAt > 0
+        if isPreparingPlayback { isBuffering = true }
         let item = AVPlayerItem(asset: asset)
+        item.audioTimePitchAlgorithm = .timeDomain
         applyQuality(to: item)
         observeBufferingState(of: item)
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
@@ -503,8 +657,23 @@ final class PlayerSession: ObservableObject {
                 to: CMTime(seconds: resumeAt, preferredTimescale: 600),
                 toleranceBefore: .zero,
                 toleranceAfter: .zero,
-                completionHandler: { _ in }
+                completionHandler: { [weak self, weak item] finished in
+                    Task { @MainActor [weak self, weak item] in
+                        guard let self, let item,
+                              self.player.currentItem === item else { return }
+                        self.isPreparingPlayback = false
+                        guard finished, shouldPlay else {
+                            self.refreshPlaybackState()
+                            return
+                        }
+                        // `play()` deliberately uses `defaultRate`, retaining
+                        // AVPlayer's automatic wait-for-buffer behavior.
+                        self.player.play()
+                    }
+                }
             )
+        } else if shouldPlay {
+            player.play()
         }
         mediaOptionsTask = Task { [weak self] in
             guard let self else { return }
@@ -516,10 +685,17 @@ final class PlayerSession: ObservableObject {
                 preferredSubtitleDisplayName: preferredSubtitleDisplayName
             )
         }
-        if shouldPlay { player.play() }
     }
 
     private func observeBufferingState(of item: AVPlayerItem) {
+        itemStatusObservation = item.observe(\.status, options: [.initial, .new]) {
+            [weak self, weak item] _, change in
+            guard change.newValue == .failed else { return }
+            Task { @MainActor [weak self, weak item] in
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.handleItemFailure()
+            }
+        }
         playbackBufferEmptyObservation = item.observe(
             \.isPlaybackBufferEmpty,
             options: [.initial, .new]
@@ -527,7 +703,9 @@ final class PlayerSession: ObservableObject {
             guard change.newValue == true else { return }
             Task { @MainActor [weak self, weak item] in
                 guard let self, let item, self.player.currentItem === item else { return }
-                self.refreshPlaybackState()
+                guard self.playbackWasRequested
+                        || self.player.timeControlStatus != .paused else { return }
+                self.beginAutomaticBufferRecovery()
             }
         }
         playbackLikelyToKeepUpObservation = item.observe(
@@ -551,25 +729,293 @@ final class PlayerSession: ObservableObject {
         ) { [weak self, weak item] _ in
             MainActor.assumeIsolated {
                 guard let self, let item, self.player.currentItem === item else { return }
-                self.refreshPlaybackState()
-                guard self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate else {
-                    return
-                }
-                // Reassert the play request so AVPlayer keeps waiting for enough data
-                // instead of leaving the item stopped after a network interruption.
-                self.player.play()
+                self.beginAutomaticBufferRecovery()
+            }
+        }
+        if let playbackErrorLogObserver {
+            NotificationCenter.default.removeObserver(playbackErrorLogObserver)
+        }
+        playbackErrorLogObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemNewErrorLogEntry,
+            object: item,
+            queue: .main
+        ) { [weak self, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let self, let item, self.player.currentItem === item,
+                      let statusCode = item.errorLog()?.events.last?.errorStatusCode,
+                      statusCode >= 400 else { return }
+                self.handleItemFailure()
+            }
+        }
+        if let failedToPlayToEndObserver {
+            NotificationCenter.default.removeObserver(failedToPlayToEndObserver)
+        }
+        failedToPlayToEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemFailedToPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.handleItemFailure()
             }
         }
     }
 
     private func refreshPlaybackState() {
-        isBuffering = player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+        switch player.timeControlStatus {
+        case .playing:
+            playbackWasRequested = true
+            shouldResumeAfterBuffering = false
+            needsSourceRefreshAfterBackground = false
+            isBuffering = false
+            stagnantBufferChecks = 0
+            recoveryWatchdogTask?.cancel()
+            recoveryWatchdogTask = nil
+        case .waitingToPlayAtSpecifiedRate:
+            playbackWasRequested = true
+            if needsSourceRefreshAfterBackground {
+                requestSourceRefresh()
+            } else {
+                refreshSourceIfExpired()
+            }
+            scheduleRecoveryWatchdogIfNeeded()
+        case .paused:
+            if isPreparingPlayback {
+                playbackWasRequested = true
+                isBuffering = true
+                publishNowPlayingInfo()
+                return
+            }
+            playbackWasRequested = false
+            shouldResumeAfterBuffering = false
+            isBuffering = false
+            recoveryWatchdogTask?.cancel()
+            recoveryWatchdogTask = nil
+        @unknown default:
+            break
+        }
+        isBuffering = shouldResumeAfterBuffering
+            || isPreparingPlayback
+            || (playbackWasRequested
+                && player.timeControlStatus == .waitingToPlayAtSpecifiedRate)
         publishNowPlayingInfo()
     }
 
-    private func resumeWhenBufferIsReady() {
-        guard player.timeControlStatus == .waitingToPlayAtSpecifiedRate else { return }
+    private func beginAutomaticBufferRecovery() {
+        playbackWasRequested = true
+        shouldResumeAfterBuffering = true
+        isBuffering = true
+        publishNowPlayingInfo()
+        // A stall can leave AVPlayer in .paused rather than .waiting. Calling
+        // play again preserves the user's play intent and keeps media loading.
         player.play()
+        if needsSourceRefreshAfterBackground {
+            requestSourceRefresh()
+        } else {
+            refreshSourceIfExpired()
+        }
+        scheduleRecoveryWatchdogIfNeeded()
+    }
+
+    private func resumeWhenBufferIsReady() {
+        guard playbackWasRequested || shouldResumeAfterBuffering else { return }
+        player.play()
+    }
+
+    private func refreshSourceIfExpired() {
+        guard let currentSourceExpiresAt,
+              currentSourceExpiresAt <= Date().addingTimeInterval(30) else { return }
+        requestSourceRefresh()
+    }
+
+    private func requestSourceRefresh() {
+        guard let currentSourceURL,
+              sourceRefreshRequestedForURL != currentSourceURL,
+              sourceRefreshTask == nil else { return }
+        guard automaticSourceRefreshAttempts < PlaybackRecoveryPolicy.maximumSourceRefreshes else {
+            failPlaybackRecovery()
+            return
+        }
+        guard let onSourceRefreshNeeded else {
+            failPlaybackRecovery()
+            return
+        }
+        sourceRefreshRequestedForURL = currentSourceURL
+        automaticSourceRefreshAttempts += 1
+        recoveryBaselinePosition = position
+        recoveryWatchdogTask?.cancel()
+        recoveryWatchdogTask = nil
+        isBuffering = true
+        sourceRefreshTask = Task { @MainActor [weak self] in
+            let succeeded = await onSourceRefreshNeeded()
+            guard let self, !Task.isCancelled else { return }
+            self.sourceRefreshTask = nil
+            if !succeeded {
+                self.sourceRefreshRequestedForURL = nil
+                self.failPlaybackRecovery()
+            }
+        }
+    }
+
+    private func handleItemFailure() {
+        guard playbackWasRequested || shouldResumeAfterBuffering else { return }
+        isPreparingPlayback = false
+        shouldResumeAfterBuffering = true
+        isBuffering = true
+        requestSourceRefresh()
+    }
+
+    private func scheduleRecoveryWatchdogIfNeeded() {
+        guard recoveryWatchdogTask == nil,
+              playbackWasRequested,
+              player.currentItem != nil else { return }
+        lastObservedBufferEnd = bufferedEndTime()
+        stagnantBufferChecks = 0
+        recoveryWatchdogTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                do {
+                    try await Task.sleep(for: PlaybackRecoveryPolicy.watchdogInterval)
+                } catch {
+                    return
+                }
+                guard let self,
+                      self.playbackWasRequested,
+                      (self.player.timeControlStatus == .waitingToPlayAtSpecifiedRate
+                        || self.shouldResumeAfterBuffering) else { return }
+
+                let bufferedEnd = self.bufferedEndTime()
+                if bufferedEnd >= self.lastObservedBufferEnd + PlaybackRecoveryPolicy.minimumBufferGrowth {
+                    self.lastObservedBufferEnd = bufferedEnd
+                    self.stagnantBufferChecks = 0
+                    continue
+                }
+
+                self.stagnantBufferChecks += 1
+                switch PlaybackRecoveryPolicy.action(
+                    stagnantChecks: self.stagnantBufferChecks,
+                    sourceRefreshAttempts: self.automaticSourceRefreshAttempts
+                ) {
+                case .retryPlay:
+                    self.player.play()
+                case .refreshSource:
+                    self.recoveryWatchdogTask = nil
+                    self.requestSourceRefresh()
+                    return
+                case .fail:
+                    self.recoveryWatchdogTask = nil
+                    self.failPlaybackRecovery()
+                    return
+                case .keepWaiting:
+                    break
+                }
+            }
+        }
+    }
+
+    private func bufferedEndTime() -> Double {
+        guard let item = player.currentItem else { return 0 }
+        return item.loadedTimeRanges.reduce(0) { result, value in
+            let range = value.timeRangeValue
+            let end = CMTimeGetSeconds(CMTimeRangeGetEnd(range))
+            return end.isFinite ? max(result, end) : result
+        }
+    }
+
+    private func failPlaybackRecovery() {
+        recoveryWatchdogTask?.cancel()
+        recoveryWatchdogTask = nil
+        sourceRefreshTask?.cancel()
+        sourceRefreshTask = nil
+        shouldResumeAfterBuffering = false
+        isPreparingPlayback = false
+        playbackWasRequested = false
+        isBuffering = false
+        player.pause()
+        playbackErrorMessage = "The video stream stopped responding. Check your connection and try again."
+        publishNowPlayingInfo()
+    }
+
+    private static func expirationDate(in url: URL) -> Date? {
+        guard let value = URLComponents(
+            url: url,
+            resolvingAgainstBaseURL: false
+        )?.queryItems?.first(where: { $0.name == "expires" })?.value,
+        let timestamp = TimeInterval(value) else { return nil }
+        let seconds = timestamp > 10_000_000_000 ? timestamp / 1_000 : timestamp
+        return Date(timeIntervalSince1970: seconds)
+    }
+
+    private func observeAudioSessionEvents() {
+        let audioSession = AVAudioSession.sharedInstance()
+        audioInterruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: audioSession,
+            queue: .main
+        ) { [weak self] notification in
+            guard let rawType = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt else {
+                return
+            }
+            let rawOptions = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt ?? 0
+            Task { @MainActor [weak self] in
+                self?.handleAudioInterruption(typeRawValue: rawType, optionsRawValue: rawOptions)
+            }
+        }
+        audioRouteChangeObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.routeChangeNotification,
+            object: audioSession,
+            queue: .main
+        ) { [weak self] notification in
+            guard let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt else {
+                return
+            }
+            Task { @MainActor [weak self] in
+                self?.handleAudioRouteChange(reasonRawValue: rawReason)
+            }
+        }
+    }
+
+    private func handleAudioInterruption(typeRawValue: UInt, optionsRawValue: UInt) {
+        guard let type = AVAudioSession.InterruptionType(rawValue: typeRawValue) else { return }
+        switch type {
+        case .began:
+            wasPlayingBeforeInterruption = playbackWasRequested
+                && player.timeControlStatus != .paused
+            recoveryWatchdogTask?.cancel()
+            recoveryWatchdogTask = nil
+            isBuffering = false
+            Task { [audioSessionController] in
+                await audioSessionController.markInactive()
+            }
+        case .ended:
+            let options = AVAudioSession.InterruptionOptions(rawValue: optionsRawValue)
+            guard wasPlayingBeforeInterruption, options.contains(.shouldResume) else {
+                wasPlayingBeforeInterruption = false
+                return
+            }
+            wasPlayingBeforeInterruption = false
+            playbackWasRequested = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                await self.audioSessionController.activateForPlayback()
+                self.player.play()
+            }
+        @unknown default:
+            break
+        }
+    }
+
+    private func handleAudioRouteChange(reasonRawValue: UInt) {
+        guard AVAudioSession.RouteChangeReason(rawValue: reasonRawValue) == .oldDeviceUnavailable else {
+            return
+        }
+        player.pause()
+        playbackWasRequested = false
+        shouldResumeAfterBuffering = false
+        isBuffering = false
+        recoveryWatchdogTask?.cancel()
+        recoveryWatchdogTask = nil
+        publishNowPlayingInfo()
     }
 
     private func applyPreferredLanguages(
@@ -823,6 +1269,8 @@ final class PlayerSession: ObservableObject {
 
     private func resumeFromRemoteCommand() {
         guard let item = player.currentItem else { return }
+        playbackWasRequested = true
+        playbackErrorMessage = nil
         let currentTime = item.currentTime().seconds
         let itemDuration = item.duration.seconds
         let rate = Float(playbackRate.isFinite && playbackRate > 0 ? playbackRate : 1)
@@ -845,6 +1293,11 @@ final class PlayerSession: ObservableObject {
 
     private func pauseFromRemoteCommand() {
         guard player.currentItem != nil else { return }
+        playbackWasRequested = false
+        shouldResumeAfterBuffering = false
+        isBuffering = false
+        recoveryWatchdogTask?.cancel()
+        recoveryWatchdogTask = nil
         player.pause()
         publishNowPlayingInfo()
     }
@@ -870,7 +1323,7 @@ final class PlayerSession: ObservableObject {
 
     private func applyQuality(to item: AVPlayerItem) {
         guard let selectedQuality else {
-            item.preferredPeakBitRate = 0
+            item.preferredPeakBitRate = automaticPeakBitRate ?? 0
             item.preferredMaximumResolution = .zero
             return
         }
@@ -887,6 +1340,29 @@ final class PlayerSession: ObservableObject {
         subtitleRenditions = []
         subtitlePlaybackSource = nil
         canAdjustSubtitleTiming = false
+    }
+}
+
+enum PlaybackRecoveryAction: Equatable, Sendable {
+    case keepWaiting
+    case retryPlay
+    case refreshSource
+    case fail
+}
+
+enum PlaybackRecoveryPolicy {
+    static let watchdogInterval: Duration = .seconds(8)
+    static let minimumBufferGrowth = 0.5
+    static let maximumSourceRefreshes = 3
+
+    static func action(
+        stagnantChecks: Int,
+        sourceRefreshAttempts: Int
+    ) -> PlaybackRecoveryAction {
+        if sourceRefreshAttempts >= maximumSourceRefreshes { return .fail }
+        if stagnantChecks >= 2 { return .refreshSource }
+        if stagnantChecks == 1 { return .retryPlay }
+        return .keepWaiting
     }
 }
 
@@ -948,6 +1424,48 @@ enum HLSMasterPlaylistParser {
         return byHeight.values.sorted { $0.height < $1.height }
     }
 
+    /// Returns a valid master playlist that exposes only variants at the
+    /// requested resolution. Keeping the master (instead of opening a media
+    /// playlist directly) preserves alternate audio and subtitle groups.
+    static func playlist(_ playlist: String, filteredToHeight targetHeight: Int) -> String {
+        let lines = playlist.components(separatedBy: .newlines)
+        guard lines.contains(where: {
+            $0.hasPrefix("#EXT-X-STREAM-INF:") && resolutionHeight(in: $0) == targetHeight
+        }) else { return playlist }
+
+        var output: [String] = []
+        var index = 0
+        while index < lines.count {
+            let line = lines[index]
+            if line.hasPrefix("#EXT-X-STREAM-INF:") {
+                let keepVariant = resolutionHeight(in: line) == targetHeight
+                if keepVariant { output.append(line) }
+                index += 1
+                while index < lines.count {
+                    let followingLine = lines[index]
+                    let isVariantURI = !followingLine.isEmpty && !followingLine.hasPrefix("#")
+                    if keepVariant { output.append(followingLine) }
+                    index += 1
+                    if isVariantURI { break }
+                }
+                continue
+            }
+            if line.hasPrefix("#EXT-X-I-FRAME-STREAM-INF:"),
+               let height = resolutionHeight(in: line),
+               height != targetHeight {
+                index += 1
+                continue
+            }
+            output.append(line)
+            index += 1
+        }
+        return output.joined(separator: "\n")
+    }
+
+    private static func resolutionHeight(in line: String) -> Int? {
+        capture(#"RESOLUTION=\d+x(\d+)"#, in: line)?.first.flatMap(Int.init)
+    }
+
     private static func capture(_ pattern: String, in value: String) -> [String]? {
         guard let regex = try? NSRegularExpression(pattern: pattern),
               let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)) else {
@@ -987,7 +1505,6 @@ private actor AudioSessionController {
     private var isActive = false
 
     func activateForPlayback() {
-        guard !isActive else { return }
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .moviePlayback, options: [.allowAirPlay])
@@ -996,6 +1513,10 @@ private actor AudioSessionController {
         } catch {
             isActive = false
         }
+    }
+
+    func markInactive() {
+        isActive = false
     }
 
     func deactivate() {
@@ -1011,12 +1532,14 @@ private actor AudioSessionController {
 struct NativePlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
     let isBuffering: Bool
+    let playbackErrorMessage: String?
     let availableQualities: [StreamQuality]
     let selectedQuality: StreamQuality?
     let subtitleTimingOffset: Double
     let canAdjustSubtitleTiming: Bool
     let onQualityChanged: (StreamQuality?) -> Void
     let onAdjustSubtitleTiming: (Double) -> Void
+    let onRetryPlayback: () -> Void
     let onDismiss: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -1025,6 +1548,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
             selectedQuality: selectedQuality,
             onQualityChanged: onQualityChanged,
             onAdjustSubtitleTiming: onAdjustSubtitleTiming,
+            onRetryPlayback: onRetryPlayback,
             onDismiss: onDismiss
         )
     }
@@ -1052,12 +1576,16 @@ struct NativePlayerController: UIViewControllerRepresentable {
             isAvailable: canAdjustSubtitleTiming
         )
         context.coordinator.updateBuffering(isBuffering)
+        context.coordinator.updatePlaybackError(playbackErrorMessage)
     }
 
     @MainActor
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
         private let settingsButton = UIButton(type: .system)
         private let bufferingIndicator = UIActivityIndicatorView(style: .large)
+        private let playbackErrorView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterialDark))
+        private let playbackErrorLabel = UILabel()
+        private let retryPlaybackButton = UIButton(type: .system)
         private let subtitleTimingControl = UIStackView()
         private let subtitleTimingLabel = UILabel()
         private let decreaseSubtitleTimingButton = UIButton(type: .system)
@@ -1066,7 +1594,9 @@ struct NativePlayerController: UIViewControllerRepresentable {
         private var selectedQuality: StreamQuality?
         private let onQualityChanged: (StreamQuality?) -> Void
         private let onAdjustSubtitleTiming: (Double) -> Void
+        private let onRetryPlayback: () -> Void
         private var subtitleTimingAvailable = false
+        private var lastPlaybackErrorMessage: String?
         private var hideTask: Task<Void, Never>?
         private weak var player: AVPlayer?
         let onDismiss: () -> Void
@@ -1076,12 +1606,14 @@ struct NativePlayerController: UIViewControllerRepresentable {
             selectedQuality: StreamQuality?,
             onQualityChanged: @escaping (StreamQuality?) -> Void,
             onAdjustSubtitleTiming: @escaping (Double) -> Void,
+            onRetryPlayback: @escaping () -> Void,
             onDismiss: @escaping () -> Void
         ) {
             self.availableQualities = availableQualities
             self.selectedQuality = selectedQuality
             self.onQualityChanged = onQualityChanged
             self.onAdjustSubtitleTiming = onAdjustSubtitleTiming
+            self.onRetryPlayback = onRetryPlayback
             self.onDismiss = onDismiss
         }
 
@@ -1093,6 +1625,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
             bufferingIndicator.hidesWhenStopped = true
             bufferingIndicator.accessibilityLabel = "Buffering video"
             overlay.addSubview(bufferingIndicator)
+            configurePlaybackErrorView()
+            overlay.addSubview(playbackErrorView)
             settingsButton.translatesAutoresizingMaskIntoConstraints = false
             settingsButton.showsMenuAsPrimaryAction = true
             settingsButton.accessibilityLabel = "Playback settings"
@@ -1102,6 +1636,9 @@ struct NativePlayerController: UIViewControllerRepresentable {
             NSLayoutConstraint.activate([
                 bufferingIndicator.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
                 bufferingIndicator.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+                playbackErrorView.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
+                playbackErrorView.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
+                playbackErrorView.widthAnchor.constraint(lessThanOrEqualTo: overlay.safeAreaLayoutGuide.widthAnchor, constant: -40),
                 settingsButton.trailingAnchor.constraint(equalTo: overlay.safeAreaLayoutGuide.trailingAnchor, constant: -14),
                 settingsButton.centerYAnchor.constraint(equalTo: overlay.centerYAnchor),
                 settingsButton.widthAnchor.constraint(equalToConstant: 44),
@@ -1120,11 +1657,62 @@ struct NativePlayerController: UIViewControllerRepresentable {
         }
 
         func updateBuffering(_ isBuffering: Bool) {
-            if isBuffering {
+            if isBuffering && playbackErrorView.isHidden {
                 bufferingIndicator.startAnimating()
             } else {
                 bufferingIndicator.stopAnimating()
             }
+        }
+
+        func updatePlaybackError(_ message: String?) {
+            guard lastPlaybackErrorMessage != message else { return }
+            lastPlaybackErrorMessage = message
+            playbackErrorLabel.text = message
+            playbackErrorView.isHidden = message == nil
+            if message == nil {
+                return
+            }
+            bufferingIndicator.stopAnimating()
+            UIAccessibility.post(notification: .announcement, argument: message)
+        }
+
+        private func configurePlaybackErrorView() {
+            playbackErrorView.translatesAutoresizingMaskIntoConstraints = false
+            playbackErrorView.layer.cornerRadius = 16
+            playbackErrorView.clipsToBounds = true
+            playbackErrorView.isHidden = true
+
+            playbackErrorLabel.font = .preferredFont(forTextStyle: .body)
+            playbackErrorLabel.textColor = .white
+            playbackErrorLabel.textAlignment = .center
+            playbackErrorLabel.numberOfLines = 0
+
+            var retryConfiguration = UIButton.Configuration.filled()
+            retryConfiguration.title = "Retry"
+            retryConfiguration.image = UIImage(systemName: "arrow.clockwise")
+            retryConfiguration.imagePadding = 8
+            retryPlaybackButton.configuration = retryConfiguration
+            retryPlaybackButton.accessibilityHint = "Reloads the stream and resumes from your current position"
+            retryPlaybackButton.addTarget(self, action: #selector(retryPlayback), for: .touchUpInside)
+
+            let stack = UIStackView(arrangedSubviews: [playbackErrorLabel, retryPlaybackButton])
+            stack.axis = .vertical
+            stack.alignment = .center
+            stack.spacing = 14
+            stack.translatesAutoresizingMaskIntoConstraints = false
+            playbackErrorView.contentView.addSubview(stack)
+            NSLayoutConstraint.activate([
+                stack.leadingAnchor.constraint(equalTo: playbackErrorView.contentView.leadingAnchor, constant: 20),
+                stack.trailingAnchor.constraint(equalTo: playbackErrorView.contentView.trailingAnchor, constant: -20),
+                stack.topAnchor.constraint(equalTo: playbackErrorView.contentView.topAnchor, constant: 18),
+                stack.bottomAnchor.constraint(equalTo: playbackErrorView.contentView.bottomAnchor, constant: -18)
+            ])
+        }
+
+        @objc private func retryPlayback() {
+            playbackErrorView.isHidden = true
+            bufferingIndicator.startAnimating()
+            onRetryPlayback()
         }
 
         func updateSubtitleTiming(offset: Double, isAvailable: Bool) {

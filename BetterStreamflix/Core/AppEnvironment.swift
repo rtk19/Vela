@@ -171,23 +171,52 @@ final class AppEnvironment: ObservableObject {
         )
     }
 
+    func tmdbSearch(query: String, page: Int = 1) async throws -> TMDBTitlePage {
+        let token = try tmdbAccessToken()
+        let language = Locale.preferredLanguages.first ?? "en-US"
+        return try await tmdbClient.search(
+            query: query,
+            accessToken: token,
+            language: language,
+            page: page
+        )
+    }
+
+    func tmdbDetails(for item: MediaItem) async throws -> MediaItem {
+        let token = try tmdbAccessToken()
+        let language = Locale.preferredLanguages.first ?? "en-US"
+        return try await tmdbClient.details(for: item, accessToken: token, language: language)
+    }
+
+    func tmdbEpisodes(for season: MediaSeason, show: MediaItem) async throws -> [MediaEpisode] {
+        let token = try tmdbAccessToken()
+        let language = Locale.preferredLanguages.first ?? "en-US"
+        return try await tmdbClient.episodes(
+            for: season,
+            show: show,
+            accessToken: token,
+            language: language
+        )
+    }
+
     func refreshContinueWatchingForNewEpisodes() async {
         guard !isRefreshingCompletedSeries else { return }
         isRefreshingCompletedSeries = true
         defer { isRefreshingCompletedSeries = false }
 
+        await removeUnavailableQueuedEpisodes()
+
         for completedRequest in library.completedSeriesRequests {
             guard !Task.isCancelled,
                   let completedEpisode = completedRequest.episode else { continue }
             do {
-                let provider = try await registry.provider(id: completedRequest.media.providerID)
-                let show = try await provider.details(for: completedRequest.media)
+                let show = try await tmdbDetails(for: completedRequest.media)
                 let seasons = show.seasons
                     .filter { $0.number >= completedEpisode.seasonNumber }
                     .sorted { $0.number < $1.number }
 
                 for season in seasons {
-                    let episodes = try await provider.episodes(for: season, show: show)
+                    let episodes = try await tmdbEpisodes(for: season, show: show)
                     let nextEpisode = episodes
                         .filter {
                             ($0.seasonNumber, $0.number) >
@@ -204,6 +233,31 @@ final class AppEnvironment: ObservableObject {
                         )
                         break
                     }
+                }
+            } catch where error.isCancellation {
+                return
+            } catch {
+                continue
+            }
+        }
+    }
+
+    private func removeUnavailableQueuedEpisodes() async {
+        let queuedEpisodes = library.continueWatching.filter { $0.isNextUp }
+        for progress in queuedEpisodes {
+            guard !Task.isCancelled, let episode = progress.episode else { return }
+            do {
+                let show = try await tmdbDetails(for: progress.media)
+                guard let season = show.seasons.first(where: { $0.number == episode.seasonNumber }) else {
+                    library.deferUnavailableNextUp(progress)
+                    continue
+                }
+                let releasedEpisodes = try await tmdbEpisodes(for: season, show: show)
+                let isReleased = releasedEpisodes.contains {
+                    $0.seasonNumber == episode.seasonNumber && $0.number == episode.number
+                }
+                if !isReleased {
+                    library.deferUnavailableNextUp(progress)
                 }
             } catch where error.isCancellation {
                 return
@@ -241,5 +295,13 @@ final class AppEnvironment: ObservableObject {
 
         providerDomain = domain
         await registry.register(StreamingCommunityProvider(domain: domain))
+    }
+
+    func reloadAfterUserDataImport() async {
+        themeColor = UserDefaults.standard.string(forKey: "appearance.themeColor")
+            .flatMap(AppThemeColor.init(rawValue:)) ?? .red
+        providerDomain = UserDefaults.standard.string(forKey: "provider.streamingcommunity.domain")
+            ?? "streamingunity.cc"
+        await registry.register(StreamingCommunityProvider(domain: providerDomain))
     }
 }

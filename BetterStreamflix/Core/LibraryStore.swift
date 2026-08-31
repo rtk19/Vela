@@ -40,6 +40,19 @@ final class LibraryStore: ObservableObject {
         load()
     }
 
+    func exportUserData() throws -> Data {
+        try backupService.exportData()
+    }
+
+    func backupSummary(for data: Data) throws -> UserDataBackupSummary {
+        try backupService.summary(for: data)
+    }
+
+    func importUserData(_ data: Data) throws {
+        try backupService.restore(from: data)
+        load()
+    }
+
     func isInWatchlist(_ item: MediaItem) -> Bool {
         watchlist.contains { $0.id == item.id && $0.providerID == item.providerID }
     }
@@ -199,7 +212,59 @@ final class LibraryStore: ObservableObject {
         saveProgress()
     }
 
+    func deferUnavailableNextUp(_ value: WatchProgress) {
+        guard value.isNextUp, let unavailableEpisode = value.episode else { return }
+        let request = PlaybackRequest(media: value.media, episode: unavailableEpisode)
+        let key = progressKey(for: value)
+        removeProgress(for: request)
+
+        let showKey = seriesKey(for: value.media)
+        if currentSeriesProgressKeys[showKey] == key {
+            currentSeriesProgressKeys.removeValue(forKey: showKey)
+        }
+
+        let previousWatchedEpisode = watchedEpisodes
+            .filter {
+                $0.providerID == value.media.providerID &&
+                    $0.showID == value.media.id &&
+                    ($0.seasonNumber, $0.episodeNumber) <
+                        (unavailableEpisode.seasonNumber, unavailableEpisode.number)
+            }
+            .max {
+                ($0.seasonNumber, $0.episodeNumber) < ($1.seasonNumber, $1.episodeNumber)
+            }
+
+        if let previousWatchedEpisode {
+            let episode = MediaEpisode(
+                id: "\(value.media.id)/completed-s\(previousWatchedEpisode.seasonNumber)e\(previousWatchedEpisode.episodeNumber)",
+                providerID: value.media.providerID,
+                showID: value.media.id,
+                seasonNumber: previousWatchedEpisode.seasonNumber,
+                number: previousWatchedEpisode.episodeNumber,
+                title: nil,
+                overview: nil,
+                posterURL: nil
+            )
+            completedSeriesCheckpoints[showKey] = WatchProgress(
+                contentID: episode.id,
+                providerID: value.media.providerID,
+                media: value.media,
+                episode: episode,
+                position: 0,
+                duration: 0,
+                updatedAt: Date()
+            )
+        }
+        saveProgress()
+    }
+
     private func load() {
+        watchlist = []
+        progress = []
+        watchedEpisodes = []
+        currentSeriesProgressKeys = [:]
+        playbackRates = [:]
+        completedSeriesCheckpoints = [:]
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
         if let storedWatchlist = read([MediaItem].self, from: "watchlist.json") {
             watchlist = storedWatchlist
@@ -340,5 +405,15 @@ final class LibraryStore: ObservableObject {
         } catch {
             try? fileManager.removeItem(at: temporary)
         }
+    }
+
+    private var backupService: UserDataBackupService {
+        UserDataBackupService(
+            applicationSupportDirectory: directory,
+            fileManager: fileManager,
+            preferencesDomain: Bundle.main.bundleIdentifier ?? "com.refael.BetterStreamflix",
+            appVersion: Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String
+                ?? "Unknown"
+        )
     }
 }
