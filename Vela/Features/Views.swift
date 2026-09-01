@@ -3436,6 +3436,10 @@ struct SettingsView: View {
             }
             .scrollContentBackground(.hidden)
             .contentMargins(.top, 0, for: .scrollContent)
+            // Form's UIKit-backed pickers and switches cache the tint they receive
+            // when created. Rebuild them so every visible control adopts a newly
+            // selected theme immediately instead of waiting for an app restart.
+            .id(environment.theme)
         }
         .tint(environment.theme.accent)
         .background { VelaScreenBackground() }

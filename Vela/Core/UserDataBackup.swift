@@ -85,7 +85,7 @@ struct UserDataBackupService {
 
         do {
             for file in archive.applicationSupportFiles {
-                let destination = staging.appending(path: file.relativePath)
+                let destination = staging.appending(path: restoredRelativePath(file.relativePath))
                 try fileManager.createDirectory(
                     at: destination.deletingLastPathComponent(),
                     withIntermediateDirectories: true
@@ -118,9 +118,10 @@ struct UserDataBackupService {
     }
 
     private func archivedFiles() throws -> [ArchivedFile] {
-        guard fileManager.fileExists(atPath: applicationSupportDirectory.path) else { return [] }
+        let resolvedDirectory = applicationSupportDirectory.resolvingSymlinksInPath()
+        guard fileManager.fileExists(atPath: resolvedDirectory.path) else { return [] }
         guard let enumerator = fileManager.enumerator(
-            at: applicationSupportDirectory,
+            at: resolvedDirectory,
             includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
             options: []
         ) else { return [] }
@@ -129,7 +130,12 @@ struct UserDataBackupService {
         for case let url as URL in enumerator {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             guard values.isRegularFile == true, values.isSymbolicLink != true else { continue }
-            let relativePath = String(url.path.dropFirst(applicationSupportDirectory.path.count + 1))
+            let resolvedURL = url.resolvingSymlinksInPath()
+            let rootPrefix = resolvedDirectory.path + "/"
+            guard resolvedURL.path.hasPrefix(rootPrefix) else {
+                throw UserDataBackupError.invalidFile
+            }
+            let relativePath = String(resolvedURL.path.dropFirst(rootPrefix.count))
             result.append(ArchivedFile(relativePath: relativePath, contents: try Data(contentsOf: url)))
         }
         return result.sorted { $0.relativePath < $1.relativePath }
@@ -149,11 +155,23 @@ struct UserDataBackupService {
 
         var paths = Set<String>()
         for file in archive.applicationSupportFiles {
-            guard Self.isSafeRelativePath(file.relativePath), paths.insert(file.relativePath).inserted else {
+            let relativePath = restoredRelativePath(file.relativePath)
+            guard Self.isSafeRelativePath(relativePath), paths.insert(relativePath).inserted else {
                 throw UserDataBackupError.invalidFile
             }
         }
         return archive
+    }
+
+    private func restoredRelativePath(_ path: String) -> String {
+        // Version 1 backups made on iOS could mix `/var` with `/private/var` while
+        // calculating a relative path. That stripped eight extra characters from
+        // `BetterStreamflix` and archived every file below an `eamflix` folder.
+        // Keep those already-exported backups importable after fixing new exports.
+        let legacyPrefix = "eamflix/"
+        guard applicationSupportDirectory.lastPathComponent == "BetterStreamflix",
+              path.hasPrefix(legacyPrefix) else { return path }
+        return String(path.dropFirst(legacyPrefix.count))
     }
 
     private static func preferences(from data: Data) throws -> [String: Any] {

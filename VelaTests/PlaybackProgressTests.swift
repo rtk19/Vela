@@ -425,6 +425,18 @@ struct PlaybackProgressTests {
         let exportedAt = Date(timeIntervalSince1970: 1_800_000_000)
         let backup = try service.exportData(now: exportedAt)
 
+        let exportedJSON = try #require(
+            JSONSerialization.jsonObject(with: backup) as? [String: Any]
+        )
+        let exportedFiles = try #require(
+            exportedJSON["applicationSupportFiles"] as? [[String: Any]]
+        )
+        #expect(Set(exportedFiles.compactMap { $0["relativePath"] as? String }) == [
+            "future-feature/.history-data",
+            "progress.json",
+            "subtitle-sync-versions.json"
+        ])
+
         try Data("changed".utf8).write(to: dataDirectory.appending(path: "progress.json"))
         try Data("remove-me".utf8).write(to: dataDirectory.appending(path: "created-after-export.json"))
         defaults.set("green", forKey: "appearance.themeColor")
@@ -444,6 +456,46 @@ struct PlaybackProgressTests {
             appVersion: "9.9.9",
             fileCount: 3
         ))
+    }
+
+    @Test("User data backup imports iOS version 1 paths affected by the /private/var mismatch")
+    func userDataBackupImportsLegacyIOSPaths() throws {
+        let root = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        let dataDirectory = root.appending(path: "BetterStreamflix", directoryHint: .isDirectory)
+        let suiteName = "VelaTests.Backup.Legacy.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suiteName))
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+            try? FileManager.default.removeItem(at: root)
+        }
+        try FileManager.default.createDirectory(at: dataDirectory, withIntermediateDirectories: true)
+        try Data("saved-progress".utf8).write(to: dataDirectory.appending(path: "progress.json"))
+
+        let service = UserDataBackupService(
+            applicationSupportDirectory: dataDirectory,
+            userDefaults: defaults,
+            preferencesDomain: suiteName,
+            appVersion: "2.0.0"
+        )
+        let backup = try service.exportData()
+        var json = try #require(JSONSerialization.jsonObject(with: backup) as? [String: Any])
+        var files = try #require(json["applicationSupportFiles"] as? [[String: Any]])
+        for index in files.indices {
+            let path = try #require(files[index]["relativePath"] as? String)
+            files[index]["relativePath"] = "eamflix/\(path)"
+        }
+        json["applicationSupportFiles"] = files
+        let affectedBackup = try JSONSerialization.data(withJSONObject: json)
+
+        try Data("changed".utf8).write(to: dataDirectory.appending(path: "progress.json"))
+        try service.restore(from: affectedBackup)
+
+        #expect(
+            try Data(contentsOf: dataDirectory.appending(path: "progress.json"))
+                == Data("saved-progress".utf8)
+        )
+        #expect(!FileManager.default.fileExists(atPath: dataDirectory.appending(path: "eamflix").path))
     }
 
     @MainActor
