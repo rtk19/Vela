@@ -1,0 +1,536 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 77;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		059A1EF57302BC82CECD830C /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */; };
+		18FE2CC746AE1D986BE4F681 /* TMDBClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */; };
+		1C34F5EEF952356309A73FB5 /* Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23BFB819E1F6E6D0FDA303C5 /* Provider.swift */; };
+		2A41AF0C4E4C42B2B8AE0C01 /* PlaybackProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */; };
+		30DB641A2B674F6BA2A84501 /* TMDBCatalogMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */; };
+		4BF2E61CF8166494F858D6DE /* VixcloudResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */; };
+		51EF05D4A5D2D6C8BBCC75EE /* SubtitleProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */; };
+		58BC03FC05E81AA00D175E0B /* StreamingCommunityModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */; };
+		60E9F697F477EE98E69F0762 /* NativePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */; };
+		836C800689F9EF8087607BFE /* HTMLPayloadParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */; };
+		93653BAF494CB0D07F761155 /* ViewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A111E97A6AAFBC8093B3567A /* ViewModels.swift */; };
+		9408C0AEB818318EF3504BF2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E417294B9D0DE71665E17CA4 /* Assets.xcassets */; };
+		958CD8C260EA990C57B27042 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */; };
+		9BAEFDB74B157D6AFF6ED78C /* HTMLPayloadParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */; };
+		A86861C60B467A8B59D81A1F /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */; };
+		A86861C60B467A8B59D81A20 /* UserDataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */; };
+		AE0DA70541F5D1924829137C /* VelaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CAE86812F97E13B74F2B61D /* VelaApp.swift */; };
+		BDDCBF2A651E7F7AC7C2370E /* HTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */; };
+		C96125C82320414436F98BCC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74A2EA851D7A16B77E578F8 /* Models.swift */; };
+		CA1A02392EDFD451F7AB9EE2 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71DEDA88C858B0270DD5A87F /* Views.swift */; };
+		D095A3DBFADDBE8026344B89 /* StreamingCommunityProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */; };
+		D717B85841750963A4E7A921 /* TMDBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		998A72ECB93BBCA77CE1C37C /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 290220905E8614874ACA3730 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8CA3C1D19F54E1F65D38CFFC;
+			remoteInfo = Vela;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXFileReference section */
+		05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		080960E9E3B8ADD4C97B433F /* Vela.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vela.entitlements; sourceTree = "<group>"; };
+		23BFB819E1F6E6D0FDA303C5 /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
+		2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackProgressTests.swift; sourceTree = "<group>"; };
+		30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBCatalogMatcherTests.swift; sourceTree = "<group>"; };
+		3F7E760F287418B23975A2C1 /* Vela.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vela.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePlayer.swift; sourceTree = "<group>"; };
+		642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VixcloudResolver.swift; sourceTree = "<group>"; };
+		71DEDA88C858B0270DD5A87F /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityProvider.swift; sourceTree = "<group>"; };
+		731FD062BC7E00D297E466E2 /* VelaTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VelaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		8CAE86812F97E13B74F2B61D /* VelaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VelaApp.swift; sourceTree = "<group>"; };
+		90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParser.swift; sourceTree = "<group>"; };
+		923EB46117EA703E173F5254 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDataBackup.swift; sourceTree = "<group>"; };
+		9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviders.swift; sourceTree = "<group>"; };
+		A111E97A6AAFBC8093B3567A /* ViewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModels.swift; sourceTree = "<group>"; };
+		ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClient.swift; sourceTree = "<group>"; };
+		B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityModels.swift; sourceTree = "<group>"; };
+		B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClientTests.swift; sourceTree = "<group>"; };
+		B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPClient.swift; sourceTree = "<group>"; };
+		C74A2EA851D7A16B77E578F8 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParserTests.swift; sourceTree = "<group>"; };
+		E417294B9D0DE71665E17CA4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXGroup section */
+		201104BB3D8E5167A524189F /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				3F7E760F287418B23975A2C1 /* Vela.app */,
+				731FD062BC7E00D297E466E2 /* VelaTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		83B3DFB0FB2A80892D031267 /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				E417294B9D0DE71665E17CA4 /* Assets.xcassets */,
+				080960E9E3B8ADD4C97B433F /* Vela.entitlements */,
+				923EB46117EA703E173F5254 /* Info.plist */,
+				05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		8606092D4A9E218C26F154F2 /* Vela */ = {
+			isa = PBXGroup;
+			children = (
+				8CAE86812F97E13B74F2B61D /* VelaApp.swift */,
+				DF9351FE4E516655AF9CDB66 /* Core */,
+				F1CB07FF60DA734F9D7518A5 /* Features */,
+				83B3DFB0FB2A80892D031267 /* Resources */,
+			);
+			path = Vela;
+			sourceTree = "<group>";
+		};
+		BC1C258F167CCA71A5128771 = {
+			isa = PBXGroup;
+			children = (
+				8606092D4A9E218C26F154F2 /* Vela */,
+				C556FC279805570CC25147C0 /* VelaTests */,
+				201104BB3D8E5167A524189F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		C556FC279805570CC25147C0 /* VelaTests */ = {
+			isa = PBXGroup;
+			children = (
+				E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */,
+				2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */,
+				30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */,
+				B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */,
+			);
+			path = VelaTests;
+			sourceTree = "<group>";
+		};
+		DF9351FE4E516655AF9CDB66 /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */,
+				90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */,
+				B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */,
+				960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */,
+				960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */,
+				C74A2EA851D7A16B77E578F8 /* Models.swift */,
+				23BFB819E1F6E6D0FDA303C5 /* Provider.swift */,
+				B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */,
+				72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */,
+				9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */,
+				ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */,
+				642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */,
+			);
+			path = Core;
+			sourceTree = "<group>";
+		};
+		F1CB07FF60DA734F9D7518A5 /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */,
+				A111E97A6AAFBC8093B3567A /* ViewModels.swift */,
+				71DEDA88C858B0270DD5A87F /* Views.swift */,
+			);
+			path = Features;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		8CA3C1D19F54E1F65D38CFFC /* Vela */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = C5BA187B2ADDE62984AC921C /* Build configuration list for PBXNativeTarget "Vela" */;
+			buildPhases = (
+				03337F14E6E4160792A19F5E /* Sources */,
+				0A0F470F33B63EF8E22FC589 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = Vela;
+			packageProductDependencies = (
+			);
+			productName = Vela;
+			productReference = 3F7E760F287418B23975A2C1 /* Vela.app */;
+			productType = "com.apple.product-type.application";
+		};
+		EE9A3246C1C04BA88E6ADDE3 /* VelaTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 0CF6D0AE8CCCE42607230CDF /* Build configuration list for PBXNativeTarget "VelaTests" */;
+			buildPhases = (
+				D6A7F594F9DF64555A712DC9 /* Sources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				711A59943F90A10EA6A7832C /* PBXTargetDependency */,
+			);
+			name = VelaTests;
+			packageProductDependencies = (
+			);
+			productName = VelaTests;
+			productReference = 731FD062BC7E00D297E466E2 /* VelaTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		290220905E8614874ACA3730 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = YES;
+				LastUpgradeCheck = 2700;
+				TargetAttributes = {
+					8CA3C1D19F54E1F65D38CFFC = {
+						DevelopmentTeam = "";
+					};
+					EE9A3246C1C04BA88E6ADDE3 = {
+						DevelopmentTeam = "";
+					};
+				};
+			};
+			buildConfigurationList = 7CE5B19B0043968EB32D33F8 /* Build configuration list for PBXProject "Vela" */;
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				Base,
+				en,
+			);
+			mainGroup = BC1C258F167CCA71A5128771;
+			minimizedProjectReferenceProxies = 1;
+			preferredProjectObjectVersion = 77;
+			productRefGroup = 201104BB3D8E5167A524189F /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				8CA3C1D19F54E1F65D38CFFC /* Vela */,
+				EE9A3246C1C04BA88E6ADDE3 /* VelaTests */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		0A0F470F33B63EF8E22FC589 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				9408C0AEB818318EF3504BF2 /* Assets.xcassets in Resources */,
+				958CD8C260EA990C57B27042 /* PrivacyInfo.xcprivacy in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		03337F14E6E4160792A19F5E /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				059A1EF57302BC82CECD830C /* AppEnvironment.swift in Sources */,
+				AE0DA70541F5D1924829137C /* VelaApp.swift in Sources */,
+				9BAEFDB74B157D6AFF6ED78C /* HTMLPayloadParser.swift in Sources */,
+				BDDCBF2A651E7F7AC7C2370E /* HTTPClient.swift in Sources */,
+				A86861C60B467A8B59D81A1F /* LibraryStore.swift in Sources */,
+				A86861C60B467A8B59D81A20 /* UserDataBackup.swift in Sources */,
+				C96125C82320414436F98BCC /* Models.swift in Sources */,
+				60E9F697F477EE98E69F0762 /* NativePlayer.swift in Sources */,
+				1C34F5EEF952356309A73FB5 /* Provider.swift in Sources */,
+				58BC03FC05E81AA00D175E0B /* StreamingCommunityModels.swift in Sources */,
+				D095A3DBFADDBE8026344B89 /* StreamingCommunityProvider.swift in Sources */,
+				51EF05D4A5D2D6C8BBCC75EE /* SubtitleProviders.swift in Sources */,
+				D717B85841750963A4E7A921 /* TMDBClient.swift in Sources */,
+				93653BAF494CB0D07F761155 /* ViewModels.swift in Sources */,
+				CA1A02392EDFD451F7AB9EE2 /* Views.swift in Sources */,
+				4BF2E61CF8166494F858D6DE /* VixcloudResolver.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		D6A7F594F9DF64555A712DC9 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				836C800689F9EF8087607BFE /* HTMLPayloadParserTests.swift in Sources */,
+				2A41AF0C4E4C42B2B8AE0C01 /* PlaybackProgressTests.swift in Sources */,
+				30DB641A2B674F6BA2A84501 /* TMDBCatalogMatcherTests.swift in Sources */,
+				18FE2CC746AE1D986BE4F681 /* TMDBClientTests.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		711A59943F90A10EA6A7832C /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 8CA3C1D19F54E1F65D38CFFC /* Vela */;
+			targetProxy = 998A72ECB93BBCA77CE1C37C /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		3A2CE0010A2DE9BEB9A0F32F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Vela/Resources/Vela.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = A97K2SS8D9;
+				INFOPLIST_FILE = Vela/Resources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 2.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		499BB9AB528AA85437FBB428 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflixTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vela.app/Vela";
+			};
+			name = Debug;
+		};
+		9993320FA9A73B4921DA1471 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					AppIntents,
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.10;
+			};
+			name = Release;
+		};
+		DE0826C0ED91B96FC8298458 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = "";
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"$(inherited)",
+					"DEBUG=1",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					AppIntents,
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.10;
+			};
+			name = Debug;
+		};
+		EB0A3F893BDC4E1272E6E48C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@loader_path/Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflixTests;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Vela.app/Vela";
+			};
+			name = Release;
+		};
+		F495F3A9B95AC7D0286C05D4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = Vela/Resources/Vela.entitlements;
+				CODE_SIGN_IDENTITY = "iPhone Developer";
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = A97K2SS8D9;
+				INFOPLIST_FILE = Vela/Resources/Info.plist;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 2.0.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
+				SDKROOT = iphoneos;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		0CF6D0AE8CCCE42607230CDF /* Build configuration list for PBXNativeTarget "VelaTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				499BB9AB528AA85437FBB428 /* Debug */,
+				EB0A3F893BDC4E1272E6E48C /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		7CE5B19B0043968EB32D33F8 /* Build configuration list for PBXProject "Vela" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DE0826C0ED91B96FC8298458 /* Debug */,
+				9993320FA9A73B4921DA1471 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+		C5BA187B2ADDE62984AC921C /* Build configuration list for PBXNativeTarget "Vela" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				3A2CE0010A2DE9BEB9A0F32F /* Debug */,
+				F495F3A9B95AC7D0286C05D4 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Debug;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 290220905E8614874ACA3730 /* Project object */;
+}

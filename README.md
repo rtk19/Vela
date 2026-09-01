@@ -1,4 +1,4 @@
-# BetterStreamflix for iOS
+# Vela for iOS
 
 Native SwiftUI iOS port focused on the English StreamingCommunity provider. The app is intentionally structured so new providers can be added without changing the catalog, details, persistence, or player features.
 
@@ -12,25 +12,25 @@ No third-party packages are required.
 
 ## Run on an iPhone
 
-1. Open `BetterStreamflix.xcodeproj` in Xcode.
+1. Open `Vela.xcodeproj` in Xcode.
 2. If Xcode shows no eligible iOS destination, open **Xcode → Settings → Components** and install the iOS platform/runtime offered for your Xcode version.
-3. Select the **BetterStreamflix** target, then **Signing & Capabilities**.
+3. Select the **Vela** target, then **Signing & Capabilities**.
 4. Select your Apple Developer team.
-5. If Xcode reports that the bundle identifier is unavailable, replace `com.refael.BetterStreamflix` with a unique identifier such as `com.yourname.BetterStreamflix`.
+5. If Xcode reports that the bundle identifier is unavailable, replace `com.refael.BetterStreamflix` with a unique identifier such as `com.yourname.Vela`. The existing identifier is intentionally retained so installed copies upgrade to Vela without losing their data.
 6. Connect and select your iPhone, then press **Run**.
 7. If prompted on the iPhone, enable Developer Mode and trust the developer profile.
 
-Run **Product → Test** once an iOS Simulator runtime is installed. The shared `BetterStreamflix` scheme includes the `BetterStreamflixTests` target.
+Run **Product → Test** once an iOS Simulator runtime is installed. The shared `Vela` scheme includes the `VelaTests` target.
 
 ## Build an unsigned IPA
 
 From the repository root, run:
 
 ```sh
-./build-unsigned-ipa.sh
+./build-unsigned-ipa.sh 2.0.0
 ```
 
-Enter a release version such as `1.2.0`. The script permanently updates the version in both the Xcode project and `project.yml`, makes an unsigned device build, verifies the built version, and writes the IPA under `build/unsigned-ipa/<version>/`.
+Pass a release version such as `2.0.0`, or omit it to enter the version interactively. The script permanently updates the version in both the Xcode project and `project.yml`, makes an unsigned device build, verifies the built version, and writes `Vela-<version>-unsigned.ipa` under `build/unsigned-ipa/<version>/`.
 
 The script requires Xcode with iOS platform support installed under **Xcode → Settings → Components**.
 
@@ -71,7 +71,7 @@ The rest of the application does not need provider-specific branching.
 
 ### Persistence and backups
 
-User preferences belong in the app's `UserDefaults` domain. Durable user library and playback data belongs under `Application Support/BetterStreamflix`. The Settings backup feature snapshots both locations into a versioned JSON file and restores them as one unit, so new persisted features stored there are included automatically. If durable user data must live elsewhere, its implementation must extend `UserDataBackupService` and the backup round-trip test in the same change. Regenerable caches, temporary playback assets, bundled configuration, and non-user-created Keychain credentials are intentionally excluded.
+User preferences belong in the app's `UserDefaults` domain. Durable user library and playback data belongs under the legacy `Application Support/BetterStreamflix` directory, which Vela intentionally retains for seamless upgrades. The Settings backup feature snapshots both locations into a versioned JSON file and restores them as one unit, so new persisted features stored there are included automatically. If durable user data must live elsewhere, its implementation must extend `UserDataBackupService` and the backup round-trip test in the same change. Regenerable caches, temporary playback assets, bundled configuration, and non-user-created Keychain credentials are intentionally excluded.
 
 ## Provider maintenance
 
@@ -89,4 +89,4 @@ The hero carousel and discovery shelves use TMDB independently of StreamingCommu
 
 ## Credits and license
 
-Based on BetterStreamflix and the original Streamflix project. The repository's Apache-2.0 license and existing attribution apply.
+Vela is based on BetterStreamflix and the original Streamflix project. The repository's Apache-2.0 license and existing attribution apply.
