@@ -65,6 +65,7 @@ enum VelaTheme: String, CaseIterable, Identifiable {
         )
     }
 
+    var heroTransition: Color { backgroundSecondary }
     var glow: Color { accent.opacity(0.28) }
 
     static let background = Color(hex: 0x080A10)

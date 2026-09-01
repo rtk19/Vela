@@ -54,18 +54,52 @@ private struct VelaPrimaryButtonStyle: ButtonStyle {
     }
 }
 
-private struct VelaHeroPageTransition: View {
+private struct VelaHeroFade: View {
+    @EnvironmentObject private var environment: AppEnvironment
+
     var body: some View {
         LinearGradient(
             stops: [
-                .init(color: .black, location: 0),
-                .init(color: .black.opacity(0.78), location: 0.24),
-                .init(color: .black.opacity(0.3), location: 0.62),
+                .init(color: .clear, location: 0.28),
+                .init(color: environment.theme.heroTransition.opacity(0.15), location: 0.48),
+                .init(color: environment.theme.heroTransition.opacity(0.82), location: 0.76),
+                .init(color: environment.theme.heroTransition, location: 1),
+            ],
+            startPoint: .top,
+            endPoint: .bottom
+        )
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct VelaHeroPageTransition: View {
+    @EnvironmentObject private var environment: AppEnvironment
+
+    var body: some View {
+        LinearGradient(
+            stops: [
+                .init(color: environment.theme.heroTransition, location: 0),
+                .init(color: environment.theme.heroTransition.opacity(0.78), location: 0.24),
+                .init(color: environment.theme.heroTransition.opacity(0.3), location: 0.62),
                 .init(color: .clear, location: 1),
             ],
             startPoint: .top,
             endPoint: .bottom
         )
+    }
+}
+
+private struct HeroArtworkBoundaryClip: ViewModifier {
+    let isEnabled: Bool
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if isEnabled {
+            content.clipped()
+        } else {
+            content
+        }
     }
 }
 
@@ -170,8 +204,8 @@ private extension View {
         modifier(VelaSurfaceModifier(cornerRadius: cornerRadius))
     }
 
-    /// Extends the hero's existing black endpoint into the page without
-    /// changing the artwork, crop, fixed height, or in-hero gradient.
+    /// Continues the hero's black endpoint below its fixed frame, then reveals
+    /// the active theme background without affecting hero layout or interaction.
     func velaHeroPageTransition(height: CGFloat = 140) -> some View {
         overlay(alignment: .bottom) {
             VelaHeroPageTransition()
@@ -181,6 +215,7 @@ private extension View {
                 .accessibilityHidden(true)
         }
     }
+
 }
 
 private struct DestructiveTrashLabel: View {
@@ -668,21 +703,11 @@ private struct TrendingHeroCarousel: View {
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .scaleEffect(metrics.scale, anchor: .top)
                 .offset(y: metrics.parallaxOffset)
-                .clipped()
+                .modifier(HeroArtworkBoundaryClip(isEnabled: metrics.clipsToHeroBounds))
                 .offset(y: metrics.verticalOffset)
                 .opacity(metrics.opacity)
 
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.28),
-                        .init(color: .black.opacity(0.15), location: 0.48),
-                        .init(color: .black.opacity(0.82), location: 0.76),
-                        .init(color: .black, location: 1),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .allowsHitTesting(false)
+                VelaHeroFade()
 
                 Color.clear
                     .contentShape(Rectangle())
@@ -2738,23 +2763,13 @@ struct DetailsView: View {
                 .frame(width: proxy.size.width, height: proxy.size.height)
                 .scaleEffect(metrics.scale, anchor: .top)
                 .offset(y: metrics.parallaxOffset)
-                .clipped()
+                .modifier(HeroArtworkBoundaryClip(isEnabled: metrics.clipsToHeroBounds))
                 .offset(y: metrics.verticalOffset)
                 .opacity(metrics.opacity)
 
                 // This gradient deliberately remains in the scrolling layer so it
                 // continues to sit behind the title as the artwork recedes.
-                LinearGradient(
-                    stops: [
-                        .init(color: .clear, location: 0.28),
-                        .init(color: .black.opacity(0.15), location: 0.48),
-                        .init(color: .black.opacity(0.82), location: 0.76),
-                        .init(color: .black, location: 1),
-                    ],
-                    startPoint: .top,
-                    endPoint: .bottom
-                )
-                .allowsHitTesting(false)
+                VelaHeroFade()
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
 
@@ -3070,6 +3085,7 @@ private enum HeroArtworkScrollEffect {
         let parallaxOffset: CGFloat
         let verticalOffset: CGFloat
         let opacity: Double
+        let clipsToHeroBounds: Bool
     }
 
     static let homeCoordinateSpace = "home-hero-scroll"
@@ -3080,27 +3096,28 @@ private enum HeroArtworkScrollEffect {
     static let disappearanceDistance: CGFloat = 500
     static let maximumDimming: Double = 0.64
     static let upwardParallaxCompensation: CGFloat = 0.35
-    static let overscrollZoomDistance: CGFloat = 180
-    static let overscrollScaleIncreasePerDistance: CGFloat = 0.12
 
     static func metrics(minY: CGFloat, reduceMotion: Bool) -> Metrics {
         let upwardScroll = max(0, -minY)
         let overscroll = max(0, minY)
         let recessionProgress = min(upwardScroll / recessionDistance, 1)
         let disappearanceProgress = min(upwardScroll / disappearanceDistance, 1)
-        let overscrollProgress = overscroll / overscrollZoomDistance
         let scale = reduceMotion
             ? 1
-            : 1 + (overscrollScaleIncreasePerDistance * overscrollProgress)
+            : 1 + (overscroll / heroHeight)
 
         return Metrics(
             recessionProgress: recessionProgress,
             scale: scale,
             parallaxOffset: reduceMotion ? 0 : upwardScroll * upwardParallaxCompensation,
-            // Moving the already-clipped artwork layer only during overscroll
-            // pins it to the screen without affecting normal upward scrolling.
+            // Pin the artwork's top while its exact overscroll scale keeps the
+            // bottom attached to the stretched hero instead of exposing a gap.
             verticalOffset: -overscroll,
-            opacity: 1 - Double(disappearanceProgress)
+            opacity: 1 - Double(disappearanceProgress),
+            // Pull-down zoom needs to render above the hero's layout bounds.
+            // During regular scrolling, restore the boundary so the artwork
+            // cannot bleed behind the page's shelves or detail content.
+            clipsToHeroBounds: overscroll == 0
         )
     }
 }
