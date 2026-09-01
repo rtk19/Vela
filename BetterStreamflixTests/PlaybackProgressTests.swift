@@ -95,6 +95,72 @@ struct PlaybackProgressTests {
     }
 
     @MainActor
+    @Test("The latest episode follows a title opened through a different catalog representation")
+    func latestEpisodeAcrossCatalogRepresentations() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let providerRequest = request(
+            showID: "provider-show",
+            providerID: "provider",
+            tmdbID: 1_627,
+            seasonNumber: 3,
+            episodeNumber: 12
+        )
+        let watchlistRequest = request(
+            showID: "tmdb:tv:1627",
+            providerID: MediaItem.tmdbCatalogProviderID,
+            tmdbID: 1_627,
+            seasonNumber: 3,
+            episodeNumber: 12
+        )
+        let library = LibraryStore(directory: directory)
+
+        library.updateProgress(request: providerRequest, position: 321, duration: 1_800)
+
+        let progress = try #require(library.latestProgress(for: watchlistRequest.media))
+        #expect(progress.episode?.seasonNumber == 3)
+        #expect(progress.episode?.number == 12)
+        #expect(library.resumePosition(for: watchlistRequest) == 321)
+
+        let reloadedLibrary = LibraryStore(directory: directory)
+        #expect(reloadedLibrary.latestProgress(for: watchlistRequest.media)?.episode?.number == 12)
+        #expect(reloadedLibrary.resumePosition(for: watchlistRequest) == 321)
+    }
+
+    @MainActor
+    @Test("Playing the same TMDB series from another list keeps one Continue Watching selection")
+    func oneContinueWatchingSelectionAcrossCatalogRepresentations() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let older = request(
+            showID: "provider-show",
+            providerID: "provider",
+            tmdbID: 1_627,
+            seasonNumber: 3,
+            episodeNumber: 12
+        )
+        let replayed = request(
+            showID: "tmdb:tv:1627",
+            providerID: MediaItem.tmdbCatalogProviderID,
+            tmdbID: 1_627,
+            seasonNumber: 1,
+            episodeNumber: 1
+        )
+        let library = LibraryStore(directory: directory)
+
+        library.updateProgress(request: older, position: 321, duration: 1_800)
+        library.updateProgress(request: replayed, position: 45, duration: 1_800)
+
+        let current = try #require(library.continueWatching.first)
+        #expect(library.continueWatching.count == 1)
+        #expect(current.episode?.seasonNumber == 1)
+        #expect(current.episode?.number == 1)
+        #expect(library.latestProgress(for: older.media)?.episode?.number == 1)
+    }
+
+    @MainActor
     @Test("Watched state persists and replaying resets the episode")
     func watchedStatePersistsAndReplayResets() {
         let directory = FileManager.default.temporaryDirectory
@@ -140,6 +206,41 @@ struct PlaybackProgressTests {
         #expect(promoted.position == 321)
         #expect(library.isWatched(current))
         #expect(library.isWatched(watchedNext))
+    }
+
+    @MainActor
+    @Test("Marking previous episodes watched spans seasons and leaves the selected episode untouched")
+    func markingPreviousEpisodesWatchedSpansSeasons() {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = LibraryStore(directory: directory)
+        let seasonOneEpisodeOne = request(seasonNumber: 1, episodeNumber: 1)
+        let seasonOneEpisodeTwo = request(seasonNumber: 1, episodeNumber: 2)
+        let seasonTwoEpisodeOne = request(seasonNumber: 2, episodeNumber: 1)
+        let selectedEpisode = request(seasonNumber: 2, episodeNumber: 2)
+        let laterEpisode = request(seasonNumber: 2, episodeNumber: 3)
+
+        library.updateProgress(request: seasonOneEpisodeTwo, position: 240, duration: 1_800)
+        library.updateProgress(request: selectedEpisode, position: 120, duration: 1_800)
+        library.markWatched(requests: [
+            seasonOneEpisodeOne,
+            seasonOneEpisodeTwo,
+            seasonTwoEpisodeOne
+        ])
+
+        #expect(library.isWatched(seasonOneEpisodeOne))
+        #expect(library.isWatched(seasonOneEpisodeTwo))
+        #expect(library.isWatched(seasonTwoEpisodeOne))
+        #expect(!library.isWatched(selectedEpisode))
+        #expect(!library.isWatched(laterEpisode))
+        #expect(library.progress(for: seasonOneEpisodeTwo) == nil)
+        #expect(library.progress(for: selectedEpisode)?.position == 120)
+
+        let reloadedLibrary = LibraryStore(directory: directory)
+        #expect(reloadedLibrary.isWatched(seasonOneEpisodeOne))
+        #expect(reloadedLibrary.isWatched(seasonTwoEpisodeOne))
+        #expect(!reloadedLibrary.isWatched(selectedEpisode))
     }
 
     @MainActor
@@ -328,10 +429,32 @@ struct PlaybackProgressTests {
     }
 
     private func request(seasonNumber: Int = 1, episodeNumber: Int) -> PlaybackRequest {
-        let show = MediaItem(id: "show", providerID: "test", kind: .series, title: "Show")
-        let episode = MediaEpisode(
-            id: "episode-\(seasonNumber)-\(episodeNumber)",
+        request(
+            showID: "show",
             providerID: "test",
+            tmdbID: nil,
+            seasonNumber: seasonNumber,
+            episodeNumber: episodeNumber
+        )
+    }
+
+    private func request(
+        showID: String,
+        providerID: String,
+        tmdbID: Int?,
+        seasonNumber: Int,
+        episodeNumber: Int
+    ) -> PlaybackRequest {
+        let show = MediaItem(
+            id: showID,
+            providerID: providerID,
+            kind: .series,
+            title: "Show",
+            tmdbID: tmdbID
+        )
+        let episode = MediaEpisode(
+            id: "\(showID)-episode-\(seasonNumber)-\(episodeNumber)",
+            providerID: providerID,
             showID: show.id,
             seasonNumber: seasonNumber,
             number: episodeNumber,

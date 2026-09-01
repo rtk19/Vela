@@ -444,33 +444,239 @@ struct SubtitleCue: Hashable, Sendable {
 }
 
 enum SubtitleDirectionFormatter {
-    private static let rightToLeftMark = "\u{200F}"
+    private static let rightToLeftIsolate = "\u{2067}"
+    private static let popDirectionalIsolate = "\u{2069}"
+
+    private struct DirectionalCounts {
+        var rightToLeft = 0
+        var leftToRight = 0
+    }
+
+    private struct PunctuationLayoutScore {
+        var legacy = 0
+        var logical = 0
+
+        var usesLegacyLayout: Bool {
+            legacy >= 2 && legacy >= logical * 2
+        }
+    }
 
     static func displayText(_ text: String, languageCode: String?) -> String {
-        guard isHebrew(languageCode: languageCode) || containsHebrew(text) else { return text }
-        return text.components(separatedBy: "\n").map { line in
-            guard containsHebrew(line) else { return line }
-            return "\(rightToLeftMark)\(line)\(rightToLeftMark)"
-        }.joined(separator: "\n")
+        let cue = SubtitleCue(startTime: 0, endTime: 1, text: text)
+        return normalizedCues([cue], languageCode: languageCode).first?.text ?? text
+    }
+
+    static func normalizedCues(
+        _ cues: [SubtitleCue],
+        languageCode: String?
+    ) -> [SubtitleCue] {
+        let combinedText = cues.map(\.text).joined(separator: "\n")
+        guard usesRightToLeftLayout(combinedText, languageCode: languageCode) else {
+            return cues
+        }
+        let repairsLegacyPunctuation = usesLegacyPunctuationLayout(cues)
+        let addsDirectionIsolation = cues.contains { cue in
+            cue.text.components(separatedBy: "\n").contains { line in
+                shouldIsolate(line) && !hasExplicitRightToLeftDirection(line)
+            }
+        }
+        guard repairsLegacyPunctuation || addsDirectionIsolation else { return cues }
+
+        return cues.map { cue in
+            SubtitleCue(
+                startTime: cue.startTime,
+                endTime: cue.endTime,
+                text: normalizedText(
+                    cue.text,
+                    repairsLegacyPunctuation: repairsLegacyPunctuation
+                )
+            )
+        }
+    }
+
+    static func needsNormalization(
+        _ cues: [SubtitleCue],
+        languageCode: String?
+    ) -> Bool {
+        let combinedText = cues.map(\.text).joined(separator: "\n")
+        guard usesRightToLeftLayout(combinedText, languageCode: languageCode) else {
+            return false
+        }
+        return usesLegacyPunctuationLayout(cues) || cues.contains { cue in
+            cue.text.components(separatedBy: "\n").contains { line in
+                shouldIsolate(line) && !hasExplicitRightToLeftDirection(line)
+            }
+        }
     }
 
     static func usesRightToLeftLayout(_ text: String, languageCode: String?) -> Bool {
-        isHebrew(languageCode: languageCode) || containsHebrew(text)
-    }
+        let counts = directionalCounts(in: text)
+        let languageIsRightToLeft = isRightToLeft(languageCode: languageCode)
 
-    private static func isHebrew(languageCode: String?) -> Bool {
-        guard let language = languageCode?
-            .lowercased()
-            .split(whereSeparator: { $0 == "-" || $0 == "_" })
-            .first else { return false }
-        return language == "he" || language == "heb" || language == "iw"
-    }
-
-    private static func containsHebrew(_ text: String) -> Bool {
-        text.unicodeScalars.contains { scalar in
-            (0x0590...0x05FF).contains(scalar.value) ||
-                (0xFB1D...0xFB4F).contains(scalar.value)
+        if counts.rightToLeft == 0 {
+            return languageIsRightToLeft && counts.leftToRight == 0 && !text.isEmpty
         }
+        if languageIsRightToLeft {
+            // Metadata is only a hint: require meaningful RTL content when the
+            // file also contains LTR text so a mislabeled file is left alone.
+            return counts.rightToLeft * 3 >= counts.leftToRight
+        }
+        return counts.rightToLeft > counts.leftToRight
+    }
+
+    private static func normalizedText(
+        _ text: String,
+        repairsLegacyPunctuation: Bool
+    ) -> String {
+        return text.components(separatedBy: "\n").map { line in
+            let correctedLine = repairsLegacyPunctuation ? correctedLegacyPunctuation(in: line) : line
+            guard shouldIsolate(correctedLine),
+                  !hasExplicitRightToLeftDirection(correctedLine) else {
+                return correctedLine
+            }
+            return "\(rightToLeftIsolate)\(correctedLine)\(popDirectionalIsolate)"
+        }.joined(separator: "\n")
+    }
+
+    private static func usesLegacyPunctuationLayout(_ cues: [SubtitleCue]) -> Bool {
+        let score = cues.reduce(into: PunctuationLayoutScore()) { total, cue in
+            for line in cue.text.components(separatedBy: "\n") {
+                let trimmed = line.trimmingCharacters(in: .whitespaces)
+                guard directionalCounts(in: trimmed).rightToLeft > 0 else { continue }
+
+                let leadingTerminal = edgeToken(in: trimmed, fromStart: true, matching: isTerminalPunctuation)
+                let trailingTerminal = edgeToken(in: trimmed, fromStart: false, matching: isTerminalPunctuation)
+                let leadingDialogueDash = edgeToken(in: trimmed, fromStart: true, matching: isDialogueDash)
+                let trailingDialogueDash = edgeToken(in: trimmed, fromStart: false, matching: isDialogueDash)
+
+                if !leadingTerminal.isEmpty {
+                    // A leading ellipsis is commonly intentional. It only
+                    // contributes weak evidence unless the rest of the file
+                    // also follows the legacy convention.
+                    total.legacy += isOnlyEllipsis(leadingTerminal) ? 1 : 2
+                }
+                if !trailingDialogueDash.isEmpty { total.legacy += 2 }
+                if !trailingTerminal.isEmpty { total.logical += 2 }
+                if !leadingDialogueDash.isEmpty { total.logical += 2 }
+            }
+        }
+        return score.usesLegacyLayout
+    }
+
+    private static func correctedLegacyPunctuation(in line: String) -> String {
+        let trimmed = line.trimmingCharacters(in: .whitespaces)
+        guard directionalCounts(in: trimmed).rightToLeft > 0 else { return line }
+
+        let leadingDecoration = edgeToken(
+            in: trimmed,
+            fromStart: true,
+            matching: { isTerminalPunctuation($0) || isQuotationMark($0) }
+        )
+        let leadingTerminal = leadingDecoration.filter(isTerminalPunctuation)
+        let withoutLeading = String(trimmed.dropFirst(leadingDecoration.count))
+            .trimmingCharacters(in: .whitespaces)
+        let trailingDialogueDash = edgeToken(
+            in: withoutLeading,
+            fromStart: false,
+            matching: isDialogueDash
+        )
+        let core = String(withoutLeading.dropLast(trailingDialogueDash.count))
+            .trimmingCharacters(in: .whitespaces)
+
+        guard !core.isEmpty,
+              !leadingTerminal.isEmpty || !trailingDialogueDash.isEmpty else {
+            return line
+        }
+
+        let dialoguePrefix = trailingDialogueDash.isEmpty ? "" : "\(trailingDialogueDash) "
+        // Legacy visual-order subtitle files reverse the entire decoration at
+        // the logical end of an RTL line. This includes combined marks (`!?`)
+        // and a closing quote (`?"`), not only the sentence punctuation.
+        let logicalSuffix = String(leadingDecoration.reversed())
+        return "\(dialoguePrefix)\(core)\(logicalSuffix)"
+    }
+
+    private static func edgeToken(
+        in text: String,
+        fromStart: Bool,
+        matching predicate: (Character) -> Bool
+    ) -> String {
+        let characters = fromStart ? Array(text) : Array(text.reversed())
+        let token = characters.prefix(while: predicate)
+        return fromStart ? String(token) : String(token.reversed())
+    }
+
+    private static func isTerminalPunctuation(_ character: Character) -> Bool {
+        character.unicodeScalars.allSatisfy { scalar in
+            [".", ",", "!", "?", ";", ":", "…", "،", "؛", "؟", "׃"].contains(String(scalar))
+        }
+    }
+
+    private static func isDialogueDash(_ character: Character) -> Bool {
+        ["-", "–", "—"].contains(character)
+    }
+
+    private static func isQuotationMark(_ character: Character) -> Bool {
+        ["\"", "'", "“", "”", "‘", "’", "«", "»", "׳", "״"].contains(character)
+    }
+
+    private static func isOnlyEllipsis(_ token: String) -> Bool {
+        !token.isEmpty && token.allSatisfy { $0 == "." || $0 == "…" }
+    }
+
+    private static func shouldIsolate(_ line: String) -> Bool {
+        let counts = directionalCounts(in: line)
+        // Punctuation-only lines inherit the file direction from their cue and
+        // need isolation too. Pure LTR lines in an otherwise RTL file do not.
+        return counts.rightToLeft > 0 || (counts.leftToRight == 0 && !line.isEmpty)
+    }
+
+    private static func hasExplicitRightToLeftDirection(_ line: String) -> Bool {
+        let scalars = line.unicodeScalars.filter { !$0.properties.isWhitespace }
+        guard let first = scalars.first, let last = scalars.last else { return false }
+        let pairedControls: [(UInt32, UInt32)] = [
+            (0x2067, 0x2069), // RIGHT-TO-LEFT ISOLATE ... POP DIRECTIONAL ISOLATE
+            (0x202B, 0x202C), // RIGHT-TO-LEFT EMBEDDING ... POP DIRECTIONAL FORMATTING
+            (0x202E, 0x202C), // RIGHT-TO-LEFT OVERRIDE ... POP DIRECTIONAL FORMATTING
+            (0x200F, 0x200F), // Existing paired RIGHT-TO-LEFT MARKS
+        ]
+        return pairedControls.contains { first.value == $0.0 && last.value == $0.1 }
+    }
+
+    private static func isRightToLeft(languageCode: String?) -> Bool {
+        guard let languageCode, !languageCode.isEmpty else { return false }
+        return Locale.Language(identifier: languageCode).characterDirection == .rightToLeft
+    }
+
+    private static func directionalCounts(in text: String) -> DirectionalCounts {
+        text.unicodeScalars.reduce(into: DirectionalCounts()) { counts, scalar in
+            guard scalar.properties.isAlphabetic else { return }
+            if isRightToLeft(scalar) {
+                counts.rightToLeft += 1
+            } else {
+                counts.leftToRight += 1
+            }
+        }
+    }
+
+    private static func isRightToLeft(_ scalar: Unicode.Scalar) -> Bool {
+        let value = scalar.value
+        return (0x0590...0x08FF).contains(value) ||
+            (0xFB1D...0xFDFF).contains(value) ||
+            (0xFE70...0xFEFF).contains(value) ||
+            (0x10840...0x1085F).contains(value) ||
+            (0x10860...0x1087F).contains(value) ||
+            (0x10880...0x108AF).contains(value) ||
+            (0x108E0...0x108FF).contains(value) ||
+            (0x10900...0x1093F).contains(value) ||
+            (0x10A00...0x10AFF).contains(value) ||
+            (0x10B00...0x10BAF).contains(value) ||
+            (0x10D00...0x10D3F).contains(value) ||
+            (0x10E80...0x10EFF).contains(value) ||
+            (0x10F00...0x10FDF).contains(value) ||
+            (0x1E800...0x1E8DF).contains(value) ||
+            (0x1E900...0x1E95F).contains(value) ||
+            (0x1EC70...0x1EEFF).contains(value)
     }
 }
 

@@ -2,8 +2,21 @@ import Foundation
 import Testing
 @testable import BetterStreamflix
 
+private let decodableTestImageData = Data(base64Encoded:
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
+)!
+
 @Suite("TMDB trending client")
 struct TMDBClientTests {
+    @Test("Movie and series catalogs omit Top 10 Today")
+    func catalogsOmitTopToday() {
+        for kind in [MediaKind.movie, .series] {
+            let sections = TMDBCollection.catalogSections(for: kind)
+
+            #expect(!sections.contains(.topToday(kind)))
+        }
+    }
+
     @Test("Maps movies and TV shows and omits unsupported results")
     func mapsTrendingTitles() async throws {
         let data = Data(
@@ -392,6 +405,134 @@ struct TMDBClientTests {
         #expect(artwork == nil)
     }
 
+    @Test("Retries title identity without an incorrect provider year")
+    func titleMetadataRetriesWithoutIncorrectYear() async throws {
+        let transport = SequencedTMDBTransport(responses: [
+            Data(#"{"results":[]}"#.utf8),
+            Data(
+                """
+                {
+                  "results": [{
+                    "id": 1622,
+                    "name": "Supernatural",
+                    "overview": "Two brothers hunt supernatural threats.",
+                    "first_air_date": "2005-09-13",
+                    "vote_average": 8.3,
+                    "genre_ids": [18, 9648],
+                    "poster_path": "/supernatural.jpg",
+                    "adult": false
+                  }]
+                }
+                """.utf8
+            ),
+        ])
+        let client = TMDBClient(client: transport)
+        let item = MediaItem(
+            id: "provider-supernatural",
+            providerID: "provider",
+            kind: .series,
+            title: "Supernatural",
+            releaseDate: "2007"
+        )
+
+        let metadata = try await client.titleMetadata(
+            for: item,
+            accessToken: "secret-token"
+        )
+
+        #expect(metadata?.id == 1622)
+        #expect(metadata?.releaseDate == "2005-09-13")
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(requests[0].url?.query?.contains("first_air_date_year=2007") == true)
+        #expect(requests[1].url?.query?.contains("first_air_date_year") == false)
+        #expect(requests[1].url?.query?.contains("query=Supernatural") == true)
+    }
+
+    @Test("Resolves title identity by IMDb ID before using ambiguous metadata")
+    func titleMetadataUsesIMDbIdentityFirst() async throws {
+        let transport = SequencedTMDBTransport(responses: [
+            Data(
+                """
+                {
+                  "movie_results": [],
+                  "tv_results": [{
+                    "id": 1622,
+                    "name": "Supernatural",
+                    "overview": "Two brothers hunt supernatural threats.",
+                    "first_air_date": "2005-09-13",
+                    "vote_average": 8.3,
+                    "genre_ids": [18, 9648],
+                    "adult": false
+                  }]
+                }
+                """.utf8
+            ),
+        ])
+        let client = TMDBClient(client: transport)
+        let item = MediaItem(
+            id: "provider-supernatural",
+            providerID: "provider",
+            kind: .series,
+            title: "A localized or incorrect provider title",
+            releaseDate: "2007",
+            imdbID: "tt0460681"
+        )
+
+        let metadata = try await client.titleMetadata(
+            for: item,
+            accessToken: "secret-token"
+        )
+
+        #expect(metadata?.id == 1622)
+        #expect(metadata?.title == "Supernatural")
+        let requests = await transport.requests
+        #expect(requests.count == 1)
+        #expect(requests[0].url?.path == "/3/find/tt0460681")
+        #expect(requests[0].url?.query?.contains("external_source=imdb_id") == true)
+        #expect(requests[0].url?.query?.contains("first_air_date_year") == false)
+    }
+
+    @Test("Falls back to exact title search when an IMDb ID is stale")
+    func titleMetadataFallsBackFromStaleIMDbIdentity() async throws {
+        let transport = SequencedTMDBTransport(responses: [
+            Data(#"{"movie_results":[],"tv_results":[]}"#.utf8),
+            Data(
+                """
+                {
+                  "results": [{
+                    "id": 202,
+                    "name": "Example Series",
+                    "first_air_date": "2025-03-04",
+                    "adult": false
+                  }]
+                }
+                """.utf8
+            ),
+        ])
+        let client = TMDBClient(client: transport)
+        let item = MediaItem(
+            id: "provider-title",
+            providerID: "provider",
+            kind: .series,
+            title: "Example Series",
+            releaseDate: "2025-03-04",
+            imdbID: "tt9999999"
+        )
+
+        let metadata = try await client.titleMetadata(
+            for: item,
+            accessToken: "secret-token"
+        )
+
+        #expect(metadata?.id == 202)
+        let requests = await transport.requests
+        #expect(requests.count == 2)
+        #expect(requests[0].url?.path == "/3/find/tt9999999")
+        #expect(requests[1].url?.path == "/3/search/tv")
+        #expect(requests[1].url?.query?.contains("first_air_date_year=2025") == true)
+    }
+
     @Test("Loads the preferred-language ClearLogo with English and neutral fallbacks")
     func clearLogoSelection() async throws {
         let directory = FileManager.default.temporaryDirectory
@@ -487,7 +628,7 @@ struct TMDBClientTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let imageData = Data("tmdb-image-data".utf8)
+        let imageData = decodableTestImageData
         let transport = RecordingTMDBTransport(data: imageData)
         let client = TMDBClient(
             client: transport,
@@ -514,7 +655,7 @@ struct TMDBClientTests {
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
-        let imageData = Data("direct-poster-data".utf8)
+        let imageData = decodableTestImageData
         let transport = RecordingTMDBTransport(data: imageData)
         let client = TMDBClient(
             client: transport,
@@ -541,6 +682,64 @@ struct TMDBClientTests {
         #expect(secondData == imageData)
         #expect(lastRequest?.url == posterURL)
         #expect(requestCount == 1)
+    }
+
+    @Test("Hero artwork matches the carousel poster and falls back when it is invalid")
+    func heroArtworkFallback() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let transport = SequencedTMDBTransport(responses: [
+            Data("not-an-image".utf8),
+            decodableTestImageData,
+        ])
+        let client = TMDBClient(
+            client: transport,
+            imageCache: TMDBImageCache(directoryURL: directory)
+        )
+        let backdropURL = try #require(URL(
+            string: "https://image.tmdb.org/t/p/original/backdrop.jpg"
+        ))
+        let posterURL = try #require(URL(
+            string: "https://image.tmdb.org/t/p/original/poster.jpg"
+        ))
+        let item = MediaItem(
+            id: "provider-title",
+            providerID: "provider",
+            kind: .series,
+            title: "Example Series",
+            tmdbID: 404,
+            posterURL: posterURL,
+            backdropURL: backdropURL
+        )
+
+        let data = try await client.heroArtworkData(for: item, accessToken: "secret-token")
+        let requests = await transport.requests
+
+        #expect(data == decodableTestImageData)
+        #expect(requests.map(\.url) == [posterURL, backdropURL])
+    }
+
+    @Test("An invalid cached response is evicted and downloaded again")
+    func invalidCachedImageIsReplaced() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+
+        let cache = TMDBImageCache(directoryURL: directory)
+        let remoteURL = try #require(URL(
+            string: "https://image.tmdb.org/t/p/original/recovered.jpg"
+        ))
+        await cache.store(Data("not-an-image".utf8), for: remoteURL)
+        let transport = RecordingTMDBTransport(data: decodableTestImageData)
+        let client = TMDBClient(client: transport, imageCache: cache)
+
+        let data = try await client.imageData(for: remoteURL)
+
+        #expect(data == decodableTestImageData)
+        #expect(await transport.requestCount == 1)
+        #expect(await cache.data(for: remoteURL) == decodableTestImageData)
     }
 
     @Test("Caches TMDB images for three days and deletes expired files")
@@ -658,6 +857,28 @@ private actor RecordingTMDBTransport: HTTPClientProtocol {
     func data(for request: URLRequest) async throws -> HTTPResponse {
         requestCount += 1
         lastRequest = request
+        let response = HTTPURLResponse(
+            url: request.url!,
+            statusCode: 200,
+            httpVersion: nil,
+            headerFields: nil
+        )!
+        return HTTPResponse(data: data, response: response)
+    }
+}
+
+private actor SequencedTMDBTransport: HTTPClientProtocol {
+    private var responses: [Data]
+    private(set) var requests: [URLRequest] = []
+
+    init(responses: [Data]) {
+        self.responses = responses
+    }
+
+    func data(for request: URLRequest) async throws -> HTTPResponse {
+        requests.append(request)
+        guard !responses.isEmpty else { throw AppError.invalidResponse }
+        let data = responses.removeFirst()
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: 200,

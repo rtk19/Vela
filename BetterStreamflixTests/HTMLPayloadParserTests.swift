@@ -98,7 +98,7 @@ struct HTMLPayloadParserTests {
         )
         let seriesRequest = PlaybackRequest(media: show, episode: episode)
         #expect(seriesRequest.nowPlayingTitle == "Example Show")
-        #expect(seriesRequest.nowPlayingSubtitle == "Season 2, Episode 4")
+        #expect(seriesRequest.nowPlayingSubtitle == "S02E04 • The Fourth Episode")
 
         let movie = MediaItem(id: "movie", providerID: "test", kind: .movie, title: "Example Movie")
         let movieRequest = PlaybackRequest(media: movie, episode: nil)
@@ -414,16 +414,75 @@ struct HTMLPayloadParserTests {
         #expect(vttCues == [SubtitleCue(startTime: 2, endTime: 4, text: "A WebVTT cue")])
     }
 
-    @Test("Keeps Hebrew punctuation on the RTL side without changing non-Hebrew lines")
-    func formatsHebrewSubtitleDirection() {
-        let rightToLeftMark = "\u{200F}"
-        let mixedText = "שלום עולם.\nVersion 2.0"
-        let formatted = SubtitleDirectionFormatter.displayText(mixedText, languageCode: "he")
+    @Test("Normalizes RTL punctuation only when the subtitle file needs it")
+    func formatsRightToLeftSubtitleDirection() {
+        let rightToLeftIsolate = "\u{2067}"
+        let popDirectionalIsolate = "\u{2069}"
+        let cues = [
+            SubtitleCue(startTime: 0, endTime: 1, text: "שלום עולם.\nVersion 2.0"),
+            SubtitleCue(startTime: 1, endTime: 2, text: "- מה שלומך?"),
+        ]
 
-        #expect(formatted == "\(rightToLeftMark)שלום עולם.\(rightToLeftMark)\nVersion 2.0")
-        #expect(SubtitleDirectionFormatter.usesRightToLeftLayout(mixedText, languageCode: "he"))
-        #expect(SubtitleDirectionFormatter.displayText("English text.", languageCode: "en") == "English text.")
-        #expect(!SubtitleDirectionFormatter.usesRightToLeftLayout("English text.", languageCode: "en"))
+        #expect(SubtitleDirectionFormatter.needsNormalization(cues, languageCode: "he"))
+        let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+        #expect(normalized[0].text == "\(rightToLeftIsolate)שלום עולם.\(popDirectionalIsolate)\nVersion 2.0")
+        #expect(normalized[1].text == "\(rightToLeftIsolate)- מה שלומך?\(popDirectionalIsolate)")
+        #expect(!SubtitleDirectionFormatter.needsNormalization(normalized, languageCode: "he"))
+        #expect(SubtitleDirectionFormatter.normalizedCues(normalized, languageCode: "he") == normalized)
+    }
+
+    @Test("Repairs legacy reversed punctuation in RTL subtitle files")
+    func repairsLegacyRightToLeftPunctuation() {
+        let rightToLeftIsolate = "\u{2067}"
+        let popDirectionalIsolate = "\u{2069}"
+        let cues = [
+            SubtitleCue(startTime: 0, endTime: 1, text: ",אבל טיפ הוא טיפ\n.והיינו חייבים לפעול מהר"),
+            SubtitleCue(startTime: 1, endTime: 2, text: ".מצטערת. בטח יש לי דם באוזניים -"),
+            SubtitleCue(startTime: 2, endTime: 3, text: "?את בסדר"),
+            SubtitleCue(startTime: 3, endTime: 4, text: "?\"איך זה בשביל \"מוכן"),
+            SubtitleCue(startTime: 4, endTime: 5, text: "!?הכל מוכן"),
+        ]
+
+        let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+
+        #expect(normalized[0].text == "\(rightToLeftIsolate)אבל טיפ הוא טיפ,\(popDirectionalIsolate)\n\(rightToLeftIsolate)והיינו חייבים לפעול מהר.\(popDirectionalIsolate)")
+        #expect(normalized[1].text == "\(rightToLeftIsolate)- מצטערת. בטח יש לי דם באוזניים.\(popDirectionalIsolate)")
+        #expect(normalized[2].text == "\(rightToLeftIsolate)את בסדר?\(popDirectionalIsolate)")
+        #expect(normalized[3].text == "\(rightToLeftIsolate)איך זה בשביל \"מוכן\"?\(popDirectionalIsolate)")
+        #expect(normalized[4].text == "\(rightToLeftIsolate)הכל מוכן?!\(popDirectionalIsolate)")
+        #expect(SubtitleDirectionFormatter.normalizedCues(normalized, languageCode: "he") == normalized)
+    }
+
+    @Test("Repairs Arabic legacy punctuation without rewriting intentional ellipses")
+    func repairsLegacyArabicPunctuation() {
+        let rightToLeftIsolate = "\u{2067}"
+        let popDirectionalIsolate = "\u{2069}"
+        let legacyArabic = [
+            SubtitleCue(startTime: 0, endTime: 1, text: "؟كيف حالك"),
+            SubtitleCue(startTime: 1, endTime: 2, text: "،ولكن علينا الذهاب"),
+        ]
+        let intentionalEllipsis = [
+            SubtitleCue(startTime: 0, endTime: 1, text: "...אבל אולי"),
+        ]
+
+        let normalizedArabic = SubtitleDirectionFormatter.normalizedCues(legacyArabic, languageCode: "ar")
+        let normalizedEllipsis = SubtitleDirectionFormatter.normalizedCues(intentionalEllipsis, languageCode: "he")
+
+        #expect(normalizedArabic[0].text == "\(rightToLeftIsolate)كيف حالك؟\(popDirectionalIsolate)")
+        #expect(normalizedArabic[1].text == "\(rightToLeftIsolate)ولكن علينا الذهاب،\(popDirectionalIsolate)")
+        #expect(normalizedEllipsis[0].text == "\(rightToLeftIsolate)...אבל אולי\(popDirectionalIsolate)")
+    }
+
+    @Test("Detects RTL content across languages and ignores mislabeled LTR files")
+    func detectsRightToLeftSubtitleFiles() {
+        let arabic = [SubtitleCue(startTime: 0, endTime: 1, text: "كيف حالك؟")]
+        let persian = [SubtitleCue(startTime: 0, endTime: 1, text: "حالت چطور است؟")]
+        let mislabeledEnglish = [SubtitleCue(startTime: 0, endTime: 1, text: "English text.")]
+
+        #expect(SubtitleDirectionFormatter.needsNormalization(arabic, languageCode: "ar"))
+        #expect(SubtitleDirectionFormatter.needsNormalization(persian, languageCode: "fa"))
+        #expect(!SubtitleDirectionFormatter.needsNormalization(mislabeledEnglish, languageCode: "he"))
+        #expect(SubtitleDirectionFormatter.normalizedCues(mislabeledEnglish, languageCode: "he") == mislabeledEnglish)
     }
 
     @Test("Injects an external WebVTT rendition while preserving native HLS subtitles")
@@ -500,7 +559,7 @@ struct HTMLPayloadParserTests {
 
         #expect(webVTT.hasPrefix("WEBVTT\n"))
         #expect(webVTT.contains("00:00:01.250 --> 00:00:03.500"))
-        #expect(webVTT.contains("\u{200F}שלום עולם.\u{200F}"))
+        #expect(webVTT.contains("\u{2067}שלום עולם.\u{2069}"))
         #expect(playlist.contains("#EXT-X-TARGETDURATION:4"))
         #expect(playlist.contains("#EXTINF:3.500,"))
     }

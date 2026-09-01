@@ -83,12 +83,12 @@ final class LibraryStore: ObservableObject {
     func latestProgress(for item: MediaItem) -> WatchProgress? {
         if item.kind == .series {
             guard let currentKey = currentSeriesProgressKeys[seriesKey(for: item)] else { return nil }
-            return progress.first { progressKey(for: $0) == currentKey }
+            return progress.first {
+                sameTitle($0.media, as: item) && progressKey(for: $0) == currentKey
+            }
         }
         return progress.first { value in
-            value.providerID == item.providerID &&
-                value.media.id == item.id &&
-                value.episode == nil
+            value.episode == nil && sameTitle(value.media, as: item)
         }
     }
 
@@ -177,13 +177,24 @@ final class LibraryStore: ObservableObject {
     }
 
     func markWatched(request: PlaybackRequest) {
-        guard request.episode != nil else { return }
-        watchedEpisodes.insert(WatchedEpisode(request: request))
-        let currentKey = progress(for: request).map(progressKey(for:)) ?? progressKey(for: request)
-        removeProgress(for: request)
-        let showKey = seriesKey(for: request.media)
-        if currentSeriesProgressKeys[showKey] == currentKey {
-            currentSeriesProgressKeys.removeValue(forKey: showKey)
+        markWatched(requests: [request])
+    }
+
+    func markWatched(requests: [PlaybackRequest]) {
+        let episodeRequests = requests.filter { $0.episode != nil }
+        guard !episodeRequests.isEmpty else { return }
+
+        episodeRequests.forEach { watchedEpisodes.insert(WatchedEpisode(request: $0)) }
+        let removedProgressKeys = Set(progress.compactMap { value in
+            episodeRequests.contains { progressMatches(value, request: $0) }
+                ? progressKey(for: value)
+                : nil
+        })
+        progress.removeAll { value in
+            episodeRequests.contains { progressMatches(value, request: $0) }
+        }
+        currentSeriesProgressKeys = currentSeriesProgressKeys.filter {
+            !removedProgressKeys.contains($0.value)
         }
         saveWatchedEpisodes()
         saveProgress()
@@ -285,9 +296,12 @@ final class LibraryStore: ObservableObject {
         }
         let storedCurrentSeriesProgressKeys = read([String: String].self, from: "continue-watching.json")
         if let storedCurrentSeriesProgressKeys {
-            let availableProgressKeys = Set(progress.map(progressKey(for:)))
-            currentSeriesProgressKeys = storedCurrentSeriesProgressKeys.filter {
-                availableProgressKeys.contains($0.value)
+            let selectedProgressKeys = Set(storedCurrentSeriesProgressKeys.values)
+            for value in progress where selectedProgressKeys.contains(progressKey(for: value)) {
+                let key = seriesKey(for: value.media)
+                if currentSeriesProgressKeys[key] == nil {
+                    currentSeriesProgressKeys[key] = progressKey(for: value)
+                }
             }
         } else {
             currentSeriesProgressKeys = migratedCurrentSeriesProgressKeys()
@@ -319,7 +333,10 @@ final class LibraryStore: ObservableObject {
     }
 
     private func seriesKey(for item: MediaItem) -> String {
-        "\(item.providerID):series:\(item.id)"
+        if let tmdbID = item.tmdbID {
+            return "tmdb:series:\(tmdbID)"
+        }
+        return "\(item.providerID):series:\(item.id)"
     }
 
     private func titleKey(for item: MediaItem) -> String {
@@ -375,15 +392,23 @@ final class LibraryStore: ObservableObject {
     }
 
     private func progressMatches(_ value: WatchProgress, request: PlaybackRequest) -> Bool {
-        guard value.providerID == request.media.providerID else { return false }
+        guard sameTitle(value.media, as: request.media) else { return false }
         guard let requestedEpisode = request.episode else {
-            return value.episode == nil && value.contentID == request.contentID
+            return value.episode == nil
         }
-        guard value.media.id == request.media.id, let savedEpisode = value.episode else { return false }
+        guard let savedEpisode = value.episode else { return false }
         return value.contentID == request.contentID || (
             savedEpisode.seasonNumber == requestedEpisode.seasonNumber &&
             savedEpisode.number == requestedEpisode.number
         )
+    }
+
+    private func sameTitle(_ lhs: MediaItem, as rhs: MediaItem) -> Bool {
+        guard lhs.kind == rhs.kind else { return false }
+        if let lhsTMDbID = lhs.tmdbID, let rhsTMDbID = rhs.tmdbID {
+            return lhsTMDbID == rhsTMDbID
+        }
+        return lhs.providerID == rhs.providerID && lhs.id == rhs.id
     }
 
     private func read<T: Decodable>(_ type: T.Type, from filename: String) -> T? {

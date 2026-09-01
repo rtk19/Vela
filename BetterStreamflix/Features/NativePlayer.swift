@@ -597,7 +597,11 @@ final class PlayerSession: ObservableObject {
                             )
                             let response = try await client.data(for: request)
                             try Task.checkCancellation()
-                            let cues = try SubtitleParser.cues(from: response.data)
+                            let parsedCues = try SubtitleParser.cues(from: response.data)
+                            let cues = SubtitleDirectionFormatter.normalizedCues(
+                                parsedCues,
+                                languageCode: subtitle.languageCode
+                            )
                             return (index, HLSSubtitleRendition(subtitle: subtitle, cues: cues))
                         } catch {
                             return (index, nil)
@@ -1540,6 +1544,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
     let onQualityChanged: (StreamQuality?) -> Void
     let onAdjustSubtitleTiming: (Double) -> Void
     let onRetryPlayback: () -> Void
+    let onWillDismiss: () -> Void
     let onDismiss: () -> Void
 
     func makeCoordinator() -> Coordinator {
@@ -1549,6 +1554,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
             onQualityChanged: onQualityChanged,
             onAdjustSubtitleTiming: onAdjustSubtitleTiming,
             onRetryPlayback: onRetryPlayback,
+            onWillDismiss: onWillDismiss,
             onDismiss: onDismiss
         )
     }
@@ -1581,6 +1587,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
 
     @MainActor
     final class Coordinator: NSObject, AVPlayerViewControllerDelegate, UIGestureRecognizerDelegate {
+        private let systemVolumeHUDSuppressor = MPVolumeView(frame: .zero)
         private let settingsButton = UIButton(type: .system)
         private let bufferingIndicator = UIActivityIndicatorView(style: .large)
         private let playbackErrorView = UIVisualEffectView(effect: UIBlurEffect(style: .systemChromeMaterialDark))
@@ -1595,6 +1602,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
         private let onQualityChanged: (StreamQuality?) -> Void
         private let onAdjustSubtitleTiming: (Double) -> Void
         private let onRetryPlayback: () -> Void
+        private let onWillDismiss: () -> Void
         private var subtitleTimingAvailable = false
         private var lastPlaybackErrorMessage: String?
         private var hideTask: Task<Void, Never>?
@@ -1607,6 +1615,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
             onQualityChanged: @escaping (StreamQuality?) -> Void,
             onAdjustSubtitleTiming: @escaping (Double) -> Void,
             onRetryPlayback: @escaping () -> Void,
+            onWillDismiss: @escaping () -> Void,
             onDismiss: @escaping () -> Void
         ) {
             self.availableQualities = availableQualities
@@ -1614,12 +1623,15 @@ struct NativePlayerController: UIViewControllerRepresentable {
             self.onQualityChanged = onQualityChanged
             self.onAdjustSubtitleTiming = onAdjustSubtitleTiming
             self.onRetryPlayback = onRetryPlayback
+            self.onWillDismiss = onWillDismiss
             self.onDismiss = onDismiss
+            super.init()
         }
 
         func installControls(in controller: AVPlayerViewController) {
             guard let overlay = controller.contentOverlayView else { return }
             player = controller.player
+            installSystemVolumeHUDSuppressor(in: controller.view)
             bufferingIndicator.translatesAutoresizingMaskIntoConstraints = false
             bufferingIndicator.color = .white
             bufferingIndicator.hidesWhenStopped = true
@@ -1654,6 +1666,22 @@ struct NativePlayerController: UIViewControllerRepresentable {
             controller.view.addGestureRecognizer(tapGesture)
             updateQualities(availableQualities, selectedQuality: selectedQuality)
             showSettingsButton()
+        }
+
+        private func installSystemVolumeHUDSuppressor(in view: UIView) {
+            // AVPlayerViewController already presents its own volume slider. Keeping an
+            // MPVolumeView attached makes iOS omit the second, system-level volume HUD.
+            systemVolumeHUDSuppressor.translatesAutoresizingMaskIntoConstraints = false
+            systemVolumeHUDSuppressor.isUserInteractionEnabled = false
+            systemVolumeHUDSuppressor.accessibilityElementsHidden = true
+            systemVolumeHUDSuppressor.alpha = 0.001
+            view.addSubview(systemVolumeHUDSuppressor)
+            NSLayoutConstraint.activate([
+                systemVolumeHUDSuppressor.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+                systemVolumeHUDSuppressor.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+                systemVolumeHUDSuppressor.widthAnchor.constraint(equalToConstant: 1),
+                systemVolumeHUDSuppressor.heightAnchor.constraint(equalToConstant: 1)
+            ])
         }
 
         func updateBuffering(_ isBuffering: Bool) {
@@ -1862,7 +1890,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
         }
 
         @objc private func playerTapped(_ gesture: UITapGestureRecognizer) {
-            guard !settingsButton.isHidden || subtitleTimingAvailable else { return }
+            guard !settingsButton.isHidden
+                    || subtitleTimingAvailable else { return }
             let buttonLocation = gesture.location(in: settingsButton)
             guard !settingsButton.bounds.contains(buttonLocation) else {
                 showSettingsButton()
@@ -1883,7 +1912,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
         }
 
         private func showSettingsButton() {
-            guard !availableQualities.isEmpty || subtitleTimingAvailable else { return }
+            guard !availableQualities.isEmpty
+                    || subtitleTimingAvailable else { return }
             hideTask?.cancel()
             UIView.animate(withDuration: 0.2) { [settingsButton] in
                 settingsButton.alpha = 0.86
@@ -1922,6 +1952,10 @@ struct NativePlayerController: UIViewControllerRepresentable {
             _ playerViewController: AVPlayerViewController,
             withAnimationCoordinator coordinator: UIViewControllerTransitionCoordinator
         ) {
+            // Restore portrait while the player still covers the presenting
+            // screen. Waiting until PlayerScreen disappears lets the details
+            // view briefly lay itself out using the player's landscape width.
+            onWillDismiss()
             coordinator.animate(alongsideTransition: nil) { [onDismiss] _ in onDismiss() }
         }
     }

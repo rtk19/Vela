@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import ImageIO
 import Security
 
 struct TrendingTitle: Identifiable, Hashable, Sendable {
@@ -32,7 +33,15 @@ struct TMDBArtwork: Equatable, Sendable {
     let posterURL: URL?
     let backdropURL: URL?
 
-    var heroURL: URL? { posterURL ?? backdropURL }
+    /// The app's portrait hero matches the Home carousel, so posters are the
+    /// primary artwork and backdrops are only a fallback when no poster loads.
+    var heroURLs: [URL] {
+        [posterURL, backdropURL].compactMap { $0 }.reduce(into: []) { urls, url in
+            if !urls.contains(url) { urls.append(url) }
+        }
+    }
+
+    var heroURL: URL? { heroURLs.first }
 }
 
 struct TMDBCarouselAssets: Sendable {
@@ -43,12 +52,18 @@ struct TMDBCarouselAssets: Sendable {
 enum TMDBCollection: Identifiable, Hashable, Sendable {
     case trending(MediaKind)
     case topToday(MediaKind)
+    case popular(MediaKind)
+    case topRated(MediaKind)
+    case newReleases(MediaKind)
     case genre(kind: MediaKind, id: Int, name: String)
 
     var id: String {
         switch self {
         case .trending(let kind): "trending-\(kind.rawValue)"
         case .topToday(let kind): "top-today-\(kind.rawValue)"
+        case .popular(let kind): "popular-\(kind.rawValue)"
+        case .topRated(let kind): "top-rated-\(kind.rawValue)"
+        case .newReleases(let kind): "new-releases-\(kind.rawValue)"
         case .genre(let kind, let id, _): "genre-\(kind.rawValue)-\(id)"
         }
     }
@@ -59,26 +74,48 @@ enum TMDBCollection: Identifiable, Hashable, Sendable {
         case .trending(.series): "Trending Shows"
         case .topToday(.movie): "Top 10 Movies Today"
         case .topToday(.series): "Top 10 Shows Today"
+        case .popular(.movie): "Popular Movies"
+        case .popular(.series): "Popular Series"
+        case .topRated(.movie): "Critically Acclaimed Movies"
+        case .topRated(.series): "Top Rated Series"
+        case .newReleases(.movie): "Now Playing"
+        case .newReleases(.series): "New Episodes This Week"
         case .genre(_, _, let name): name
         }
     }
 
     var kind: MediaKind {
         switch self {
-        case .trending(let kind), .topToday(let kind), .genre(let kind, _, _): kind
+        case .trending(let kind), .topToday(let kind), .popular(let kind),
+             .topRated(let kind), .newReleases(let kind), .genre(let kind, _, _): kind
         }
     }
 
     static func catalogSections(for kind: MediaKind) -> [TMDBCollection] {
         let genres: [(Int, String)] = kind == .movie
             ? [(28, "Action"), (12, "Adventure"), (16, "Animation"), (35, "Comedy"),
-               (80, "Crime"), (18, "Drama"), (27, "Horror"), (878, "Sci-Fi"), (53, "Thriller")]
+               (80, "Crime"), (99, "Documentaries"), (18, "Drama"), (10751, "Family"),
+               (14, "Fantasy"), (36, "History"), (27, "Horror"), (10402, "Music"),
+               (9648, "Mystery"), (10749, "Romance"), (878, "Sci-Fi"), (53, "Thriller"),
+               (10752, "War"), (37, "Western")]
             : [(10759, "Action & Adventure"), (16, "Animation"), (35, "Comedy"), (80, "Crime"),
                (99, "Documentary"), (18, "Drama"), (10751, "Family"), (9648, "Mystery"),
-               (10765, "Sci-Fi & Fantasy")]
-        return [.trending(kind)]
+               (10765, "Sci-Fi & Fantasy"), (10762, "Kids"), (10763, "News"), (10764, "Reality"),
+               (10766, "Soap"), (10767, "Talk"), (10768, "War & Politics"), (37, "Western")]
+        return [.trending(kind), .popular(kind), .topRated(kind), .newReleases(kind)]
             + genres.map { .genre(kind: kind, id: $0.0, name: $0.1) }
     }
+
+    static let homeSections: [TMDBCollection] = [
+        .trending(.series), .trending(.movie),
+        .topToday(.series), .topToday(.movie),
+        .popular(.series), .popular(.movie),
+        .newReleases(.series), .newReleases(.movie),
+        .genre(kind: .movie, id: 28, name: "Action Hits"),
+        .genre(kind: .series, id: 18, name: "Binge-Worthy Drama"),
+        .genre(kind: .movie, id: 35, name: "Feel-Good Comedy"),
+        .genre(kind: .series, id: 10765, name: "Sci-Fi & Fantasy Worlds"),
+    ]
 }
 
 actor TMDBClient {
@@ -119,6 +156,12 @@ actor TMDBClient {
             path = "trending/\(kind == .movie ? "movie" : "tv")/day"
         case .topToday(let kind):
             path = "trending/\(kind == .movie ? "movie" : "tv")/day"
+        case .popular(let kind):
+            path = "\(kind == .movie ? "movie" : "tv")/popular"
+        case .topRated(let kind):
+            path = "\(kind == .movie ? "movie" : "tv")/top_rated"
+        case .newReleases(let kind):
+            path = kind == .movie ? "movie/now_playing" : "tv/on_the_air"
         case .genre(let kind, let genreID, _):
             path = "discover/\(kind == .movie ? "movie" : "tv")"
             extraQueryItems = [
@@ -243,16 +286,50 @@ actor TMDBClient {
             )
         }
 
-        var queryItems = [
+        if let imdbID = item.imdbID?.trimmingCharacters(in: .whitespacesAndNewlines),
+           Self.isIMDbTitleID(imdbID) {
+            do {
+                if let metadata = try await titleMetadata(
+                    imdbID: imdbID,
+                    kind: item.kind,
+                    accessToken: accessToken,
+                    language: language
+                ) {
+                    return metadata
+                }
+            } catch where error.isCancellation {
+                throw error
+            } catch {
+                // A stale provider IMDb ID must not prevent the title fallback.
+            }
+        }
+
+        let queryItems = [
             URLQueryItem(name: "query", value: item.title),
             URLQueryItem(name: "include_adult", value: "false"),
         ]
+        var datedQueryItems = queryItems
         if let year = item.releaseDate.map({ String($0.prefix(4)) }), year.count == 4 {
-            queryItems.append(URLQueryItem(
+            datedQueryItems.append(URLQueryItem(
                 name: item.kind == .movie ? "year" : "first_air_date_year",
                 value: year
             ))
         }
+        let datedMatch = try await titleMetadata(
+            path: "search/\(item.kind == .movie ? "movie" : "tv")",
+            kind: item.kind,
+            accessToken: accessToken,
+            language: language,
+            queryItems: datedQueryItems,
+            preferredTitle: item.title
+        )
+        guard datedMatch == nil, datedQueryItems.count != queryItems.count else {
+            return datedMatch
+        }
+
+        // Some providers expose a last-air or catalog year as the title's release
+        // date. Keep the year for precision first, then retry without it so an
+        // otherwise exact title match is not lost to unreliable provider metadata.
         return try await titleMetadata(
             path: "search/\(item.kind == .movie ? "movie" : "tv")",
             kind: item.kind,
@@ -301,20 +378,62 @@ actor TMDBClient {
         accessToken: String,
         language: String = "en-US"
     ) async throws -> Data? {
-        let directTMDBURL = [item.posterURL, item.backdropURL]
+        var attemptedURLs = Set<URL>()
+
+        let directTMDBURLs = [item.posterURL, item.backdropURL]
             .compactMap { $0 }
-            .first(where: { $0.host == "image.tmdb.org" })
-        let url = if let directTMDBURL {
-            directTMDBURL
-        } else {
-            try await artwork(
-                for: item,
-                accessToken: accessToken,
-                language: language
-            )?.heroURL
+            .filter { $0.host?.lowercased() == "image.tmdb.org" }
+        var result = await firstLoadableImage(from: directTMDBURLs, excluding: attemptedURLs)
+        attemptedURLs = result.attemptedURLs
+        if let data = result.data {
+            return data
         }
-        guard let url else { return nil }
-        return try await imageData(for: url)
+
+        // Refresh the artwork record after direct URLs fail. This also supplies
+        // TMDB artwork for provider items that arrived without TMDB image URLs.
+        if let refreshedArtwork = try? await artwork(
+            for: item,
+            accessToken: accessToken,
+            language: language
+        ) {
+            result = await firstLoadableImage(
+                from: refreshedArtwork.heroURLs,
+                excluding: attemptedURLs
+            )
+            attemptedURLs = result.attemptedURLs
+            if let data = result.data { return data }
+        }
+
+        // Provider artwork is the final fallback when TMDB is missing or its CDN
+        // object cannot be decoded. Keep poster-first ordering consistent with
+        // the Home carousel here as well.
+        let providerURLs = [item.posterURL, item.backdropURL]
+            .compactMap { $0 }
+            .filter { $0.host?.lowercased() != "image.tmdb.org" }
+        return await firstLoadableImage(
+            from: providerURLs,
+            excluding: attemptedURLs
+        ).data
+    }
+
+    private func firstLoadableImage(
+        from urls: [URL],
+        excluding previouslyAttemptedURLs: Set<URL>
+    ) async -> (data: Data?, attemptedURLs: Set<URL>) {
+        var attemptedURLs = previouslyAttemptedURLs
+        for url in urls where attemptedURLs.insert(url).inserted {
+            do {
+                return (try await imageData(for: url), attemptedURLs)
+            } catch where error.isCancellation {
+                return (nil, attemptedURLs)
+            } catch {
+                // Artwork records and CDN objects can temporarily disagree.
+                // Continue through the remaining known sources rather than
+                // leaving the entire hero empty because one URL is stale.
+                continue
+            }
+        }
+        return (nil, attemptedURLs)
     }
 
     func carouselAssets(
@@ -371,7 +490,10 @@ actor TMDBClient {
 
     func imageData(for url: URL) async throws -> Data {
         if let cachedData = await imageCache.data(for: url) {
-            return cachedData
+            if Self.isDecodableImage(cachedData) {
+                return cachedData
+            }
+            await imageCache.removeData(for: url)
         }
         if let existingTask = imageDownloadTasks[url] {
             return try await existingTask.value
@@ -381,13 +503,19 @@ actor TMDBClient {
         let imageCache = self.imageCache
         let task = Task<Data, Error> {
             if let cachedData = await imageCache.data(for: url) {
-                return cachedData
+                if Self.isDecodableImage(cachedData) {
+                    return cachedData
+                }
+                await imageCache.removeData(for: url)
             }
             var request = URLRequest(url: url)
             request.timeoutInterval = 30
             request.cachePolicy = .reloadIgnoringLocalCacheData
             let data = try await client.data(for: request).data
             try Task.checkCancellation()
+            guard Self.isDecodableImage(data) else {
+                throw AppError.decoding("The image response could not be decoded.")
+            }
             await imageCache.store(data, for: url)
             return data
         }
@@ -396,6 +524,12 @@ actor TMDBClient {
         // Keep filling the shared disk cache even if the requesting view scrolls
         // away or is dismissed before this download completes.
         return try await task.value
+    }
+
+    private nonisolated static func isDecodableImage(_ data: Data) -> Bool {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              CGImageSourceGetCount(source) > 0 else { return false }
+        return CGImageSourceGetStatus(source) == .statusComplete
     }
 
     func logoData(
@@ -619,11 +753,41 @@ actor TMDBClient {
         }
     }
 
+    private func titleMetadata(
+        imdbID: String,
+        kind: MediaKind,
+        accessToken: String,
+        language: String
+    ) async throws -> TrendingTitle? {
+        guard !accessToken.isEmpty else { throw TMDBError.missingAccessToken }
+        var components = URLComponents(string: "https://api.themoviedb.org/3/find/\(imdbID)")
+        components?.queryItems = [
+            URLQueryItem(name: "external_source", value: "imdb_id"),
+            URLQueryItem(name: "language", value: language),
+        ]
+        guard let url = components?.url else { throw AppError.invalidURL }
+
+        let response = try await client.data(for: authorizedRequest(
+            url: url,
+            accessToken: accessToken
+        ))
+        do {
+            return try JSONDecoder().decode(TMDBFindResponse.self, from: response.data)
+                .metadata(kind: kind)
+        } catch {
+            throw AppError.decoding(error.localizedDescription)
+        }
+    }
+
     private static func normalizedTitle(_ title: String) -> String {
         title.folding(
             options: [.caseInsensitive, .diacriticInsensitive],
             locale: .current
         )
+    }
+
+    private static func isIMDbTitleID(_ value: String) -> Bool {
+        value.count > 2 && value.hasPrefix("tt") && value.dropFirst(2).allSatisfy(\.isNumber)
     }
 
     private static func imageLanguageCode(from language: String) -> String {
@@ -694,6 +858,10 @@ actor TMDBImageCache {
         } catch {
             // A cache write must never prevent artwork from being displayed.
         }
+    }
+
+    func removeData(for remoteURL: URL) {
+        try? fileManager.removeItem(at: fileURL(for: remoteURL))
     }
 
     func removeExpiredEntries(now: Date = Date()) {
@@ -900,6 +1068,21 @@ private struct TMDBArtworkSearchResult: Decodable, Sendable {
 
 private struct TMDBMetadataSearchResponse: Decodable, Sendable {
     let results: [TMDBMetadataPayload]
+}
+
+private struct TMDBFindResponse: Decodable, Sendable {
+    let movieResults: [TMDBMetadataPayload]
+    let tvResults: [TMDBMetadataPayload]
+
+    enum CodingKeys: String, CodingKey {
+        case movieResults = "movie_results"
+        case tvResults = "tv_results"
+    }
+
+    func metadata(kind: MediaKind) -> TrendingTitle? {
+        let results = kind == .movie ? movieResults : tvResults
+        return results.lazy.compactMap { $0.metadata(kind: kind) }.first
+    }
 }
 
 private struct TMDBMetadataPayload: Decodable, Sendable {

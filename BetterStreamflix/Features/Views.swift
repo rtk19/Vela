@@ -25,14 +25,198 @@ private enum MediaArtworkLayout {
     )
 }
 
+private extension TrendingTitle {
+    var titleTransitionID: String {
+        "tmdb:\(kind.rawValue):\(id)"
+    }
+}
+
+private struct TitleTransitionNamespaceKey: EnvironmentKey {
+    static let defaultValue: Namespace.ID? = nil
+}
+
+private final class TitleTransitionSelection: ObservableObject, @unchecked Sendable {
+    var titleID: String?
+    var sourceID: String?
+
+    func select(titleID: String, sourceID: String) {
+        self.titleID = titleID
+        self.sourceID = sourceID
+    }
+}
+
+private struct TitleTransitionSelectionKey: EnvironmentKey {
+    static let defaultValue: TitleTransitionSelection? = nil
+}
+
+private extension EnvironmentValues {
+    var titleTransitionNamespace: Namespace.ID? {
+        get { self[TitleTransitionNamespaceKey.self] }
+        set { self[TitleTransitionNamespaceKey.self] = newValue }
+    }
+
+    var titleTransitionSelection: TitleTransitionSelection? {
+        get { self[TitleTransitionSelectionKey.self] }
+        set { self[TitleTransitionSelectionKey.self] = newValue }
+    }
+}
+
+private struct TitleTransitionSourceModifier: ViewModifier {
+    @Environment(\.titleTransitionNamespace) private var namespace
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var occurrenceID = UUID().uuidString
+    let id: String
+    let explicitSourceID: String?
+
+    private var sourceID: String {
+        explicitSourceID ?? "\(id):occurrence:\(occurrenceID)"
+    }
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *), !reduceMotion, let namespace {
+            content
+                .matchedTransitionSource(id: sourceID, in: namespace)
+        } else {
+            content
+        }
+    }
+}
+
+private struct TitleNavigationTransitionModifier: ViewModifier {
+    @Environment(\.titleTransitionNamespace) private var namespace
+    @Environment(\.titleTransitionSelection) private var selection
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let id: String
+
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if #available(iOS 18.0, *),
+           !reduceMotion,
+           let namespace,
+           selection?.titleID == id,
+           let sourceID = selection?.sourceID {
+            content.navigationTransition(.zoom(sourceID: sourceID, in: namespace))
+        } else {
+            content
+        }
+    }
+}
+
+private extension View {
+    func titleTransitionSource(id: String, sourceID: String? = nil) -> some View {
+        modifier(TitleTransitionSourceModifier(id: id, explicitSourceID: sourceID))
+    }
+
+    func titleNavigationTransition(id: String) -> some View {
+        modifier(TitleNavigationTransitionModifier(id: id))
+    }
+}
+
+private struct DestructiveTrashLabel: View {
+    let title: String
+
+    var body: some View {
+        Label {
+            Text(title)
+        } icon: {
+            if let image = UIImage(systemName: "trash")?.withTintColor(
+                .systemRed,
+                renderingMode: .alwaysOriginal
+            ) {
+                Image(uiImage: image)
+            }
+        }
+    }
+}
+
+private struct MediaTitlePosterActions: View {
+    let item: MediaItem
+    let onDetails: () -> Void
+
+    var body: some View {
+        Button(action: onDetails) {
+            Label("Details", systemImage: "info.circle")
+        }
+        MediaTitleWatchlistAction(item: item)
+    }
+}
+
+private struct MediaTitleWatchlistAction: View {
+    @EnvironmentObject private var library: LibraryStore
+    let item: MediaItem
+
+    private var existingWatchlistItem: MediaItem? {
+        if let tmdbID = item.tmdbID,
+           let match = library.watchlist.first(where: {
+               $0.kind == item.kind && $0.tmdbID == tmdbID
+           }) {
+            return match
+        }
+        return library.watchlist.first {
+            $0.id == item.id && $0.providerID == item.providerID
+        }
+    }
+
+    var body: some View {
+        Button {
+            library.toggleWatchlist(existingWatchlistItem ?? item)
+        } label: {
+            Label(
+                existingWatchlistItem == nil ? "Add to Watchlist" : "Remove from Watchlist",
+                systemImage: existingWatchlistItem == nil ? "bookmark" : "bookmark.slash"
+            )
+        }
+    }
+}
+
+private struct TMDBTitlePosterActions: View {
+    @EnvironmentObject private var library: LibraryStore
+    let title: TrendingTitle
+    let onDetails: () -> Void
+
+    private var existingWatchlistItem: MediaItem? {
+        library.watchlist.first {
+            $0.kind == title.kind && $0.tmdbID == title.id
+        }
+    }
+
+    var body: some View {
+        Button(action: onDetails) {
+            Label("Details", systemImage: "info.circle")
+        }
+        Button {
+            if let existingWatchlistItem {
+                library.toggleWatchlist(existingWatchlistItem)
+            } else {
+                library.toggleWatchlist(.tmdbCatalogItem(from: title))
+            }
+        } label: {
+            Label(
+                existingWatchlistItem == nil ? "Add to Watchlist" : "Remove from Watchlist",
+                systemImage: existingWatchlistItem == nil ? "bookmark" : "bookmark.slash"
+            )
+        }
+    }
+}
+
 struct RootView: View {
     private enum Tab: Hashable { case home, movies, series, search, settings }
 
     @EnvironmentObject private var environment: AppEnvironment
     @Environment(\.scenePhase) private var scenePhase
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Namespace private var homeTitleTransitionNamespace
+    @Namespace private var movieTitleTransitionNamespace
+    @Namespace private var seriesTitleTransitionNamespace
+    @Namespace private var searchTitleTransitionNamespace
+    @StateObject private var homeTitleTransitionSelection = TitleTransitionSelection()
+    @StateObject private var movieTitleTransitionSelection = TitleTransitionSelection()
+    @StateObject private var seriesTitleTransitionSelection = TitleTransitionSelection()
+    @StateObject private var searchTitleTransitionSelection = TitleTransitionSelection()
     @State private var selectedTab: Tab = .home
     @State private var searchIsPresented = false
+    @State private var searchFocusRequest = 0
     @State private var isHomeReady = false
     @State private var pendingAutomaticUpdate: GitHubRelease?
     @State private var automaticUpdateRelease: GitHubRelease?
@@ -45,18 +229,32 @@ struct RootView: View {
                 set: { tab in
                     selectedTab = tab
                     searchIsPresented = tab == .search
+                    if tab == .search { searchFocusRequest += 1 }
                 }
             )) {
                 NavigationStack { HomeView(onInitialLoadCompleted: showHome) }
+                    .environment(\.titleTransitionNamespace, homeTitleTransitionNamespace)
+                    .environment(\.titleTransitionSelection, homeTitleTransitionSelection)
                     .tabItem { Label("Home", systemImage: "house.fill") }
                     .tag(Tab.home)
                 NavigationStack { CatalogView(kind: .movie) }
+                    .environment(\.titleTransitionNamespace, movieTitleTransitionNamespace)
+                    .environment(\.titleTransitionSelection, movieTitleTransitionSelection)
                     .tabItem { Label("Movies", systemImage: "film.fill") }
                     .tag(Tab.movies)
                 NavigationStack { CatalogView(kind: .series) }
+                    .environment(\.titleTransitionNamespace, seriesTitleTransitionNamespace)
+                    .environment(\.titleTransitionSelection, seriesTitleTransitionSelection)
                     .tabItem { Label("Series", systemImage: "tv.fill") }
                     .tag(Tab.series)
-                NavigationStack { SearchView(isSearchPresented: $searchIsPresented) }
+                NavigationStack {
+                    SearchView(
+                        isSearchPresented: $searchIsPresented,
+                        focusRequest: searchFocusRequest
+                    )
+                }
+                    .environment(\.titleTransitionNamespace, searchTitleTransitionNamespace)
+                    .environment(\.titleTransitionSelection, searchTitleTransitionSelection)
                     .tabItem { Label("Search", systemImage: "magnifyingglass") }
                     .tag(Tab.search)
                 NavigationStack { SettingsView() }
@@ -64,6 +262,12 @@ struct RootView: View {
                     .tag(Tab.settings)
             }
             .tint(environment.themeColor.color)
+            .background {
+                TabBarTapObserver(tabIndex: 3) {
+                    guard selectedTab == .search else { return }
+                    searchFocusRequest += 1
+                }
+            }
             .overlay(alignment: .top) {
                 SourceLookupStatusOverlay()
                     .safeAreaPadding(.top, 8)
@@ -246,13 +450,21 @@ struct HomeView: View {
                 }
                 let watchlistSeries = library.watchlist.filter { $0.kind == .series }
                 if !watchlistSeries.isEmpty {
-                    MediaShelfView(title: "Watchlist Series", items: watchlistSeries)
+                    MediaShelfView(
+                        title: "Watchlist Series",
+                        items: watchlistSeries,
+                        onDetails: openDetails
+                    )
                 }
                 let watchlistMovies = library.watchlist.filter { $0.kind == .movie }
                 if !watchlistMovies.isEmpty {
-                    MediaShelfView(title: "Watchlist Movies", items: watchlistMovies)
+                    MediaShelfView(
+                        title: "Watchlist Movies",
+                        items: watchlistMovies,
+                        onDetails: openDetails
+                    )
                 }
-                ForEach([TMDBCollection.trending(.series), .trending(.movie)]) { collection in
+                ForEach(TMDBCollection.homeSections) { collection in
                     if let titles = model.tmdbShelves[collection], !titles.isEmpty {
                         TMDBShelfView(
                             collection: collection,
@@ -263,7 +475,7 @@ struct HomeView: View {
                     }
                 }
                 ForEach(model.shelves) { shelf in
-                    MediaShelfView(title: shelf.title, items: shelf.items)
+                    MediaShelfView(title: shelf.title, items: shelf.items, onDetails: openDetails)
                 }
             }
             .padding(.bottom)
@@ -296,6 +508,12 @@ struct HomeView: View {
             media: .tmdbCatalogItem(from: trending),
             tmdbMetadata: trending
         )
+
+
+    }
+
+    private func openDetails(_ item: MediaItem) {
+        selectedDetails = ResolvedMediaItem(media: item, tmdbMetadata: nil)
     }
 
     private func toggleWatchlist(_ trending: TrendingTitle) {
@@ -332,6 +550,7 @@ private struct TrendingHeroCarousel: View {
     private let interval: TimeInterval = 5
 
     @EnvironmentObject private var library: LibraryStore
+    @Environment(\.titleTransitionSelection) private var transitionSelection
     let titles: [TrendingTitle]
     let assets: TMDBCarouselAssets
     let resolvingKeys: Set<String>
@@ -346,6 +565,7 @@ private struct TrendingHeroCarousel: View {
     @State private var timerVersion = 0
     @State private var titleContentOffset: CGFloat = 0
     @State private var titleContentOpacity = 1.0
+    @State private var indicatorDragProgress: CGFloat = 0
 
     private var currentTitle: TrendingTitle { titles[currentIndex % titles.count] }
     private var isCurrentTitleResolving: Bool { resolvingKeys.contains(currentTitle.lookupKey) }
@@ -395,6 +615,11 @@ private struct TrendingHeroCarousel: View {
                 Color.clear
                     .contentShape(Rectangle())
                     .onTapGesture(perform: openCurrentDetails)
+                    .contextMenu {
+                        TMDBTitlePosterActions(title: currentTitle) {
+                            openCurrentDetails()
+                        }
+                    }
                     .accessibilityHidden(true)
 
                 heroContent
@@ -406,7 +631,8 @@ private struct TrendingHeroCarousel: View {
                     selectedIndex: currentIndex,
                     startedAt: slideStartedAt,
                     interval: interval,
-                    isPaused: isInteracting || scenePhase != .active
+                    isPaused: isInteracting || scenePhase != .active,
+                    dragProgress: indicatorDragProgress
                 )
                 .padding(.bottom, 18)
 
@@ -416,7 +642,11 @@ private struct TrendingHeroCarousel: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .containerRelativeFrame(.horizontal, alignment: .center)
-        .frame(height: 690)
+        .frame(height: HeroArtworkScrollEffect.heroHeight)
+        .titleTransitionSource(
+            id: currentTitle.titleTransitionID,
+            sourceID: heroTransitionSourceID
+        )
         .contentShape(Rectangle())
         .background {
             HorizontalCarouselPanRecognizer(
@@ -490,7 +720,7 @@ private struct TrendingHeroCarousel: View {
 
             HStack(spacing: 12) {
                 Button {
-                    onDetails(currentTitle)
+                    openCurrentDetails()
                 } label: {
                     Group {
                         if isCurrentTitleResolving {
@@ -556,7 +786,15 @@ private struct TrendingHeroCarousel: View {
 
     private func openCurrentDetails() {
         guard !isInteracting, !isCurrentTitleResolving else { return }
+        transitionSelection?.select(
+            titleID: currentTitle.titleTransitionID,
+            sourceID: heroTransitionSourceID
+        )
         onDetails(currentTitle)
+    }
+
+    private var heroTransitionSourceID: String {
+        "\(currentTitle.titleTransitionID):home-hero"
     }
 
     private func beginHorizontalInteraction() {
@@ -568,6 +806,7 @@ private struct TrendingHeroCarousel: View {
     private func updateHorizontalInteraction(translation: CGFloat) {
         guard isInteracting else { return }
         let progress = min(abs(translation) / 72, 1)
+        indicatorDragProgress = min(max(translation / 72, -1), 1)
         titleContentOffset = reduceMotion ? 0 : translation * 0.34
         titleContentOpacity = 1 - progress
     }
@@ -579,6 +818,7 @@ private struct TrendingHeroCarousel: View {
             slideStartedAt = Date()
             withAnimation(nil) {
                 currentIndex = direction < 0 ? nextIndex : previousIndex
+                indicatorDragProgress = 0
                 titleContentOffset = reduceMotion ? 0 : -direction * 28
                 titleContentOpacity = reduceMotion ? 1 : 0
                 isInteracting = false
@@ -590,7 +830,8 @@ private struct TrendingHeroCarousel: View {
             timerVersion += 1
         } else {
             isInteracting = false
-            withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
+            withAnimation(reduceMotion ? nil : .smooth(duration: 0.28)) {
+                indicatorDragProgress = 0
                 titleContentOffset = 0
                 titleContentOpacity = 1
             }
@@ -616,6 +857,9 @@ private struct TrendingHeroCarousel: View {
 }
 
 private struct TitleLogoView<Fallback: View>: View {
+    private let maximumLogoWidth: CGFloat = 300
+    private let maximumLogoHeight: CGFloat = 88
+
     let title: String
     let logoData: Data?
     let showsFallback: Bool
@@ -635,16 +879,27 @@ private struct TitleLogoView<Fallback: View>: View {
 
     var body: some View {
         let logoImage = logoData.flatMap(UIImage.init(data:))
-        fallback
-            .opacity(logoImage == nil && showsFallback ? 1 : 0)
-            .overlay {
-                if let logoImage {
-                    Image(uiImage: logoImage)
-                        .resizable()
-                        .scaledToFit()
-                        .accessibilityHidden(true)
-                }
+
+        Group {
+            if let logoImage {
+                Image(uiImage: logoImage)
+                    .resizable()
+                    .scaledToFit()
+                    .frame(
+                        maxWidth: maximumLogoWidth,
+                        maxHeight: maximumLogoHeight
+                    )
+                    .accessibilityHidden(true)
+            } else if showsFallback {
+                fallback
+            } else {
+                Color.clear
             }
+        }
+            // Reserve one consistent, generously sized logo region. The old
+            // overlay inherited the fallback title's intrinsic width, making a
+            // short title such as "Silo" much smaller than longer title logos.
+            .frame(maxWidth: maximumLogoWidth, minHeight: maximumLogoHeight)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(title)
     }
@@ -673,39 +928,79 @@ private struct CenteredHeroArtwork: View {
 }
 
 private struct CarouselPageIndicator: View {
+    private let collapsedWidth: CGFloat = 7
+    private let expandedWidth: CGFloat = 42
+
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let count: Int
     let selectedIndex: Int
     let startedAt: Date
     let interval: TimeInterval
     let isPaused: Bool
+    let dragProgress: CGFloat
 
     var body: some View {
         TimelineView(.animation(minimumInterval: 1 / 30, paused: isPaused)) { context in
             let progress = min(max(context.date.timeIntervalSince(startedAt) / interval, 0), 1)
             HStack(spacing: 8) {
                 ForEach(0..<count, id: \.self) { index in
-                    if index == selectedIndex {
-                        GeometryReader { geometry in
-                            Capsule()
-                                .fill(.white.opacity(0.28))
-                                .overlay(alignment: .leading) {
-                                    Capsule()
-                                        .fill(.white)
-                                        .frame(width: geometry.size.width * progress)
-                                }
-                                .clipShape(Capsule())
-                        }
-                        .frame(width: 42, height: 7)
-                    } else {
-                        Circle()
-                            .fill(.white.opacity(0.48))
-                            .frame(width: 7, height: 7)
+                    let emphasis = emphasis(for: index)
+                    GeometryReader { geometry in
+                        Capsule()
+                            .fill(.white.opacity(inactiveOpacity(for: emphasis)))
+                            .overlay(alignment: .leading) {
+                                Capsule()
+                                    .fill(.white)
+                                    .frame(
+                                        width: geometry.size.width * fillProgress(
+                                            for: index,
+                                            timerProgress: progress
+                                        )
+                                    )
+                            }
+                            .clipShape(Capsule())
                     }
+                    .frame(width: width(for: emphasis), height: collapsedWidth)
+                    .animation(settleAnimation, value: selectedIndex)
                 }
             }
         }
         .frame(height: 8)
         .accessibilityHidden(true)
+    }
+
+    private var dragAmount: CGFloat {
+        min(abs(dragProgress), 1)
+    }
+
+    private var dragTargetIndex: Int? {
+        guard count > 1, dragAmount > 0 else { return nil }
+        return dragProgress < 0
+            ? (selectedIndex + 1) % count
+            : (selectedIndex - 1 + count) % count
+    }
+
+    private func emphasis(for index: Int) -> CGFloat {
+        if index == selectedIndex { return 1 - dragAmount }
+        if index == dragTargetIndex { return dragAmount }
+        return 0
+    }
+
+    private func width(for emphasis: CGFloat) -> CGFloat {
+        collapsedWidth + ((expandedWidth - collapsedWidth) * emphasis)
+    }
+
+    private func inactiveOpacity(for emphasis: CGFloat) -> Double {
+        0.48 - (0.20 * Double(emphasis))
+    }
+
+    private func fillProgress(for index: Int, timerProgress: CGFloat) -> CGFloat {
+        index == selectedIndex ? timerProgress : 0
+    }
+
+    private var settleAnimation: Animation? {
+        reduceMotion ? nil : .smooth(duration: 0.38)
     }
 }
 
@@ -720,7 +1015,8 @@ private struct TrendingHeroLoadingView: View {
                 .padding(.bottom, 54)
             PageTitleOverlay(title: "Home")
         }
-        .frame(height: 690)
+        .containerRelativeFrame(.horizontal, alignment: .center)
+        .frame(height: HeroArtworkScrollEffect.heroHeight)
     }
 }
 
@@ -873,6 +1169,145 @@ private struct HorizontalCarouselPanRecognizer: UIViewRepresentable {
     }
 }
 
+private struct TabBarTapObserver: UIViewRepresentable {
+    let tabIndex: Int
+    let onTap: () -> Void
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(tabIndex: tabIndex, onTap: onTap)
+    }
+
+    func makeUIView(context: Context) -> AttachmentView {
+        let view = AttachmentView()
+        view.isUserInteractionEnabled = false
+        view.onWindowChanged = { [weak coordinator = context.coordinator] marker in
+            coordinator?.install(marker: marker)
+        }
+        return view
+    }
+
+    func updateUIView(_ uiView: AttachmentView, context: Context) {
+        context.coordinator.tabIndex = tabIndex
+        context.coordinator.onTap = onTap
+        context.coordinator.install(marker: uiView)
+    }
+
+    static func dismantleUIView(_ uiView: AttachmentView, coordinator: Coordinator) {
+        coordinator.uninstall()
+    }
+
+    @MainActor
+    final class AttachmentView: UIView {
+        var onWindowChanged: ((AttachmentView) -> Void)?
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            onWindowChanged?(self)
+        }
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, UIGestureRecognizerDelegate {
+        var tabIndex: Int
+        var onTap: () -> Void
+        private weak var tabBar: UITabBar?
+        private weak var marker: AttachmentView?
+        private lazy var tap: UITapGestureRecognizer = {
+            let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
+            recognizer.delegate = self
+            recognizer.cancelsTouchesInView = false
+            return recognizer
+        }()
+
+        init(tabIndex: Int, onTap: @escaping () -> Void) {
+            self.tabIndex = tabIndex
+            self.onTap = onTap
+        }
+
+        func install(marker: AttachmentView) {
+            self.marker = marker
+            guard let window = marker.window,
+                  let candidate = findTabBarController(in: window.rootViewController)?.tabBar,
+                  tabBar !== candidate else { return }
+            uninstall()
+            self.marker = marker
+            tabBar = candidate
+            candidate.addGestureRecognizer(tap)
+        }
+
+        func uninstall() {
+            tabBar?.removeGestureRecognizer(tap)
+            tabBar = nil
+        }
+
+        func gestureRecognizer(
+            _ gestureRecognizer: UIGestureRecognizer,
+            shouldRecognizeSimultaneouslyWith otherGestureRecognizer: UIGestureRecognizer
+        ) -> Bool {
+            true
+        }
+
+        @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+            guard recognizer.state == .ended,
+                  let tabBar,
+                  let items = tabBar.items,
+                  items.indices.contains(tabIndex),
+                  tappedTabIndex(in: tabBar, itemCount: items.count, recognizer: recognizer) == tabIndex
+            else { return }
+            onTap()
+        }
+
+        private func tappedTabIndex(
+            in tabBar: UITabBar,
+            itemCount: Int,
+            recognizer: UITapGestureRecognizer
+        ) -> Int? {
+            let location = recognizer.location(in: tabBar)
+            let controls = tabBar.subviews
+                .compactMap { $0 as? UIControl }
+                .filter { !$0.isHidden && $0.alpha > 0 && $0.frame.contains(location) }
+
+            if let tappedControl = controls.first {
+                let orderedControls = tabBar.subviews
+                    .compactMap { $0 as? UIControl }
+                    .filter { !$0.isHidden && $0.alpha > 0 }
+                    .sorted { $0.frame.minX < $1.frame.minX }
+                guard let visualIndex = orderedControls.firstIndex(where: { $0 === tappedControl }) else {
+                    return nil
+                }
+                return logicalIndex(forVisualIndex: visualIndex, itemCount: itemCount, in: tabBar)
+            }
+
+            guard itemCount > 0, tabBar.bounds.width > 0 else { return nil }
+            let visualIndex = min(
+                Int(location.x / (tabBar.bounds.width / CGFloat(itemCount))),
+                itemCount - 1
+            )
+            return logicalIndex(forVisualIndex: visualIndex, itemCount: itemCount, in: tabBar)
+        }
+
+        private func logicalIndex(forVisualIndex visualIndex: Int, itemCount: Int, in view: UIView) -> Int {
+            view.effectiveUserInterfaceLayoutDirection == .rightToLeft
+                ? itemCount - visualIndex - 1
+                : visualIndex
+        }
+
+        private func findTabBarController(in viewController: UIViewController?) -> UITabBarController? {
+            guard let viewController else { return nil }
+            if let tabBarController = viewController as? UITabBarController {
+                return tabBarController
+            }
+            for child in viewController.children {
+                if let match = findTabBarController(in: child) { return match }
+            }
+            if let presented = viewController.presentedViewController {
+                return findTabBarController(in: presented)
+            }
+            return nil
+        }
+    }
+}
+
 private struct TrendingHeroUnavailableView: View {
     let message: String
 
@@ -898,6 +1333,7 @@ private struct TrendingHeroUnavailableView: View {
 }
 
 private struct ContinueWatchingShelfView: View {
+    @Environment(\.titleTransitionSelection) private var transitionSelection
     let progress: [WatchProgress]
     let onDetails: (MediaItem) -> Void
     let onResume: (WatchProgress) -> Void
@@ -906,44 +1342,305 @@ private struct ContinueWatchingShelfView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Text("Continue Watching")
-                .font(.title2.bold())
-                .padding(.horizontal, 20)
+            HStack {
+                Text("Continue Watching")
+                    .font(.title2.bold())
+                Spacer()
+                NavigationLink {
+                    ContinueWatchingListView(
+                        onResume: onResume,
+                        onMarkAsWatched: onMarkAsWatched,
+                        onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                    )
+                } label: {
+                    Text("Show All")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.tint)
+                }
+            }
+            .padding(.horizontal, 20)
 
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(alignment: .top, spacing: 14) {
                     ForEach(progress) { value in
                         Button { onResume(value) } label: {
                             ContinueWatchingCard(progress: value)
+                                .titleTransitionSource(
+                                    id: value.media.artworkIdentityKey,
+                                    sourceID: transitionSourceID(for: value)
+                                )
+                                .contextMenu {
+                                    ContinueWatchingActions(
+                                        progress: value,
+                                        onDetails: { _ in showDetails(value) },
+                                        onResume: onResume,
+                                        onMarkAsWatched: onMarkAsWatched,
+                                        onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                                    )
+                                } preview: {
+                                    ContinueWatchingMenuPreview(progress: value)
+                                }
                         }
                         .buttonStyle(.plain)
-                        .contextMenu {
-                            Button { onDetails(value.media) } label: {
-                                Label("Details", systemImage: "info.circle")
-                            }
-                            .tint(.white)
-                            Button { onResume(value) } label: {
-                                Label(value.isNextUp ? "Play Next" : "Resume", systemImage: "play.fill")
-                            }
-                            .tint(.white)
-                            if value.episode != nil {
-                                Button { onMarkAsWatched(value) } label: {
-                                    Label("Mark as Watched", systemImage: "checkmark.circle")
-                                }
-                                .tint(.white)
-                            }
-                            Button(role: .destructive) {
-                                onRemoveFromContinueWatching(value)
-                            } label: {
-                                Label("Remove from Continue Watching", systemImage: "trash")
-                            }
-                            .tint(.red)
-                        }
                     }
                 }
                 .padding(.horizontal, 20)
             }
         }
+    }
+
+    private func transitionSourceID(for progress: WatchProgress) -> String {
+        "\(progress.media.artworkIdentityKey):continue-watching-shelf:\(progress.id)"
+    }
+
+    private func showDetails(_ progress: WatchProgress) {
+        transitionSelection?.select(
+            titleID: progress.media.artworkIdentityKey,
+            sourceID: transitionSourceID(for: progress)
+        )
+        onDetails(progress.media)
+    }
+}
+
+private struct ContinueWatchingListView: View {
+    @EnvironmentObject private var library: LibraryStore
+    @State private var selectedDetails: ResolvedMediaItem?
+    let onResume: (WatchProgress) -> Void
+    let onMarkAsWatched: (WatchProgress) -> Void
+    let onRemoveFromContinueWatching: (WatchProgress) -> Void
+
+    var body: some View {
+        Group {
+            if library.continueWatching.isEmpty {
+                ContentUnavailableView(
+                    "Nothing to Continue",
+                    systemImage: "play.rectangle",
+                    description: Text("Movies and episodes you start will appear here.")
+                )
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(library.continueWatching) { value in
+                            ContinueWatchingRow(
+                                progress: value,
+                                onDetails: {
+                                    selectedDetails = ResolvedMediaItem(
+                                        media: $0,
+                                        tmdbMetadata: nil
+                                    )
+                                },
+                                onResume: onResume,
+                                onMarkAsWatched: onMarkAsWatched,
+                                onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.vertical, 8)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .background(.black)
+        .navigationTitle("Continue Watching")
+        .navigationBarTitleDisplayMode(.inline)
+        .navigationDestination(item: $selectedDetails) {
+            DetailsView(item: $0.media, tmdbMetadata: $0.tmdbMetadata)
+        }
+    }
+}
+
+private struct ContinueWatchingRow: View {
+    @Environment(\.titleTransitionSelection) private var transitionSelection
+    @State private var transitionOccurrenceID = UUID().uuidString
+    let progress: WatchProgress
+    let onDetails: (MediaItem) -> Void
+    let onResume: (WatchProgress) -> Void
+    let onMarkAsWatched: (WatchProgress) -> Void
+    let onRemoveFromContinueWatching: (WatchProgress) -> Void
+
+    private var transitionSourceID: String {
+        "\(progress.media.artworkIdentityKey):continue-watching-list:\(transitionOccurrenceID)"
+    }
+
+    var body: some View {
+        HStack(spacing: 10) {
+            Button { onResume(progress) } label: {
+                HStack(spacing: 14) {
+                    ContinueWatchingRowArtwork(progress: progress)
+
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(progress.media.title)
+                            .font(.body.weight(.semibold))
+                            .foregroundStyle(.white)
+                            .lineLimit(1)
+                        if let episodeTitle = progress.episodeDisplayTitle {
+                            Text(episodeTitle)
+                                .font(.subheadline)
+                                .foregroundStyle(.white.opacity(0.78))
+                                .lineLimit(1)
+                        }
+                        Text(progress.shelfProgressLabel)
+                            .font(.caption.weight(.medium))
+                            .foregroundStyle(.white.opacity(0.58))
+                            .lineLimit(1)
+                    }
+
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+                .contextMenu {
+                    ContinueWatchingActions(
+                        progress: progress,
+                        onDetails: { _ in showDetails() },
+                        onResume: onResume,
+                        onMarkAsWatched: onMarkAsWatched,
+                        onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                    )
+                } preview: {
+                    ContinueWatchingMenuPreview(progress: progress)
+                }
+            }
+            .buttonStyle(.plain)
+
+            Menu {
+                ContinueWatchingActions(
+                    progress: progress,
+                    onDetails: { _ in showDetails() },
+                    onResume: onResume,
+                    onMarkAsWatched: onMarkAsWatched,
+                    onRemoveFromContinueWatching: onRemoveFromContinueWatching
+                )
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.semibold))
+                    .foregroundStyle(.white.opacity(0.62))
+                    .frame(width: 44, height: 44)
+                    .contentShape(Rectangle())
+            }
+            .accessibilityLabel("Options for \(progress.media.title)")
+        }
+        .padding(.vertical, 12)
+        .overlay(alignment: .bottom) {
+            Divider()
+                .overlay(.white.opacity(0.16))
+                .padding(.leading, 142)
+        }
+        .contentShape(Rectangle())
+        .titleTransitionSource(
+            id: progress.media.artworkIdentityKey,
+            sourceID: transitionSourceID
+        )
+    }
+
+    private func showDetails() {
+        transitionSelection?.select(
+            titleID: progress.media.artworkIdentityKey,
+            sourceID: transitionSourceID
+        )
+        onDetails(progress.media)
+    }
+}
+
+private struct ContinueWatchingRowArtwork: View {
+    let progress: WatchProgress
+
+    var body: some View {
+        ZStack(alignment: .bottomLeading) {
+            CachedRemoteImage(url: progress.continueWatchingArtworkURL) { image in
+                image.resizable().scaledToFill()
+            } placeholder: {
+                Rectangle()
+                    .fill(.gray.opacity(0.22))
+                    .overlay {
+                        Image(systemName: progress.media.kind == .movie ? "film" : "tv")
+                    }
+            }
+            .frame(width: 128, height: 74)
+            .clipped()
+
+            ProgressView(value: progress.fraction)
+                .tint(.white)
+                .background(.white.opacity(0.28))
+                .frame(maxWidth: .infinity)
+        }
+        .frame(width: 128, height: 74)
+        .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+    }
+}
+
+private struct ContinueWatchingActions: View {
+    let progress: WatchProgress
+    let onDetails: (MediaItem) -> Void
+    let onResume: (WatchProgress) -> Void
+    let onMarkAsWatched: (WatchProgress) -> Void
+    let onRemoveFromContinueWatching: (WatchProgress) -> Void
+
+    var body: some View {
+        Button { onDetails(progress.media) } label: {
+            Label("Details", systemImage: "info.circle")
+        }
+        MediaTitleWatchlistAction(item: progress.media)
+        Button { onResume(progress) } label: {
+            Label(progress.isNextUp ? "Play Next" : "Resume", systemImage: "play.fill")
+        }
+        if progress.episode != nil {
+            Button { onMarkAsWatched(progress) } label: {
+                Label("Mark as Watched", systemImage: "checkmark.circle")
+            }
+        }
+        Button(role: .destructive) {
+            onRemoveFromContinueWatching(progress)
+        } label: {
+            DestructiveTrashLabel(title: "Remove from Continue Watching")
+        }
+        .tint(.red)
+    }
+}
+
+private struct ContinueWatchingMenuPreview: View {
+    let progress: WatchProgress
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            AsyncImage(url: progress.continueWatchingArtworkURL) { phase in
+                if let image = phase.image {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                } else {
+                    Rectangle()
+                        .fill(.gray.opacity(0.22))
+                        .overlay {
+                            if phase.error == nil {
+                                ProgressView()
+                            } else {
+                                Image(systemName: progress.media.kind == .movie ? "film" : "tv")
+                                    .font(.largeTitle)
+                            }
+                        }
+                }
+            }
+            .frame(width: 300, height: 169)
+            .clipped()
+            .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+
+            Text(progress.media.title)
+                .font(.headline)
+                .lineLimit(1)
+            if let episodeTitle = progress.episodeDisplayTitle {
+                Text(episodeTitle)
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Text(progress.shelfProgressLabel)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(14)
+        .frame(width: 328, alignment: .leading)
+        .background(.black)
     }
 }
 
@@ -952,19 +1649,10 @@ private struct ContinueWatchingCard: View {
     private let width: CGFloat = 276
     private let imageHeight: CGFloat = 158
 
-    private var imageURL: URL? {
-        progress.episode?.posterURL ?? progress.media.backdropURL ?? progress.media.posterURL
-    }
-
-    private var episodeTitle: String? {
-        guard let episode = progress.episode else { return nil }
-        return episode.title ?? "Episode \(episode.number)"
-    }
-
     var body: some View {
         VStack(alignment: .leading, spacing: 7) {
             ZStack(alignment: .bottom) {
-                CachedRemoteImage(url: imageURL) { image in
+                CachedRemoteImage(url: progress.continueWatchingArtworkURL) { image in
                     image.resizable().scaledToFill()
                 } placeholder: {
                     Rectangle()
@@ -992,7 +1680,7 @@ private struct ContinueWatchingCard: View {
                     Text(progress.media.title)
                         .font(.headline.bold())
                         .lineLimit(1)
-                    if let episodeTitle {
+                    if let episodeTitle = progress.episodeDisplayTitle {
                         Text(episodeTitle)
                             .font(.subheadline)
                             .foregroundStyle(.white.opacity(0.78))
@@ -1035,7 +1723,20 @@ private struct ContinueWatchingCard: View {
     }
 }
 
+private extension WatchProgress {
+    var continueWatchingArtworkURL: URL? {
+        episode?.posterURL ?? media.backdropURL ?? media.posterURL
+    }
+
+    var episodeDisplayTitle: String? {
+        guard let episode else { return nil }
+        let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title?.isEmpty == false ? title : "Episode \(episode.number)"
+    }
+}
+
 struct MediaShelfView: View {
+    @Environment(\.titleTransitionSelection) private var transitionSelection
     let title: String
     let items: [MediaItem]
     var progress: [WatchProgress] = []
@@ -1053,6 +1754,7 @@ struct MediaShelfView: View {
                         title: title,
                         items: items,
                         progress: progress,
+                        onDetails: onDetails,
                         onResume: onResume,
                         onRemoveFromContinueWatching: onRemoveFromContinueWatching
                     )
@@ -1069,46 +1771,62 @@ struct MediaShelfView: View {
                         let itemProgress = progress.first(where: {
                             $0.media.id == item.id && $0.providerID == item.providerID
                         })
-                        NavigationLink(value: item) {
+                        Button { open(item) } label: {
                             PosterCard(
                                 item: item,
                                 progress: itemProgress?.fraction,
                                 progressDetail: itemProgress?.shelfProgressLabel
                             )
-                        }
-                        .buttonStyle(.plain)
-                        .contextMenu {
-                            if let itemProgress {
-                                Button {
-                                    onDetails?(item)
-                                } label: {
-                                    Label("Details", systemImage: "info.circle")
+                            .titleTransitionSource(
+                                id: item.artworkIdentityKey,
+                                sourceID: transitionSourceID(for: item)
+                            )
+                            .contextMenu {
+                                MediaTitlePosterActions(item: item) {
+                                    open(item)
                                 }
-                                Button {
-                                    onResume?(itemProgress)
-                                } label: {
-                                    Label("Resume", systemImage: "play.fill")
+                                if let itemProgress {
+                                    Button {
+                                        onResume?(itemProgress)
+                                    } label: {
+                                        Label("Resume", systemImage: "play.fill")
+                                    }
+                                    Button(role: .destructive) {
+                                        onRemoveFromContinueWatching?(itemProgress)
+                                    } label: {
+                                        DestructiveTrashLabel(title: "Remove from Continue Watching")
+                                    }
+                                    .tint(.red)
                                 }
-                                Button(role: .destructive) {
-                                    onRemoveFromContinueWatching?(itemProgress)
-                                } label: {
-                                    Label("Remove from Continue Watching", systemImage: "trash")
-                                }
-                                .tint(.red)
                             }
                         }
+                        .buttonStyle(.plain)
                     }
                 }
                 .padding(.horizontal)
             }
         }
     }
+
+    private func transitionSourceID(for item: MediaItem) -> String {
+        "\(item.artworkIdentityKey):media-shelf:\(title)"
+    }
+
+    private func open(_ item: MediaItem) {
+        transitionSelection?.select(
+            titleID: item.artworkIdentityKey,
+            sourceID: transitionSourceID(for: item)
+        )
+        onDetails?(item)
+    }
 }
 
 private struct MediaGridView: View {
+    @Environment(\.titleTransitionSelection) private var transitionSelection
     let title: String
     let items: [MediaItem]
     let progress: [WatchProgress]
+    let onDetails: ((MediaItem) -> Void)?
     let onResume: ((WatchProgress) -> Void)?
     let onRemoveFromContinueWatching: ((WatchProgress) -> Void)?
 
@@ -1119,27 +1837,34 @@ private struct MediaGridView: View {
                     let itemProgress = progress.first {
                         $0.media.id == item.id && $0.providerID == item.providerID
                     }
-                    NavigationLink(value: item) {
+                    Button { open(item) } label: {
                         PosterGridCard(
                             item: item,
                             progress: itemProgress?.fraction,
                             progressDetail: itemProgress?.shelfProgressLabel
                         )
-                    }
-                    .buttonStyle(.plain)
-                    .contextMenu {
-                        if let itemProgress {
-                            Button { onResume?(itemProgress) } label: {
-                                Label("Resume", systemImage: "play.fill")
+                        .titleTransitionSource(
+                            id: item.artworkIdentityKey,
+                            sourceID: transitionSourceID(for: item)
+                        )
+                        .contextMenu {
+                            MediaTitlePosterActions(item: item) {
+                                open(item)
                             }
-                            Button(role: .destructive) {
-                                onRemoveFromContinueWatching?(itemProgress)
-                            } label: {
-                                Label("Remove from Continue Watching", systemImage: "trash")
+                            if let itemProgress {
+                                Button { onResume?(itemProgress) } label: {
+                                    Label("Resume", systemImage: "play.fill")
+                                }
+                                Button(role: .destructive) {
+                                    onRemoveFromContinueWatching?(itemProgress)
+                                } label: {
+                                    DestructiveTrashLabel(title: "Remove from Continue Watching")
+                                }
+                                .tint(.red)
                             }
-                            .tint(.red)
                         }
                     }
+                    .buttonStyle(.plain)
                 }
             }
             .padding(.horizontal, MediaArtworkLayout.gridHorizontalPadding)
@@ -1148,6 +1873,18 @@ private struct MediaGridView: View {
         .background(.black)
         .navigationTitle(title)
         .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func transitionSourceID(for item: MediaItem) -> String {
+        "\(item.artworkIdentityKey):media-grid:\(title)"
+    }
+
+    private func open(_ item: MediaItem) {
+        transitionSelection?.select(
+            titleID: item.artworkIdentityKey,
+            sourceID: transitionSourceID(for: item)
+        )
+        onDetails?(item)
     }
 }
 
@@ -1198,9 +1935,10 @@ private struct PosterGridCard: View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
                 CanonicalPosterArtwork(item: item)
-                .aspectRatio(2 / 3, contentMode: .fit)
-                .clipped()
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .aspectRatio(2 / 3, contentMode: .fit)
+                    .frame(maxWidth: .infinity)
+                    .clipped()
+                    .clipShape(RoundedRectangle(cornerRadius: 8))
                 if let progress {
                     ProgressView(value: progress)
                         .background(.black.opacity(0.5))
@@ -1209,13 +1947,16 @@ private struct PosterGridCard: View {
             Text(item.title)
                 .font(.caption.weight(.semibold))
                 .lineLimit(2)
+                .frame(maxWidth: .infinity, alignment: .leading)
             if let progressDetail {
                 Text(progressDetail)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
         .foregroundStyle(.white)
     }
 }
@@ -1278,6 +2019,7 @@ private struct CanonicalPosterArtwork: View {
 }
 
 private struct TMDBShelfView: View {
+    @Environment(\.titleTransitionSelection) private var transitionSelection
     let collection: TMDBCollection
     let titles: [TrendingTitle]
     let resolvingKeys: Set<String>
@@ -1300,7 +2042,7 @@ private struct TMDBShelfView: View {
             ScrollView(.horizontal, showsIndicators: false) {
                 LazyHStack(spacing: 12) {
                     ForEach(titles) { title in
-                        Button { onSelect(title) } label: {
+                        Button { open(title) } label: {
                             TMDBPosterCard(title: title, width: MediaArtworkLayout.shelfPosterWidth)
                                 .overlay {
                                     if resolvingKeys.contains(title.lookupKey) {
@@ -1311,6 +2053,15 @@ private struct TMDBShelfView: View {
                                             .background(.black.opacity(0.72), in: Circle())
                                     }
                                 }
+                                .titleTransitionSource(
+                                    id: title.titleTransitionID,
+                                    sourceID: transitionSourceID(for: title)
+                                )
+                                .contextMenu {
+                                    TMDBTitlePosterActions(title: title) {
+                                        open(title)
+                                    }
+                                }
                         }
                         .buttonStyle(.plain)
                         .allowsHitTesting(!resolvingKeys.contains(title.lookupKey))
@@ -1319,6 +2070,18 @@ private struct TMDBShelfView: View {
                 .padding(.horizontal)
             }
         }
+    }
+
+    private func transitionSourceID(for title: TrendingTitle) -> String {
+        "\(title.titleTransitionID):tmdb-shelf:\(collection.id)"
+    }
+
+    private func open(_ title: TrendingTitle) {
+        transitionSelection?.select(
+            titleID: title.titleTransitionID,
+            sourceID: transitionSourceID(for: title)
+        )
+        onSelect(title)
     }
 }
 
@@ -1336,13 +2099,16 @@ private struct TMDBPosterCard: View {
             }
             .aspectRatio(2 / 3, contentMode: .fit)
             .frame(width: width)
+            .frame(maxWidth: width == nil ? .infinity : width)
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 10))
             Text(title.title)
                 .font(.caption.weight(.semibold))
                 .lineLimit(2)
                 .frame(width: width, alignment: .leading)
+                .frame(maxWidth: width == nil ? .infinity : width, alignment: .leading)
         }
+        .frame(maxWidth: width == nil ? .infinity : width, alignment: .leading)
         .foregroundStyle(.white)
     }
 }
@@ -1446,6 +2212,7 @@ private struct SourceLookupFailureBanner: View {
 private struct TMDBCollectionGridView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var sourceLookup: SourceLookupCoordinator
+    @Environment(\.titleTransitionSelection) private var transitionSelection
     @StateObject private var model = TMDBCollectionGridViewModel()
     @State private var selectedDetails: ResolvedMediaItem?
     let collection: TMDBCollection
@@ -1463,6 +2230,15 @@ private struct TMDBCollectionGridView: View {
                                         .controlSize(.large)
                                         .padding(10)
                                         .background(.black.opacity(0.72), in: Circle())
+                                }
+                            }
+                            .titleTransitionSource(
+                                id: title.titleTransitionID,
+                                sourceID: transitionSourceID(for: title)
+                            )
+                            .contextMenu {
+                                TMDBTitlePosterActions(title: title) {
+                                    open(title)
                                 }
                             }
                     }
@@ -1490,7 +2266,15 @@ private struct TMDBCollectionGridView: View {
     }
 
     private func open(_ title: TrendingTitle) {
+        transitionSelection?.select(
+            titleID: title.titleTransitionID,
+            sourceID: transitionSourceID(for: title)
+        )
         selectedDetails = ResolvedMediaItem(media: .tmdbCatalogItem(from: title), tmdbMetadata: title)
+    }
+
+    private func transitionSourceID(for title: TrendingTitle) -> String {
+        "\(title.titleTransitionID):tmdb-grid:\(collection.id)"
     }
 }
 
@@ -1545,6 +2329,7 @@ struct CatalogView: View {
 struct SearchView: View {
     @EnvironmentObject private var environment: AppEnvironment
     @EnvironmentObject private var sourceLookup: SourceLookupCoordinator
+    @Environment(\.titleTransitionSelection) private var transitionSelection
     @StateObject private var model = SearchViewModel()
     @StateObject private var discovery = TMDBCollectionsViewModel(
         collections: [.trending(.series), .trending(.movie)]
@@ -1552,6 +2337,7 @@ struct SearchView: View {
     @State private var selectedDetails: ResolvedMediaItem?
     @FocusState private var searchFieldIsFocused: Bool
     @Binding var isSearchPresented: Bool
+    let focusRequest: Int
 
     var body: some View {
         ScrollView {
@@ -1600,8 +2386,17 @@ struct SearchView: View {
                         spacing: 16
                     ) {
                         ForEach(model.results) { item in
-                            NavigationLink(value: item) {
+                            Button { open(item) } label: {
                                 PosterGridCard(item: item)
+                                    .titleTransitionSource(
+                                        id: item.artworkIdentityKey,
+                                        sourceID: transitionSourceID(for: item)
+                                    )
+                                    .contextMenu {
+                                        MediaTitlePosterActions(item: item) {
+                                            open(item)
+                                        }
+                                    }
                             }
                             .buttonStyle(.plain)
                         }
@@ -1612,6 +2407,7 @@ struct SearchView: View {
             .padding(.bottom)
         }
         .scrollDismissesKeyboard(.interactively)
+        .ignoresSafeArea(.keyboard, edges: .bottom)
         .background(.black)
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
@@ -1619,16 +2415,25 @@ struct SearchView: View {
         .onChange(of: isSearchPresented) { _, presented in
             if presented { searchFieldIsFocused = true }
         }
+        .onChange(of: focusRequest) { _, _ in
+            searchFieldIsFocused = true
+        }
         .overlay {
-            if model.isLoading || (discovery.isLoading && discovery.titles.isEmpty) { ProgressView() }
+            if model.isLoading || (
+                model.query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && discovery.isLoading
+                    && discovery.titles.isEmpty
+            ) {
+                ProgressView()
+            }
         }
         .navigationDestination(for: MediaItem.self) { DetailsView(item: $0) }
         .navigationDestination(item: $selectedDetails) {
             DetailsView(item: $0.media, tmdbMetadata: $0.tmdbMetadata)
         }
         .task {
-            await discovery.load(environment: environment)
             if isSearchPresented { searchFieldIsFocused = true }
+            await discovery.load(environment: environment)
         }
         .errorAlert($model.errorMessage)
         .errorAlert($discovery.errorMessage)
@@ -1636,6 +2441,18 @@ struct SearchView: View {
 
     private func open(_ title: TrendingTitle) {
         selectedDetails = ResolvedMediaItem(media: .tmdbCatalogItem(from: title), tmdbMetadata: title)
+    }
+
+    private func open(_ item: MediaItem) {
+        transitionSelection?.select(
+            titleID: item.artworkIdentityKey,
+            sourceID: transitionSourceID(for: item)
+        )
+        selectedDetails = ResolvedMediaItem(media: item, tmdbMetadata: nil)
+    }
+
+    private func transitionSourceID(for item: MediaItem) -> String {
+        "\(item.artworkIdentityKey):search-grid"
     }
 }
 
@@ -1669,22 +2486,31 @@ struct DetailsView: View {
                     detailsTitle
                     detailsMetadata
                     if let overview = model.item.overview { Text(overview).foregroundStyle(.secondary) }
-                    HStack {
+                    HStack(spacing: 12) {
                         Button {
                             guard let request = primaryPlaybackRequest else { return }
                             Task { await beginPlayback(request) }
                         } label: {
                             Label(primaryActionTitle, systemImage: "play.fill")
+                                .font(.headline)
                                 .foregroundStyle(environment.themeColor == .white ? Color.black : Color.white)
                                 .frame(maxWidth: .infinity)
+                                .frame(height: 36)
                         }
                         .buttonStyle(.borderedProminent)
+                        .tint(environment.themeColor.color)
+                        .clipShape(Capsule())
                         .disabled(primaryPlaybackRequest == nil)
+
                         Button { library.toggleWatchlist(model.item) } label: {
                             Image(systemName: library.isInWatchlist(model.item) ? "checkmark" : "plus")
-                                .frame(width: 44)
+                                .font(.title3.weight(.semibold))
+                                .foregroundStyle(environment.themeColor.color)
+                                .frame(width: 36, height: 36)
                         }
-                        .buttonStyle(.bordered)
+                        .buttonStyle(.borderedProminent)
+                        .tint(environment.themeColor.color.opacity(0.18))
+                        .clipShape(Circle())
                         .accessibilityLabel(
                             library.isInWatchlist(model.item) ? "Remove from Watchlist" : "Add to Watchlist"
                         )
@@ -1697,7 +2523,9 @@ struct DetailsView: View {
                     }
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, -56)
+                // Pull the details content into the hero so its clear logo sits
+                // at the same vertical position as the Home carousel logo.
+                .padding(.top, -HeroArtworkScrollEffect.detailsContentOverlap)
                 .padding(.bottom, 32)
                 .zIndex(1)
             }
@@ -1785,6 +2613,7 @@ struct DetailsView: View {
             }
         }
         .errorAlert($model.errorMessage)
+        .titleNavigationTransition(id: model.item.artworkIdentityKey)
     }
 
     private var detailsHero: some View {
@@ -1792,33 +2621,29 @@ struct DetailsView: View {
             let minY = proxy.frame(in: .named(HeroArtworkScrollEffect.detailsCoordinateSpace)).minY
             let metrics = HeroArtworkScrollEffect.metrics(minY: minY, reduceMotion: reduceMotion)
 
-            ZStack(alignment: .bottomLeading) {
+            ZStack(alignment: .bottom) {
                 ZStack {
-                    Group {
-                        if let tmdbHeroArtworkData,
-                           let image = UIImage(data: tmdbHeroArtworkData) {
-                            Image(uiImage: image)
-                                .resizable()
-                                .scaledToFill()
-                        } else {
-                            Rectangle()
-                                .fill(.gray.opacity(0.18))
-                                .overlay {
-                                    if isHeroArtworkLoading {
-                                        ProgressView()
-                                            .controlSize(.large)
-                                            .tint(.white)
-                                            .accessibilityLabel("Loading artwork")
-                                    } else {
-                                        Image(systemName: model.item.kind == .movie ? "film" : "tv")
-                                            .font(.system(size: 44))
-                                            .foregroundStyle(.white.opacity(0.45))
-                                    }
+                    // Keep details artwork identical to the home carousel: the
+                    // image is centered and uniformly fill-cropped inside the
+                    // same fixed-size hero frame.
+                    CenteredHeroArtwork(data: tmdbHeroArtworkData)
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        .overlay {
+                            if tmdbHeroArtworkData == nil {
+                                if isHeroArtworkLoading {
+                                    ProgressView()
+                                        .controlSize(.large)
+                                        .tint(.white)
+                                        .accessibilityLabel("Loading artwork")
+                                } else {
+                                    Image(systemName: model.item.kind == .movie ? "film" : "tv")
+                                        .font(.system(size: 44))
+                                        .foregroundStyle(.white.opacity(0.45))
                                 }
+                            }
                         }
-                    }
-                    .frame(width: proxy.size.width, height: proxy.size.height)
-                    .clipped()
+                        .frame(width: proxy.size.width, height: proxy.size.height)
+                        .clipped()
 
                     Color.black
                         .opacity(HeroArtworkScrollEffect.maximumDimming * metrics.recessionProgress)
@@ -1847,7 +2672,11 @@ struct DetailsView: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
 
         }
-        .frame(height: 570)
+        // The Home carousel intentionally locks to its scroll container. The
+        // details hero instead follows the current proposal so a landscape
+        // player presentation cannot leave a stale width behind in portrait.
+        .frame(maxWidth: .infinity, alignment: .center)
+        .frame(height: HeroArtworkScrollEffect.heroHeight)
     }
 
     private var detailsTitle: some View {
@@ -1859,11 +2688,13 @@ struct DetailsView: View {
             Text(model.item.title)
                 .font(.system(size: 36, weight: .bold, design: .rounded))
                 .foregroundStyle(.white)
+                .multilineTextAlignment(.center)
                 .lineLimit(3)
                 .minimumScaleFactor(0.72)
                 .fixedSize(horizontal: false, vertical: true)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
         }
+        .frame(maxWidth: .infinity, alignment: .center)
         .shadow(color: .black.opacity(0.55), radius: 12, y: 4)
     }
 
@@ -2002,6 +2833,17 @@ struct DetailsView: View {
                             )
                         }
 
+                        if hasPreviousEpisodes(before: episode) {
+                            Button {
+                                markPreviousEpisodesAsWatched(before: episode)
+                            } label: {
+                                Label(
+                                    "Mark Previous Episodes as Watched",
+                                    systemImage: "checkmark.rectangle.stack.fill"
+                                )
+                            }
+                        }
+
                         Button {
                             withAnimation(.easeInOut(duration: 0.2)) { episodeInfo = episode }
                         } label: {
@@ -2091,6 +2933,44 @@ struct DetailsView: View {
             }
         }
     }
+
+    private func hasPreviousEpisodes(before episode: MediaEpisode) -> Bool {
+        model.item.seasons.contains { $0.number < episode.seasonNumber }
+            || model.episodes.values.joined().contains {
+                $0.seasonNumber == episode.seasonNumber && $0.number < episode.number
+            }
+    }
+
+    private func markPreviousEpisodesAsWatched(before episode: MediaEpisode) {
+        Task {
+            let relevantSeasons = model.item.seasons.filter { $0.number <= episode.seasonNumber }
+            for season in relevantSeasons where model.episodes[season.id] == nil {
+                await model.loadEpisodes(season, environment: environment)
+            }
+            guard !Task.isCancelled,
+                  relevantSeasons.allSatisfy({ model.episodes[$0.id] != nil }) else { return }
+
+            let previousEpisodes = relevantSeasons
+                .flatMap { model.episodes[$0.id] ?? [] }
+                .filter {
+                    ($0.seasonNumber, $0.number) < (episode.seasonNumber, episode.number)
+                }
+            guard !previousEpisodes.isEmpty else { return }
+
+            let currentEpisode = library.latestProgress(for: model.item)?.episode
+            let shouldPromoteSelectedEpisode = currentEpisode.map {
+                ($0.seasonNumber, $0.number) < (episode.seasonNumber, episode.number)
+            } ?? false
+            library.markWatched(requests: previousEpisodes.map {
+                PlaybackRequest(media: model.item, episode: $0)
+            })
+            if shouldPromoteSelectedEpisode {
+                library.promoteToContinueWatching(
+                    PlaybackRequest(media: model.item, episode: episode)
+                )
+            }
+        }
+    }
 }
 
 private enum HeroArtworkScrollEffect {
@@ -2104,6 +2984,8 @@ private enum HeroArtworkScrollEffect {
 
     static let homeCoordinateSpace = "home-hero-scroll"
     static let detailsCoordinateSpace = "details-hero-scroll"
+    static let heroHeight: CGFloat = 690
+    static let detailsContentOverlap: CGFloat = 274
     static let recessionDistance: CGFloat = 360
     static let disappearanceDistance: CGFloat = 500
     static let maximumDimming: Double = 0.64
@@ -2268,9 +3150,9 @@ struct SettingsView: View {
                 Toggle("Automatically play next episode", isOn: $autoNext)
                 Picker("Default quality", selection: $defaultQualityHeight) {
                     Text("Auto").tag(0)
-                    Text("480p").tag(480)
-                    Text("720p").tag(720)
                     Text("1080p").tag(1080)
+                    Text("720p").tag(720)
+                    Text("480p").tag(480)
                 }
                 .tint(environment.themeColor.color)
                 Picker("Default speed", selection: $defaultPlaybackRate) {
@@ -2881,6 +3763,9 @@ struct PlayerScreen: View {
             onQualityChanged: { session.setQuality($0) },
             onAdjustSubtitleTiming: { session.adjustSubtitleTiming(by: $0) },
             onRetryPlayback: { session.retryPlayback() },
+            onWillDismiss: {
+                AppOrientationController.shared.endPlayback()
+            },
             onDismiss: {
                 saveProgress(markNearEndFinished: true)
                 dismiss()

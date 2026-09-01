@@ -232,12 +232,19 @@ final class HomeViewModel: ObservableObject {
         defer { isTrendingLoading = false }
         do {
             async let hero = environment.trendingTitles()
-            async let movies = environment.tmdbTitles(in: .trending(.movie))
-            async let shows = environment.tmdbTitles(in: .trending(.series))
-            let (heroTitles, moviePage, showPage) = try await (hero, movies, shows)
+            await withTaskGroup(of: (TMDBCollection, [TrendingTitle]?).self) { group in
+                for collection in TMDBCollection.homeSections {
+                    group.addTask {
+                        let page = try? await environment.tmdbTitles(in: collection)
+                        return (collection, page?.titles)
+                    }
+                }
+                for await (collection, titles) in group {
+                    if let titles { tmdbShelves[collection] = titles }
+                }
+            }
+            let heroTitles = try await hero
             trendingTitles = heroTitles
-            tmdbShelves[.trending(.movie)] = moviePage.titles
-            tmdbShelves[.trending(.series)] = showPage.titles
             trendingMessage = trendingTitles.isEmpty ? "TMDB did not return any trending titles." : nil
             carouselAssets = await environment.preloadCarouselAssets(for: heroTitles)
         }
@@ -263,14 +270,22 @@ final class TMDBCollectionsViewModel: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         if force { titles = [:] }
-        for collection in collections {
-            do {
-                titles[collection] = try await environment.tmdbTitles(in: collection).titles
-            } catch where error.isCancellation {
-                return
-            } catch {
-                errorMessage = error.localizedDescription
-                return
+        await withTaskGroup(of: (TMDBCollection, [TrendingTitle]?, String?).self) { group in
+            for collection in collections {
+                group.addTask {
+                    do {
+                        let page = try await environment.tmdbTitles(in: collection)
+                        return (collection, page.titles, nil)
+                    } catch where error.isCancellation {
+                        return (collection, nil, nil)
+                    } catch {
+                        return (collection, nil, error.localizedDescription)
+                    }
+                }
+            }
+            for await (collection, loadedTitles, message) in group {
+                if let loadedTitles { titles[collection] = loadedTitles }
+                if errorMessage == nil, let message { errorMessage = message }
             }
         }
     }
@@ -334,23 +349,46 @@ final class SearchViewModel: ObservableObject {
     @Published private(set) var isLoading = false
     @Published var errorMessage: String?
     private var task: Task<Void, Never>?
+    private var searchGeneration = 0
 
     func search(environment: AppEnvironment) {
         task?.cancel()
+        searchGeneration += 1
+        let generation = searchGeneration
         let value = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !value.isEmpty else { results = []; return }
-        task = Task {
-            try? await Task.sleep(for: .milliseconds(350))
-            guard !Task.isCancelled else { return }
-            isLoading = true
-            defer { isLoading = false }
+        isLoading = false
+        errorMessage = nil
+        guard !value.isEmpty else {
+            results = []
+            task = nil
+            return
+        }
+        task = Task { [weak self] in
             do {
-                results = try await environment.tmdbSearch(query: value).titles.map {
+                try await Task.sleep(for: .milliseconds(350))
+            } catch {
+                return
+            }
+            guard let self, searchGeneration == generation else { return }
+            isLoading = true
+            defer {
+                if searchGeneration == generation {
+                    isLoading = false
+                    task = nil
+                }
+            }
+            do {
+                let titles = try await environment.tmdbSearch(query: value).titles
+                guard searchGeneration == generation else { return }
+                results = titles.map {
                     MediaItem.tmdbCatalogItem(from: $0)
                 }
             }
             catch where error.isCancellation { }
-            catch { errorMessage = error.localizedDescription }
+            catch {
+                guard searchGeneration == generation else { return }
+                errorMessage = error.localizedDescription
+            }
         }
     }
 }

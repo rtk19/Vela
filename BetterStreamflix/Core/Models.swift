@@ -168,7 +168,10 @@ struct PlaybackRequest: Hashable, Sendable {
     var nowPlayingTitle: String { media.title }
     var nowPlayingSubtitle: String? {
         guard let episode else { return nil }
-        return "Season \(episode.seasonNumber), Episode \(episode.number)"
+        let episodeCode = String(format: "S%02dE%02d", episode.seasonNumber, episode.number)
+        guard let title = episode.title?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !title.isEmpty else { return episodeCode }
+        return "\(episodeCode) • \(title)"
     }
     var displayTitle: String {
         guard let episode else { return media.title }
