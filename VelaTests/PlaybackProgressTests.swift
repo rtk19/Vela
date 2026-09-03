@@ -258,6 +258,32 @@ struct PlaybackProgressTests {
     }
 
     @MainActor
+    @Test("Marking previous episodes watched queues the selected episode without playback history")
+    func markingPreviousEpisodesWatchedQueuesSelectedEpisode() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = LibraryStore(directory: directory)
+        let seasonFourEpisodeFour = request(seasonNumber: 4, episodeNumber: 4)
+        let seasonFourEpisodeFive = request(seasonNumber: 4, episodeNumber: 5)
+
+        library.markPreviousEpisodesWatched(
+            requests: [seasonFourEpisodeFour],
+            selectedRequest: seasonFourEpisodeFive
+        )
+
+        #expect(library.isWatched(seasonFourEpisodeFour))
+        #expect(!library.isWatched(seasonFourEpisodeFive))
+        let queued = try #require(library.continueWatching.first)
+        #expect(queued.episode?.seasonNumber == 4)
+        #expect(queued.episode?.number == 5)
+        #expect(queued.isNextUp)
+
+        let reloadedLibrary = LibraryStore(directory: directory)
+        #expect(reloadedLibrary.latestProgress(for: seasonFourEpisodeFive.media)?.episode?.number == 5)
+    }
+
+    @MainActor
     @Test("Finishing the final episode does not reveal older saved progress")
     func finishingFinalEpisodeClearsSeriesFromContinueWatching() {
         let directory = FileManager.default.temporaryDirectory
@@ -301,6 +327,53 @@ struct PlaybackProgressTests {
         #expect(reloadedLibrary.continueWatching.first?.episode?.seasonNumber == 3)
         #expect(reloadedLibrary.continueWatching.first?.episode?.number == 1)
         #expect(LibraryStore(directory: directory).completedSeriesRequests.isEmpty)
+    }
+
+    @MainActor
+    @Test("A discovered episode is not promoted again after relaunch")
+    func discoveredEpisodeIsOnlyPromotedOnce() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let final = request(episodeNumber: 8)
+        let discoveredMedia = MediaItem(
+            id: final.media.id,
+            providerID: final.media.providerID,
+            kind: .series,
+            title: final.media.title,
+            tmdbID: 1_627
+        )
+        let discoveredEpisode = MediaEpisode(
+            id: "show-episode-2-1",
+            providerID: final.media.providerID,
+            showID: final.media.id,
+            seasonNumber: 2,
+            number: 1,
+            title: "Episode 1",
+            overview: nil,
+            posterURL: nil
+        )
+        let discovered = PlaybackRequest(media: discoveredMedia, episode: discoveredEpisode)
+        let playedMovie = MediaItem(
+            id: "movie",
+            providerID: "test",
+            kind: .movie,
+            title: "Movie"
+        )
+        let movieRequest = PlaybackRequest(media: playedMovie, episode: nil)
+        let library = LibraryStore(directory: directory)
+
+        library.markFinished(request: final, nextRequest: nil)
+        library.promoteToContinueWatching(discovered)
+        library.updateProgress(request: movieRequest, position: 120, duration: 7_200)
+
+        #expect(library.completedSeriesRequests.isEmpty)
+        #expect(library.continueWatching.first?.media.id == playedMovie.id)
+
+        let reloadedLibrary = LibraryStore(directory: directory)
+        #expect(reloadedLibrary.completedSeriesRequests.isEmpty)
+        #expect(reloadedLibrary.continueWatching.first?.media.id == playedMovie.id)
+        #expect(reloadedLibrary.continueWatching.last?.episode?.number == 1)
     }
 
     @MainActor
@@ -352,6 +425,33 @@ struct PlaybackProgressTests {
             for: firstEpisode,
             defaultRate: 0.75
         ) == 0.75)
+    }
+
+    @MainActor
+    @Test("Landscape player zoom persists per title and removal resets it")
+    func playerZoomMemory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let firstEpisode = request(episodeNumber: 1)
+        let anotherEpisode = request(episodeNumber: 2)
+        let movie = MediaItem(id: "movie", providerID: "test", kind: .movie, title: "Movie")
+        let movieRequest = PlaybackRequest(media: movie, episode: nil)
+        let library = LibraryStore(directory: directory)
+
+        #expect(!library.isPlayerZoomedToFill(for: firstEpisode))
+        library.updatePlayerZoomedToFill(true, for: firstEpisode)
+
+        #expect(library.isPlayerZoomedToFill(for: anotherEpisode))
+        #expect(!library.isPlayerZoomedToFill(for: movieRequest))
+        #expect(LibraryStore(directory: directory).isPlayerZoomedToFill(for: anotherEpisode))
+
+        library.updateProgress(request: firstEpisode, position: 120, duration: 1_800)
+        let savedProgress = try #require(library.progress(for: firstEpisode))
+        library.removeProgress(savedProgress)
+
+        #expect(!library.isPlayerZoomedToFill(for: firstEpisode))
+        #expect(!LibraryStore(directory: directory).isPlayerZoomedToFill(for: firstEpisode))
     }
 
     @MainActor

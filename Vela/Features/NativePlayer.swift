@@ -233,6 +233,7 @@ final class PlayerSession: ObservableObject {
     private var nowPlayingArtworkTask: Task<Void, Never>?
     private var recoveryWatchdogTask: Task<Void, Never>?
     private var sourceRefreshTask: Task<Void, Never>?
+    private var sourceExpirationTask: Task<Void, Never>?
     private var nowPlayingContentID: String?
     private var nowPlayingTitle: String?
     private var nowPlayingSubtitle: String?
@@ -255,6 +256,7 @@ final class PlayerSession: ObservableObject {
     private var playbackWasRequested = false
     private var shouldResumeAfterBuffering = false
     private var isPreparingPlayback = false
+    private var nextReplacementShouldPlay: Bool?
     private var currentSourceURL: URL?
     private var currentSourceExpiresAt: Date?
     private var sourceRefreshRequestedForURL: URL?
@@ -316,6 +318,7 @@ final class PlayerSession: ObservableObject {
         nowPlayingArtworkTask?.cancel()
         recoveryWatchdogTask?.cancel()
         sourceRefreshTask?.cancel()
+        sourceExpirationTask?.cancel()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         if let studioTimeObserver { player.removeTimeObserver(studioTimeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
@@ -340,9 +343,14 @@ final class PlayerSession: ObservableObject {
         defaultQualityHeight: Int,
         defaultPlaybackRate: Float
     ) async {
+        // Recovery may replace an item while the user is intentionally paused.
+        // Consume the intent before asynchronous subtitle preparation so the
+        // replacement cannot unexpectedly start itself later.
+        let shouldPlay = nextReplacementShouldPlay ?? true
+        nextReplacementShouldPlay = nil
         recoveryWatchdogTask?.cancel()
         qualitySwitchTask?.cancel()
-        isBuffering = true
+        isBuffering = shouldPlay
         playbackErrorMessage = nil
         await audioSessionController.activateForPlayback()
         guard !Task.isCancelled else { return }
@@ -393,10 +401,11 @@ final class PlayerSession: ObservableObject {
         replaceCurrentItem(
             with: asset,
             resumeAt: resumeAt,
-            shouldPlay: true,
+            shouldPlay: shouldPlay,
             playbackRate: defaultPlaybackRate,
             preferredSubtitleLanguageTag: preferredSyncVersionID?.1
         )
+        schedulePausedSourceRefreshBeforeExpiration()
     }
 
     func stop() {
@@ -405,9 +414,11 @@ final class PlayerSession: ObservableObject {
         nowPlayingArtworkTask?.cancel()
         recoveryWatchdogTask?.cancel()
         sourceRefreshTask?.cancel()
+        sourceExpirationTask?.cancel()
         playbackWasRequested = false
         shouldResumeAfterBuffering = false
         isPreparingPlayback = false
+        nextReplacementShouldPlay = nil
         currentSourceURL = nil
         currentPlaybackSource = nil
         currentExternalSubtitles = []
@@ -845,7 +856,10 @@ final class PlayerSession: ObservableObject {
                                 HTTPClient.desktopUserAgent,
                                 forHTTPHeaderField: "User-Agent"
                             )
-                            let response = try await client.data(for: request)
+                            let response = try await SubtitleResourceRetry.load(
+                                request: request,
+                                client: client
+                            )
                             try Task.checkCancellation()
                             let parsedCues = try SubtitleParser.cues(from: response.data)
                             let cues = SubtitleDirectionFormatter.normalizedCues(
@@ -885,7 +899,11 @@ final class PlayerSession: ObservableObject {
         let item = AVPlayerItem(asset: asset)
         item.audioTimePitchAlgorithm = .timeDomain
         applyQuality(to: item)
-        observeBufferingState(of: item)
+        observeBufferingState(
+            of: item,
+            preferredSubtitleDisplayName: preferredSubtitleDisplayName,
+            preferredSubtitleLanguageTag: preferredSubtitleLanguageTag
+        )
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let mediaSelectionObserver { NotificationCenter.default.removeObserver(mediaSelectionObserver) }
         endObserver = NotificationCenter.default.addObserver(
@@ -943,13 +961,27 @@ final class PlayerSession: ObservableObject {
         }
     }
 
-    private func observeBufferingState(of item: AVPlayerItem) {
+    private func observeBufferingState(
+        of item: AVPlayerItem,
+        preferredSubtitleDisplayName: String?,
+        preferredSubtitleLanguageTag: String?
+    ) {
         itemStatusObservation = item.observe(\.status, options: [.initial, .new]) {
             [weak self, weak item] _, change in
-            guard change.newValue == .failed else { return }
             Task { @MainActor [weak self, weak item] in
                 guard let self, let item, self.player.currentItem === item else { return }
-                self.handleItemFailure()
+                switch change.newValue {
+                case .readyToPlay:
+                    self.reapplyPreferredLanguagesIfNeeded(
+                        to: item,
+                        preferredSubtitleDisplayName: preferredSubtitleDisplayName,
+                        preferredSubtitleLanguageTag: preferredSubtitleLanguageTag
+                    )
+                case .failed:
+                    self.handleItemFailure()
+                default:
+                    break
+                }
             }
         }
         playbackBufferEmptyObservation = item.observe(
@@ -1048,6 +1080,9 @@ final class PlayerSession: ObservableObject {
             isBuffering = false
             recoveryWatchdogTask?.cancel()
             recoveryWatchdogTask = nil
+            if player.currentItem?.status == .failed || sourceIsExpiredOrExpiringSoon {
+                requestSourceRefresh()
+            }
         @unknown default:
             break
         }
@@ -1080,9 +1115,32 @@ final class PlayerSession: ObservableObject {
     }
 
     private func refreshSourceIfExpired() {
-        guard let currentSourceExpiresAt,
-              currentSourceExpiresAt <= Date().addingTimeInterval(30) else { return }
+        guard sourceIsExpiredOrExpiringSoon else { return }
         requestSourceRefresh()
+    }
+
+    private var sourceIsExpiredOrExpiringSoon: Bool {
+        currentSourceExpiresAt.map { $0 <= Date().addingTimeInterval(30) } ?? false
+    }
+
+    private func schedulePausedSourceRefreshBeforeExpiration() {
+        sourceExpirationTask?.cancel()
+        guard let currentSourceURL, let currentSourceExpiresAt else { return }
+        let delay = max(0, currentSourceExpiresAt.timeIntervalSinceNow - 30)
+        sourceExpirationTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(delay))
+            } catch {
+                return
+            }
+            guard let self,
+                  self.currentSourceURL == currentSourceURL,
+                  self.currentSourceExpiresAt == currentSourceExpiresAt,
+                  self.player.timeControlStatus == .paused,
+                  !self.playbackWasRequested,
+                  !self.isPreparingPlayback else { return }
+            self.requestSourceRefresh()
+        }
     }
 
     private func requestSourceRefresh() {
@@ -1098,11 +1156,12 @@ final class PlayerSession: ObservableObject {
             return
         }
         sourceRefreshRequestedForURL = currentSourceURL
+        nextReplacementShouldPlay = playbackWasRequested || shouldResumeAfterBuffering
         automaticSourceRefreshAttempts += 1
         recoveryBaselinePosition = position
         recoveryWatchdogTask?.cancel()
         recoveryWatchdogTask = nil
-        isBuffering = true
+        isBuffering = nextReplacementShouldPlay == true
         sourceRefreshTask = Task { @MainActor [weak self] in
             let succeeded = await onSourceRefreshNeeded()
             guard let self, !Task.isCancelled else { return }
@@ -1115,10 +1174,13 @@ final class PlayerSession: ObservableObject {
     }
 
     private func handleItemFailure() {
-        guard playbackWasRequested || shouldResumeAfterBuffering else { return }
+        // A signed HLS item can fail while paused. AVPlayer does not publish the
+        // same status transition again when its system Play button is pressed,
+        // leaving the crossed-out play icon stuck unless we replace the item.
+        let shouldContinuePlaying = playbackWasRequested || shouldResumeAfterBuffering
         isPreparingPlayback = false
-        shouldResumeAfterBuffering = true
-        isBuffering = true
+        shouldResumeAfterBuffering = shouldContinuePlaying
+        isBuffering = shouldContinuePlaying
         requestSourceRefresh()
     }
 
@@ -1332,6 +1394,25 @@ final class PlayerSession: ObservableObject {
         if let audioGroup {
             let audio = preferredOption(in: audioGroup.options, languageCodes: [audioLanguage, "en"])
             if let audio { player.currentItem?.select(audio, in: audioGroup) }
+        }
+    }
+
+    private func reapplyPreferredLanguagesIfNeeded(
+        to item: AVPlayerItem,
+        preferredSubtitleDisplayName: String?,
+        preferredSubtitleLanguageTag: String?
+    ) {
+        mediaOptionsTask?.cancel()
+        mediaOptionsTask = Task { [weak self, weak item] in
+            guard let self, let item, self.player.currentItem === item else { return }
+            await self.applyPreferredLanguages(
+                to: item.asset,
+                primarySubtitleLanguage: self.primarySubtitleLanguage,
+                secondarySubtitleLanguage: self.secondarySubtitleLanguage,
+                audioLanguage: self.audioLanguage,
+                preferredSubtitleDisplayName: preferredSubtitleDisplayName,
+                preferredSubtitleLanguageTag: preferredSubtitleLanguageTag
+            )
         }
     }
 
@@ -1814,8 +1895,18 @@ private actor AudioSessionController {
     }
 }
 
+final class LayoutAwarePlayerViewController: AVPlayerViewController {
+    var onLayout: ((LayoutAwarePlayerViewController) -> Void)?
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        onLayout?(self)
+    }
+}
+
 struct NativePlayerController: UIViewControllerRepresentable {
     let player: AVPlayer
+    let isZoomedToFill: Bool
     let isBuffering: Bool
     let playbackErrorMessage: String?
     let availableQualities: [StreamQuality]
@@ -1826,6 +1917,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
     let onAdjustSubtitleTiming: (Double) -> Void
     let onOpenSubtitleSync: () -> Void
     let onRetryPlayback: () -> Void
+    let onZoomChanged: (Bool) -> Void
     let onWillDismiss: () -> Void
     let onDismiss: () -> Void
 
@@ -1837,25 +1929,31 @@ struct NativePlayerController: UIViewControllerRepresentable {
             onAdjustSubtitleTiming: onAdjustSubtitleTiming,
             onOpenSubtitleSync: onOpenSubtitleSync,
             onRetryPlayback: onRetryPlayback,
+            isZoomedToFill: isZoomedToFill,
+            onZoomChanged: onZoomChanged,
             onWillDismiss: onWillDismiss,
             onDismiss: onDismiss
         )
     }
 
-    func makeUIViewController(context: Context) -> AVPlayerViewController {
-        let controller = AVPlayerViewController()
+    func makeUIViewController(context: Context) -> LayoutAwarePlayerViewController {
+        let controller = LayoutAwarePlayerViewController()
         controller.player = player
         controller.delegate = context.coordinator
         controller.showsPlaybackControls = true
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
         controller.entersFullScreenWhenPlaybackBegins = true
+        controller.onLayout = { [weak coordinator = context.coordinator] controller in
+            coordinator?.playerViewDidLayout(controller)
+        }
         context.coordinator.installControls(in: controller)
         return controller
     }
 
-    func updateUIViewController(_ controller: AVPlayerViewController, context: Context) {
+    func updateUIViewController(_ controller: LayoutAwarePlayerViewController, context: Context) {
         if controller.player !== player { controller.player = player }
+        context.coordinator.updateZoomPreference(isZoomedToFill, in: controller)
         context.coordinator.updateQualities(
             availableQualities,
             selectedQuality: selectedQuality
@@ -1891,6 +1989,10 @@ struct NativePlayerController: UIViewControllerRepresentable {
         private var lastPlaybackErrorMessage: String?
         private var hideTask: Task<Void, Never>?
         private weak var player: AVPlayer?
+        private weak var playerViewController: AVPlayerViewController?
+        private var prefersZoomedToFill: Bool
+        private var lastIsLandscape: Bool?
+        private let onZoomChanged: (Bool) -> Void
         let onDismiss: () -> Void
 
         init(
@@ -1900,6 +2002,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
             onAdjustSubtitleTiming: @escaping (Double) -> Void,
             onOpenSubtitleSync: @escaping () -> Void,
             onRetryPlayback: @escaping () -> Void,
+            isZoomedToFill: Bool,
+            onZoomChanged: @escaping (Bool) -> Void,
             onWillDismiss: @escaping () -> Void,
             onDismiss: @escaping () -> Void
         ) {
@@ -1909,6 +2013,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
             self.onAdjustSubtitleTiming = onAdjustSubtitleTiming
             self.onOpenSubtitleSync = onOpenSubtitleSync
             self.onRetryPlayback = onRetryPlayback
+            prefersZoomedToFill = isZoomedToFill
+            self.onZoomChanged = onZoomChanged
             self.onWillDismiss = onWillDismiss
             self.onDismiss = onDismiss
             super.init()
@@ -1917,6 +2023,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
         func installControls(in controller: AVPlayerViewController) {
             guard let overlay = controller.contentOverlayView else { return }
             player = controller.player
+            playerViewController = controller
             installSystemVolumeHUDSuppressor(in: controller.view)
             bufferingIndicator.translatesAutoresizingMaskIntoConstraints = false
             bufferingIndicator.color = .white
@@ -1950,8 +2057,49 @@ struct NativePlayerController: UIViewControllerRepresentable {
             tapGesture.cancelsTouchesInView = false
             tapGesture.delegate = self
             controller.view.addGestureRecognizer(tapGesture)
+            let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(playerPinched(_:)))
+            pinchGesture.cancelsTouchesInView = false
+            pinchGesture.delegate = self
+            controller.view.addGestureRecognizer(pinchGesture)
             updateQualities(availableQualities, selectedQuality: selectedQuality)
             showSettingsButton()
+        }
+
+        func updateZoomPreference(_ isZoomedToFill: Bool, in controller: AVPlayerViewController) {
+            guard prefersZoomedToFill != isZoomedToFill else { return }
+            prefersZoomedToFill = isZoomedToFill
+            applyZoomPreference(in: controller)
+        }
+
+        func playerViewDidLayout(_ controller: AVPlayerViewController) {
+            let isLandscape = controller.view.bounds.width > controller.view.bounds.height
+            guard lastIsLandscape != isLandscape else { return }
+            lastIsLandscape = isLandscape
+            applyZoomPreference(in: controller)
+        }
+
+        private func applyZoomPreference(in controller: AVPlayerViewController) {
+            let isLandscape = controller.view.bounds.width > controller.view.bounds.height
+            controller.videoGravity = isLandscape && prefersZoomedToFill
+                ? .resizeAspectFill
+                : .resizeAspect
+        }
+
+        @objc private func playerPinched(_ gesture: UIPinchGestureRecognizer) {
+            guard gesture.state == .ended || gesture.state == .cancelled else { return }
+            Task { @MainActor [weak self] in
+                await Task.yield()
+                guard let self, let controller = self.playerViewController else { return }
+                let isLandscape = controller.view.bounds.width > controller.view.bounds.height
+                guard isLandscape else {
+                    controller.videoGravity = .resizeAspect
+                    return
+                }
+                let isZoomedToFill = controller.videoGravity == .resizeAspectFill
+                guard self.prefersZoomedToFill != isZoomedToFill else { return }
+                self.prefersZoomedToFill = isZoomedToFill
+                self.onZoomChanged(isZoomedToFill)
+            }
         }
 
         private func installSystemVolumeHUDSuppressor(in view: UIView) {

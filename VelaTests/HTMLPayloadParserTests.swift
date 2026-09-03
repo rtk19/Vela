@@ -255,6 +255,23 @@ struct HTMLPayloadParserTests {
         ) == .fail)
     }
 
+    @Test("Retries transient subtitle resource failures with fresh requests")
+    func subtitleResourceRetry() async throws {
+        let client = FailingThenSucceedingHTTPClient(failuresBeforeSuccess: 2)
+        let url = try #require(URL(string: "https://example.com/subtitles.vtt"))
+
+        let response = try await SubtitleResourceRetry.load(
+            request: URLRequest(url: url),
+            client: client
+        )
+        let requestCount = await client.requestCount
+        let cachePolicies = await client.cachePolicies
+
+        #expect(response.data == Data("WEBVTT\n".utf8))
+        #expect(requestCount == 3)
+        #expect(cachePolicies.allSatisfy { $0 == .reloadIgnoringLocalCacheData })
+    }
+
     @Test("Builds Wizdom's movie and episode routes and maps its response")
     func wizdomRoutesAndResponse() async throws {
         let json = #"{"subtitles":[{"url":"https://example.com/42.srt","lang":"heb","id":"[WIZDOM]Example.Release.1080p"},{"url":"https://example.com/43.srt","lang":"heb","id":"[WIZDOM]Example.Release.1080p"}]}"#
@@ -416,8 +433,7 @@ struct HTMLPayloadParserTests {
 
     @Test("Normalizes RTL punctuation only when the subtitle file needs it")
     func formatsRightToLeftSubtitleDirection() {
-        let rightToLeftIsolate = "\u{2067}"
-        let popDirectionalIsolate = "\u{2069}"
+        let rightToLeftMark = "\u{200F}"
         let cues = [
             SubtitleCue(startTime: 0, endTime: 1, text: "שלום עולם.\nVersion 2.0"),
             SubtitleCue(startTime: 1, endTime: 2, text: "- מה שלומך?"),
@@ -425,16 +441,15 @@ struct HTMLPayloadParserTests {
 
         #expect(SubtitleDirectionFormatter.needsNormalization(cues, languageCode: "he"))
         let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
-        #expect(normalized[0].text == "\(rightToLeftIsolate)שלום עולם.\(popDirectionalIsolate)\nVersion 2.0")
-        #expect(normalized[1].text == "\(rightToLeftIsolate)- מה שלומך?\(popDirectionalIsolate)")
+        #expect(normalized[0].text == "\(rightToLeftMark)שלום עולם.\nVersion 2.0")
+        #expect(normalized[1].text == "\(rightToLeftMark)- מה שלומך?")
         #expect(!SubtitleDirectionFormatter.needsNormalization(normalized, languageCode: "he"))
         #expect(SubtitleDirectionFormatter.normalizedCues(normalized, languageCode: "he") == normalized)
     }
 
     @Test("Repairs legacy reversed punctuation in RTL subtitle files")
     func repairsLegacyRightToLeftPunctuation() {
-        let rightToLeftIsolate = "\u{2067}"
-        let popDirectionalIsolate = "\u{2069}"
+        let rightToLeftMark = "\u{200F}"
         let cues = [
             SubtitleCue(startTime: 0, endTime: 1, text: ",אבל טיפ הוא טיפ\n.והיינו חייבים לפעול מהר"),
             SubtitleCue(startTime: 1, endTime: 2, text: ".מצטערת. בטח יש לי דם באוזניים -"),
@@ -453,45 +468,159 @@ struct HTMLPayloadParserTests {
 
         let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
 
-        #expect(normalized[0].text == "\(rightToLeftIsolate)אבל טיפ הוא טיפ,\(popDirectionalIsolate)\n\(rightToLeftIsolate)והיינו חייבים לפעול מהר.\(popDirectionalIsolate)")
-        #expect(normalized[1].text == "\(rightToLeftIsolate)- מצטערת. בטח יש לי דם באוזניים.\(popDirectionalIsolate)")
-        #expect(normalized[2].text == "\(rightToLeftIsolate)את בסדר?\(popDirectionalIsolate)")
-        #expect(normalized[3].text == "\(rightToLeftIsolate)איך זה בשביל \"מוכן\"?\(popDirectionalIsolate)")
-        #expect(normalized[4].text == "\(rightToLeftIsolate)הכל מוכן?!\(popDirectionalIsolate)")
-        #expect(normalized[5].text == "\(rightToLeftIsolate)\"מפילה אותי מהרגליים\"?\(popDirectionalIsolate)")
-        #expect(normalized[6].text == "\(rightToLeftIsolate)\"האמת שאת מפילה אותי מהרגליים\".\(popDirectionalIsolate)")
-        #expect(normalized[7].text == "\(rightToLeftIsolate)(בדיקה)?\(popDirectionalIsolate)")
-        #expect(normalized[8].text == "\(rightToLeftIsolate)- - טוען.\(popDirectionalIsolate)")
-        #expect(normalized[9].text == "\(rightToLeftIsolate)\"ציטוט מלא\"\(popDirectionalIsolate)")
-        #expect(normalized[10].text == "\(rightToLeftIsolate)(הערת סוגריים)\(popDirectionalIsolate)")
-        #expect(normalized[11].text == "\(rightToLeftIsolate)“ציטוט חכם”\(popDirectionalIsolate)")
-        #expect(normalized[12].text == "\(rightToLeftIsolate)גרסה 2.0 (Beta)；\(popDirectionalIsolate)")
+        #expect(normalized[0].text == "\(rightToLeftMark)אבל טיפ הוא טיפ,\n\(rightToLeftMark)והיינו חייבים לפעול מהר.")
+        #expect(normalized[1].text == "\(rightToLeftMark)- מצטערת. בטח יש לי דם באוזניים.")
+        #expect(normalized[2].text == "\(rightToLeftMark)את בסדר?")
+        #expect(normalized[3].text == "\(rightToLeftMark)איך זה בשביל \"מוכן\"?")
+        #expect(normalized[4].text == "\(rightToLeftMark)הכל מוכן?!")
+        #expect(normalized[5].text == "\(rightToLeftMark)\"מפילה אותי מהרגליים\"?")
+        #expect(normalized[6].text == "\(rightToLeftMark)\"האמת שאת מפילה אותי מהרגליים\".")
+        #expect(normalized[7].text == "\(rightToLeftMark)(בדיקה)?")
+        #expect(normalized[8].text == "\(rightToLeftMark)- - טוען.")
+        #expect(normalized[9].text == "\(rightToLeftMark)\"ציטוט מלא\"")
+        #expect(normalized[10].text == "\(rightToLeftMark)(הערת סוגריים)")
+        #expect(normalized[11].text == "\(rightToLeftMark)“ציטוט חכם”")
+        #expect(normalized[12].text == "\(rightToLeftMark)גרסה 2.0 (Beta)；")
         #expect(SubtitleDirectionFormatter.normalizedCues(normalized, languageCode: "he") == normalized)
     }
 
     @Test("Preserves already logical RTL delimiters and dialogue runs")
     func preservesLogicalRightToLeftBoundaries() {
-        let rightToLeftIsolate = "\u{2067}"
-        let popDirectionalIsolate = "\u{2069}"
+        let rightToLeftMark = "\u{200F}"
         let cues = [
             SubtitleCue(startTime: 0, endTime: 1, text: "\"ציטוט מלא\"."),
             SubtitleCue(startTime: 1, endTime: 2, text: "(הערת סוגריים)?"),
             SubtitleCue(startTime: 2, endTime: 3, text: "“ציטוט חכם”"),
             SubtitleCue(startTime: 3, endTime: 4, text: "- - טוען..."),
             SubtitleCue(startTime: 4, endTime: 5, text: "גרסה 2.0 (Beta);"),
+            SubtitleCue(startTime: 5, endTime: 6, text: "- מבוקש לחקירה -"),
+            SubtitleCue(startTime: 6, endTime: 7, text: "- עונה 3, פרק 6 -"),
+            SubtitleCue(startTime: 7, endTime: 8, text: "— גבול חכם —"),
+            SubtitleCue(startTime: 8, endTime: 9, text: "- פענוח רשת \"טור\" -"),
+            SubtitleCue(startTime: 9, endTime: 10, text: "- \"ציטוט מלא\" -"),
         ]
 
         let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
 
         for (original, result) in zip(cues, normalized) {
-            #expect(result.text == "\(rightToLeftIsolate)\(original.text)\(popDirectionalIsolate)")
+            #expect(result.text == "\(rightToLeftMark)\(original.text)")
         }
+    }
+
+    @Test("Formats the reported quote, bracket, number, and dialogue cases in logical order")
+    func formatsReportedRightToLeftBoundaryCases() {
+        let rightToLeftMark = "\u{200F}"
+        let legacyCues = [
+            SubtitleCue(startTime: 0, endTime: 1, text: "?\"\"מפילה אותי מהרגליים"),
+            SubtitleCue(startTime: 1, endTime: 2, text: ".\"\"האמת שאת מפילה אותי מהרגליים"),
+            SubtitleCue(startTime: 2, endTime: 3, text: "?\"איך זה בשביל \"מוכן"),
+            SubtitleCue(startTime: 3, endTime: 4, text: ")שדר ראשון: יוני 23 (מסווג"),
+            SubtitleCue(startTime: 4, endTime: 5, text: "טוען - -"),
+            SubtitleCue(startTime: 5, endTime: 6, text: "- \"פענוח רשת \"טור -"),
+            SubtitleCue(startTime: 6, endTime: 7, text: "— ״פענוח רשת ״טור —"),
+        ]
+
+        let normalized = SubtitleDirectionFormatter.normalizedCues(
+            legacyCues,
+            languageCode: "he"
+        )
+
+        #expect(normalized.map(\.text) == [
+            "\(rightToLeftMark)\"מפילה אותי מהרגליים\"?",
+            "\(rightToLeftMark)\"האמת שאת מפילה אותי מהרגליים\".",
+            "\(rightToLeftMark)איך זה בשביל \"מוכן\"?",
+            "\(rightToLeftMark)(שדר ראשון: יוני 23 (מסווג",
+            "\(rightToLeftMark)- - טוען",
+            "\(rightToLeftMark)- פענוח רשת \"טור\" -",
+            "\(rightToLeftMark)— פענוח רשת ״טור״ —",
+        ])
+    }
+
+    @Test("Removes inherited LTR controls that override RTL subtitle rendering")
+    func removesConflictingRightToLeftSubtitleControls() {
+        let rightToLeftMark = "\u{200F}"
+        let leftToRightMark = "\u{200E}"
+        let leftToRightEmbedding = "\u{202A}"
+        let popDirectionalFormatting = "\u{202C}"
+        let cues = [
+            SubtitleCue(
+                startTime: 0,
+                endTime: 1,
+                text: "\(leftToRightMark)\(leftToRightEmbedding)- מבוקש לחקירה -\(popDirectionalFormatting)"
+            ),
+            SubtitleCue(
+                startTime: 1,
+                endTime: 2,
+                text: "\(leftToRightEmbedding)- עונה 3, פרק 6 -\(popDirectionalFormatting)"
+            ),
+            SubtitleCue(
+                startTime: 2,
+                endTime: 3,
+                text: "\(leftToRightEmbedding)(שדר ראשון: יוני 23 (מסווג\(popDirectionalFormatting)"
+            ),
+        ]
+
+        let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+
+        #expect(normalized.map(\.text) == [
+            "\(rightToLeftMark)- מבוקש לחקירה -",
+            "\(rightToLeftMark)- עונה 3, פרק 6 -",
+            "\(rightToLeftMark)(שדר ראשון: יוני 23 (מסווג",
+        ])
+        #expect(SubtitleDirectionFormatter.normalizedCues(normalized, languageCode: "he") == normalized)
+        #expect(!SubtitleDirectionFormatter.needsNormalization(normalized, languageCode: "he"))
+    }
+
+    @Test("Canonicalizes every Unicode bidi wrapper used by legacy subtitle files")
+    func canonicalizesLegacySubtitleBidiWrappers() {
+        let rightToLeftMark = "\u{200F}"
+        let logicalText = "(בדיקה 23)."
+        let wrappers = [
+            ("\u{061C}", ""),
+            ("\u{200E}", ""),
+            ("\u{200F}", ""),
+            ("\u{202A}", "\u{202C}"),
+            ("\u{202B}", "\u{202C}"),
+            ("\u{202D}", "\u{202C}"),
+            ("\u{202E}", "\u{202C}"),
+            ("\u{2066}", "\u{2069}"),
+            ("\u{2067}", "\u{2069}"),
+            ("\u{2068}", "\u{2069}"),
+        ]
+        let cues = wrappers.enumerated().map { index, wrapper in
+            SubtitleCue(
+                startTime: Double(index),
+                endTime: Double(index + 1),
+                text: "\(wrapper.0)\(logicalText)\(wrapper.1)"
+            )
+        }
+
+        let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+
+        #expect(normalized.allSatisfy { $0.text == "\(rightToLeftMark)\(logicalText)" })
+    }
+
+    @Test("Uses Unicode punctuation categories instead of a finite mark list")
+    func repairsUnicodeRightToLeftPunctuationCategories() {
+        let rightToLeftMark = "\u{200F}"
+        // Characters intentionally span multiple scripts and Unicode blocks.
+        let marks = ["٪", "؞", "੶", "꘍", "꛷", "𑂻"]
+        let cues = marks.enumerated().map { index, mark in
+            SubtitleCue(
+                startTime: Double(index),
+                endTime: Double(index + 1),
+                text: "\(mark)בדיקה"
+            )
+        }
+
+        let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+
+        #expect(normalized.map(\.text) == marks.map { "\(rightToLeftMark)בדיקה\($0)" })
     }
 
     @Test("Repairs legacy RTL outliers in an otherwise logical subtitle file")
     func repairsMixedRightToLeftPunctuationLayoutsPerLine() {
-        let rightToLeftIsolate = "\u{2067}"
-        let popDirectionalIsolate = "\u{2069}"
+        let rightToLeftMark = "\u{200F}"
         let cues = [
             SubtitleCue(startTime: 0, endTime: 1, text: "שורה תקינה."),
             SubtitleCue(startTime: 1, endTime: 2, text: "- גם השורה הזאת תקינה."),
@@ -502,17 +631,16 @@ struct HTMLPayloadParserTests {
 
         let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
 
-        #expect(normalized[0].text == "\(rightToLeftIsolate)שורה תקינה.\(popDirectionalIsolate)")
-        #expect(normalized[1].text == "\(rightToLeftIsolate)- גם השורה הזאת תקינה.\(popDirectionalIsolate)")
-        #expect(normalized[2].text == "\(rightToLeftIsolate)-- חצר ,2-איי מצלמה\(popDirectionalIsolate)")
-        #expect(normalized[3].text == "\(rightToLeftIsolate)לאן הולכים?\(popDirectionalIsolate)")
-        #expect(normalized[4].text == "\(rightToLeftIsolate)...אבל אולי\(popDirectionalIsolate)")
+        #expect(normalized[0].text == "\(rightToLeftMark)שורה תקינה.")
+        #expect(normalized[1].text == "\(rightToLeftMark)- גם השורה הזאת תקינה.")
+        #expect(normalized[2].text == "\(rightToLeftMark)-- חצר ,2-איי מצלמה")
+        #expect(normalized[3].text == "\(rightToLeftMark)לאן הולכים?")
+        #expect(normalized[4].text == "\(rightToLeftMark)...אבל אולי")
     }
 
     @Test("Repairs a broad matrix of legacy RTL terminal marks")
     func repairsLegacyRightToLeftTerminalMarkMatrix() {
-        let rightToLeftIsolate = "\u{2067}"
-        let popDirectionalIsolate = "\u{2069}"
+        let rightToLeftMark = "\u{200F}"
         let marks = [".", ",", "!", "?", ";", ":", "…", "‥", "،", "؛", "؟", "۔", "׃", "。", "！", "？"]
         let cues = marks.enumerated().map { index, mark in
             SubtitleCue(startTime: Double(index), endTime: Double(index + 1), text: "\(mark)בדיקה")
@@ -521,14 +649,13 @@ struct HTMLPayloadParserTests {
         let normalized = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
 
         for (mark, cue) in zip(marks, normalized) {
-            #expect(cue.text == "\(rightToLeftIsolate)בדיקה\(mark)\(popDirectionalIsolate)")
+            #expect(cue.text == "\(rightToLeftMark)בדיקה\(mark)")
         }
     }
 
     @Test("Repairs Arabic legacy punctuation without rewriting intentional ellipses")
     func repairsLegacyArabicPunctuation() {
-        let rightToLeftIsolate = "\u{2067}"
-        let popDirectionalIsolate = "\u{2069}"
+        let rightToLeftMark = "\u{200F}"
         let legacyArabic = [
             SubtitleCue(startTime: 0, endTime: 1, text: "؟كيف حالك"),
             SubtitleCue(startTime: 1, endTime: 2, text: "،ولكن علينا الذهاب"),
@@ -540,9 +667,9 @@ struct HTMLPayloadParserTests {
         let normalizedArabic = SubtitleDirectionFormatter.normalizedCues(legacyArabic, languageCode: "ar")
         let normalizedEllipsis = SubtitleDirectionFormatter.normalizedCues(intentionalEllipsis, languageCode: "he")
 
-        #expect(normalizedArabic[0].text == "\(rightToLeftIsolate)كيف حالك؟\(popDirectionalIsolate)")
-        #expect(normalizedArabic[1].text == "\(rightToLeftIsolate)ولكن علينا الذهاب،\(popDirectionalIsolate)")
-        #expect(normalizedEllipsis[0].text == "\(rightToLeftIsolate)...אבל אולי\(popDirectionalIsolate)")
+        #expect(normalizedArabic[0].text == "\(rightToLeftMark)كيف حالك؟")
+        #expect(normalizedArabic[1].text == "\(rightToLeftMark)ولكن علينا الذهاب،")
+        #expect(normalizedEllipsis[0].text == "\(rightToLeftMark)...אבל אולי")
     }
 
     @Test("Detects RTL content across languages and ignores mislabeled LTR files")
@@ -622,7 +749,14 @@ struct HTMLPayloadParserTests {
 
     @Test("Converts parsed Hebrew cues into an HLS-compatible WebVTT segment")
     func buildsExternalSubtitleWebVTT() {
-        let cues = [SubtitleCue(startTime: 1.25, endTime: 3.5, text: "שלום עולם.")]
+        let cues = [
+            SubtitleCue(startTime: 1.25, endTime: 3.5, text: "שלום עולם."),
+            SubtitleCue(
+                startTime: 0.5,
+                endTime: 1,
+                text: "\u{200E}\u{202A}- מבוקש לחקירה -\u{202C}"
+            ),
+        ]
         let webVTT = HLSSubtitleInjector.webVTT(cues: cues, languageCode: "he")
         let playlist = HLSSubtitleInjector.subtitleMediaPlaylist(
             cues: cues,
@@ -631,7 +765,11 @@ struct HTMLPayloadParserTests {
 
         #expect(webVTT.hasPrefix("WEBVTT\n"))
         #expect(webVTT.contains("00:00:01.250 --> 00:00:03.500"))
-        #expect(webVTT.contains("\u{2067}שלום עולם.\u{2069}"))
+        #expect(webVTT.contains("\u{200F}שלום עולם."))
+        #expect(webVTT.contains("\u{200F}- מבוקש לחקירה -"))
+        #expect(!webVTT.contains("\u{200E}"))
+        #expect(!webVTT.contains("\u{202A}"))
+        #expect(!webVTT.contains("\u{202C}"))
         #expect(playlist.contains("#EXT-X-TARGETDURATION:4"))
         #expect(playlist.contains("#EXTINF:3.500,"))
     }
@@ -794,13 +932,42 @@ private struct StubHTTPClient: HTTPClientProtocol {
 
     func data(for request: URLRequest) async throws -> HTTPResponse {
         let url = try #require(request.url)
+        let responseBody = url.path.hasPrefix("/playlist/")
+            ? Data("#EXTM3U\n#EXTINF:5,\nsegment.ts\n".utf8)
+            : body
         let response = try #require(HTTPURLResponse(
             url: url,
             statusCode: 200,
             httpVersion: "HTTP/2",
             headerFields: ["Content-Type": "text/html"]
         ))
-        return HTTPResponse(data: body, response: response)
+        return HTTPResponse(data: responseBody, response: response)
+    }
+}
+
+private actor FailingThenSucceedingHTTPClient: HTTPClientProtocol {
+    let failuresBeforeSuccess: Int
+    private(set) var requestCount = 0
+    private(set) var cachePolicies: [URLRequest.CachePolicy] = []
+
+    init(failuresBeforeSuccess: Int) {
+        self.failuresBeforeSuccess = failuresBeforeSuccess
+    }
+
+    func data(for request: URLRequest) async throws -> HTTPResponse {
+        requestCount += 1
+        cachePolicies.append(request.cachePolicy)
+        guard requestCount > failuresBeforeSuccess else {
+            throw AppError.providerUnavailable("Transient subtitle failure")
+        }
+        let url = try #require(request.url)
+        let response = try #require(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/2",
+            headerFields: ["Content-Type": "text/vtt"]
+        ))
+        return HTTPResponse(data: Data("WEBVTT\n".utf8), response: response)
     }
 }
 

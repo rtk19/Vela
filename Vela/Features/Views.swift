@@ -3062,18 +3062,12 @@ struct DetailsView: View {
                 }
             guard !previousEpisodes.isEmpty else { return }
 
-            let currentEpisode = library.latestProgress(for: model.item)?.episode
-            let shouldPromoteSelectedEpisode = currentEpisode.map {
-                ($0.seasonNumber, $0.number) < (episode.seasonNumber, episode.number)
-            } ?? false
-            library.markWatched(requests: previousEpisodes.map {
-                PlaybackRequest(media: model.item, episode: $0)
-            })
-            if shouldPromoteSelectedEpisode {
-                library.promoteToContinueWatching(
-                    PlaybackRequest(media: model.item, episode: episode)
-                )
-            }
+            library.markPreviousEpisodesWatched(
+                requests: previousEpisodes.map {
+                    PlaybackRequest(media: model.item, episode: $0)
+                },
+                selectedRequest: PlaybackRequest(media: model.item, episode: episode)
+            )
         }
     }
 }
@@ -3383,7 +3377,7 @@ struct SettingsView: View {
                     } label: {
                         Label("Import progress and settings", systemImage: "square.and.arrow.down")
                     }
-                    Text("A backup includes all settings, watchlist entries, watched history, resume positions, Continue Watching selections, saved subtitle sync versions, and title playback speeds. Importing replaces the current app data with the backup.")
+                    Text("A backup includes all settings, watchlist entries, watched history, resume positions, Continue Watching selections, saved subtitle sync versions, title playback speeds, and player zoom preferences. Importing replaces the current app data with the backup.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -4313,6 +4307,7 @@ struct PlayerScreen: View {
     var body: some View {
         NativePlayerController(
             player: session.player,
+            isZoomedToFill: library.isPlayerZoomedToFill(for: model.request),
             isBuffering: session.isBuffering || model.isLoading,
             playbackErrorMessage: session.playbackErrorMessage,
             availableQualities: session.availableQualities,
@@ -4323,6 +4318,9 @@ struct PlayerScreen: View {
             onAdjustSubtitleTiming: { session.adjustSubtitleTiming(by: $0) },
             onOpenSubtitleSync: { openSubtitleStudio() },
             onRetryPlayback: { session.retryPlayback() },
+            onZoomChanged: {
+                library.updatePlayerZoomedToFill($0, for: model.request)
+            },
             onWillDismiss: {
                 AppOrientationController.shared.endPlayback()
             },

@@ -25,6 +25,7 @@ final class LibraryStore: ObservableObject {
     private let decoder = JSONDecoder()
     private var currentSeriesProgressKeys: [String: String] = [:]
     private var playbackRates: [String: Double] = [:]
+    private var playerZoomedToFillByTitle: [String: Bool] = [:]
     private var completedSeriesCheckpoints: [String: WatchProgress] = [:]
     private var subtitleSyncVersionsByContent: [String: [SubtitleSyncVersion]] = [:]
 
@@ -80,6 +81,15 @@ final class LibraryStore: ObservableObject {
         guard rate.isFinite, rate > 0 else { return }
         playbackRates[titleKey(for: request.media)] = rate
         savePlaybackRates()
+    }
+
+    func isPlayerZoomedToFill(for request: PlaybackRequest) -> Bool {
+        playerZoomedToFillByTitle[titleKey(for: request.media)] ?? false
+    }
+
+    func updatePlayerZoomedToFill(_ isZoomedToFill: Bool, for request: PlaybackRequest) {
+        playerZoomedToFillByTitle[titleKey(for: request.media)] = isZoomedToFill
+        savePlayerZoomPreferences()
     }
 
     func subtitleSyncVersions(for request: PlaybackRequest) -> [SubtitleSyncVersion] {
@@ -170,8 +180,10 @@ final class LibraryStore: ObservableObject {
             currentSeriesProgressKeys.removeValue(forKey: seriesKey(for: value.media))
         }
         playbackRates.removeValue(forKey: titleKey(for: value.media))
+        playerZoomedToFillByTitle.removeValue(forKey: titleKey(for: value.media))
         saveProgress()
         savePlaybackRates()
+        savePlayerZoomPreferences()
     }
 
     func updateProgress(request: PlaybackRequest, position: Double, duration: Double) {
@@ -231,6 +243,23 @@ final class LibraryStore: ObservableObject {
         saveProgress()
     }
 
+    func markPreviousEpisodesWatched(
+        requests: [PlaybackRequest],
+        selectedRequest: PlaybackRequest
+    ) {
+        guard let selectedEpisode = selectedRequest.episode else { return }
+        let currentEpisode = latestProgress(for: selectedRequest.media)?.episode
+        let shouldPromoteSelectedEpisode = currentEpisode.map {
+            ($0.seasonNumber, $0.number) <
+                (selectedEpisode.seasonNumber, selectedEpisode.number)
+        } ?? true
+
+        markWatched(requests: requests)
+        if shouldPromoteSelectedEpisode {
+            promoteToContinueWatching(selectedRequest)
+        }
+    }
+
     func markUnwatched(request: PlaybackRequest) {
         watchedEpisodes.remove(WatchedEpisode(request: request))
         saveWatchedEpisodes()
@@ -250,7 +279,9 @@ final class LibraryStore: ObservableObject {
         )
         progress.insert(value, at: 0)
         setAsCurrentIfSeries(value)
-        completedSeriesCheckpoints.removeValue(forKey: seriesKey(for: request.media))
+        completedSeriesCheckpoints = completedSeriesCheckpoints.filter {
+            !sameTitle($0.value.media, as: request.media)
+        }
         saveProgress()
     }
 
@@ -306,6 +337,7 @@ final class LibraryStore: ObservableObject {
         watchedEpisodes = []
         currentSeriesProgressKeys = [:]
         playbackRates = [:]
+        playerZoomedToFillByTitle = [:]
         completedSeriesCheckpoints = [:]
         subtitleSyncVersionsByContent = [:]
         try? fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -339,6 +371,10 @@ final class LibraryStore: ObservableObject {
             currentSeriesProgressKeys = migratedCurrentSeriesProgressKeys()
         }
         playbackRates = read([String: Double].self, from: "playback-rates.json") ?? [:]
+        playerZoomedToFillByTitle = read(
+            [String: Bool].self,
+            from: "player-zoom-preferences.json"
+        ) ?? [:]
         completedSeriesCheckpoints = read(
             [String: WatchProgress].self,
             from: "completed-series.json"
@@ -425,6 +461,10 @@ final class LibraryStore: ObservableObject {
 
     private func savePlaybackRates() {
         save(playbackRates, to: "playback-rates.json")
+    }
+
+    private func savePlayerZoomPreferences() {
+        save(playerZoomedToFillByTitle, to: "player-zoom-preferences.json")
     }
 
     private func saveSubtitleSyncVersions() {

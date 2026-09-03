@@ -1,4 +1,29 @@
 import Foundation
+
+enum SubtitleResourceRetry {
+    static let maximumAttempts = 3
+
+    static func load(
+        request originalRequest: URLRequest,
+        client: any HTTPClientProtocol
+    ) async throws -> HTTPResponse {
+        var lastError: (any Error)?
+        for attempt in 0..<maximumAttempts {
+            do {
+                var request = originalRequest
+                request.cachePolicy = .reloadIgnoringLocalCacheData
+                return try await client.data(for: request)
+            } catch where error.isCancellation {
+                throw error
+            } catch {
+                lastError = error
+                guard attempt < maximumAttempts - 1 else { break }
+                try await Task.sleep(for: .milliseconds(250 * (attempt + 1)))
+            }
+        }
+        throw lastError ?? AppError.invalidResponse
+    }
+}
 import CoreFoundation
 import OSLog
 
@@ -444,8 +469,13 @@ struct SubtitleCue: Hashable, Sendable {
 }
 
 enum SubtitleDirectionFormatter {
-    private static let rightToLeftIsolate = "\u{2067}"
-    private static let popDirectionalIsolate = "\u{2069}"
+    // WebVTT determines each cue line's base direction from its first strong
+    // directional character. AVPlayer does not consistently resolve neutral
+    // punctuation inside an RLI/PDI wrapper, especially paired delimiters and
+    // quotation marks. A leading RLM is the WebVTT-defined way to force an RTL
+    // base direction while leaving the Unicode bidi algorithm free to resolve
+    // numbers, embedded LTR runs, and punctuation in their logical order.
+    private static let rightToLeftMark = "\u{200F}"
 
     private struct DirectionalCounts {
         var rightToLeft = 0
@@ -470,19 +500,29 @@ enum SubtitleDirectionFormatter {
         _ cues: [SubtitleCue],
         languageCode: String?
     ) -> [SubtitleCue] {
-        let combinedText = cues.map(\.text).joined(separator: "\n")
+        let sanitizedCues = cues.map { cue in
+            SubtitleCue(
+                startTime: cue.startTime,
+                endTime: cue.endTime,
+                text: removingDirectionalControls(from: cue.text)
+            )
+        }
+        let combinedText = sanitizedCues.map(\.text).joined(separator: "\n")
         guard usesRightToLeftLayout(combinedText, languageCode: languageCode) else {
             return cues
         }
-        let repairsLegacyPunctuation = usesLegacyPunctuationLayout(cues)
-        let addsDirectionIsolation = cues.contains { cue in
+        let repairsLegacyPunctuation = usesLegacyPunctuationLayout(sanitizedCues)
+        let addsDirectionMark = sanitizedCues.contains { cue in
             cue.text.components(separatedBy: "\n").contains { line in
-                shouldIsolate(line) && !hasExplicitRightToLeftDirection(line)
+                shouldMarkRightToLeft(line)
             }
         }
-        guard repairsLegacyPunctuation || addsDirectionIsolation else { return cues }
+        let removesDirectionalControls = sanitizedCues != cues
+        guard repairsLegacyPunctuation || addsDirectionMark || removesDirectionalControls else {
+            return cues
+        }
 
-        return cues.map { cue in
+        return sanitizedCues.map { cue in
             SubtitleCue(
                 startTime: cue.startTime,
                 endTime: cue.endTime,
@@ -498,15 +538,7 @@ enum SubtitleDirectionFormatter {
         _ cues: [SubtitleCue],
         languageCode: String?
     ) -> Bool {
-        let combinedText = cues.map(\.text).joined(separator: "\n")
-        guard usesRightToLeftLayout(combinedText, languageCode: languageCode) else {
-            return false
-        }
-        return usesLegacyPunctuationLayout(cues) || cues.contains { cue in
-            cue.text.components(separatedBy: "\n").contains { line in
-                shouldIsolate(line) && !hasExplicitRightToLeftDirection(line)
-            }
-        }
+        normalizedCues(cues, languageCode: languageCode) != cues
     }
 
     static func usesRightToLeftLayout(_ text: String, languageCode: String?) -> Bool {
@@ -533,11 +565,10 @@ enum SubtitleDirectionFormatter {
                 in: line,
                 repairsAmbiguousLeadingPunctuation: repairsLegacyPunctuation
             )
-            guard shouldIsolate(correctedLine),
-                  !hasExplicitRightToLeftDirection(correctedLine) else {
+            guard shouldMarkRightToLeft(correctedLine) else {
                 return correctedLine
             }
-            return "\(rightToLeftIsolate)\(correctedLine)\(popDirectionalIsolate)"
+            return "\(rightToLeftMark)\(correctedLine)"
         }.joined(separator: "\n")
     }
 
@@ -552,6 +583,8 @@ enum SubtitleDirectionFormatter {
                 let trailingTerminal = edgeToken(in: trimmed, fromStart: false, matching: isTerminalPunctuation)
                 let leadingDialogueDash = edgeToken(in: trimmed, fromStart: true, matching: isDialogueDash)
                 let trailingDialogueDash = trailingVisualDialogueRun(in: trimmed)
+                let hasPairedDialogueBoundary = !leadingDialogueDash.isEmpty &&
+                    !trailingDialogueDash.isEmpty
                 let pairedBoundary = hasLegacyPairedBoundary(
                     leadingDecoration,
                     remainingText: String(trimmed.dropFirst(leadingDecoration.count))
@@ -564,7 +597,9 @@ enum SubtitleDirectionFormatter {
                     total.legacy += isOnlyEllipsis(leadingTerminal) ? 1 : 2
                 }
                 if leadingTerminal.isEmpty, pairedBoundary { total.legacy += 2 }
-                if !trailingDialogueDash.isEmpty { total.legacy += 2 }
+                if !trailingDialogueDash.isEmpty, !hasPairedDialogueBoundary {
+                    total.legacy += 2
+                }
                 if !trailingTerminal.isEmpty { total.logical += 2 }
                 if !leadingDialogueDash.isEmpty { total.logical += 2 }
             }
@@ -578,10 +613,15 @@ enum SubtitleDirectionFormatter {
     ) -> String {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard directionalCounts(in: trimmed).rightToLeft > 0 else { return line }
+        if let correctedOpening = correctedMirroredLeadingOpening(in: trimmed) {
+            return correctedOpening
+        }
 
-        let leadingDecoration = leadingVisualDecoration(in: trimmed)
+        let quoteCorrected = correctedRotatedQuotationPair(in: trimmed) ?? trimmed
+
+        let leadingDecoration = leadingVisualDecoration(in: quoteCorrected)
         let leadingTerminal = leadingDecoration.filter(isTerminalPunctuation)
-        let undecoratedText = String(trimmed.dropFirst(leadingDecoration.count))
+        let undecoratedText = String(quoteCorrected.dropFirst(leadingDecoration.count))
             .trimmingCharacters(in: .whitespaces)
         let retainedOpeningLength = retainedOpeningDelimiterCount(
             in: leadingDecoration,
@@ -592,7 +632,17 @@ enum SubtitleDirectionFormatter {
         let displacedSuffix = String(leadingDecoration.dropLast(retainedOpeningLength))
             .trimmingCharacters(in: .whitespaces)
         let textWithOpening = "\(retainedOpening)\(undecoratedText)"
-        let trailingDialogueDash = trailingVisualDialogueRun(in: textWithOpening)
+        let hasLeadingDialogueDash = !edgeToken(
+            in: textWithOpening,
+            fromStart: true,
+            matching: isDialogueDash
+        ).isEmpty
+        // A dash at both boundaries is intentional paired punctuation (`- text -`).
+        // It must not be mistaken for a legacy visual-order dialogue run and
+        // collapsed into two dashes at the logical beginning of the line.
+        let trailingDialogueDash = hasLeadingDialogueDash
+            ? ""
+            : trailingVisualDialogueRun(in: textWithOpening)
         let core = String(textWithOpening.dropLast(trailingDialogueDash.count))
             .trimmingCharacters(in: .whitespaces)
 
@@ -606,14 +656,14 @@ enum SubtitleDirectionFormatter {
         let repairsLeadingDecoration = repairsLeadingTerminal || repairsPairedBoundary
 
         guard repairsLeadingDecoration || !trailingDialogueDash.isEmpty else {
-            return line
+            return quoteCorrected == trimmed ? line : quoteCorrected
         }
 
         let dialoguePrefix = trailingDialogueDash.isEmpty
             ? ""
             : "\(String(trailingDialogueDash.reversed()).trimmingCharacters(in: .whitespaces)) "
         guard repairsLeadingDecoration else {
-            let dialogueCore = String(trimmed.dropLast(trailingDialogueDash.count))
+            let dialogueCore = String(quoteCorrected.dropLast(trailingDialogueDash.count))
                 .trimmingCharacters(in: .whitespaces)
             guard !dialogueCore.isEmpty else { return line }
             return "\(dialoguePrefix)\(dialogueCore)"
@@ -625,6 +675,99 @@ enum SubtitleDirectionFormatter {
         // to follow that decoration in the raw file must stay at the start.
         let logicalSuffix = String(displacedSuffix.reversed())
         return "\(dialoguePrefix)\(core)\(logicalSuffix)"
+    }
+
+    private static func correctedRotatedQuotationPair(in text: String) -> String? {
+        let leadingBoundary = edgeToken(in: text, fromStart: true) { character in
+            isDialogueDash(character) || character.isWhitespace
+        }
+        let trailingBoundary = trailingVisualDialogueRun(in: text)
+        let hasPairedDialogueBoundary = leadingBoundary.contains(where: isDialogueDash) &&
+            !trailingBoundary.isEmpty &&
+            leadingBoundary.count + trailingBoundary.count < text.count
+
+        let body: String
+        if hasPairedDialogueBoundary {
+            body = String(
+                text
+                    .dropFirst(leadingBoundary.count)
+                    .dropLast(trailingBoundary.count)
+            ).trimmingCharacters(in: .whitespaces)
+        } else {
+            body = text
+        }
+
+        guard let quotationMark = body.first,
+              isAmbiguousQuotationMark(quotationMark),
+              body.filter({ $0 == quotationMark }).count == 2 else {
+            return nil
+        }
+
+        let afterLeadingQuote = body.dropFirst()
+        guard let displacedOpeningIndex = afterLeadingQuote.firstIndex(of: quotationMark) else {
+            return nil
+        }
+        let precedingText = String(afterLeadingQuote[..<displacedOpeningIndex])
+            .trimmingCharacters(in: .whitespaces)
+        let quotedTail = String(afterLeadingQuote[afterLeadingQuote.index(after: displacedOpeningIndex)...])
+            .trimmingCharacters(in: .whitespaces)
+        let terminalSuffix = edgeToken(
+            in: quotedTail,
+            fromStart: false,
+            matching: isTerminalPunctuation
+        )
+        let quotedText = String(quotedTail.dropLast(terminalSuffix.count))
+            .trimmingCharacters(in: .whitespaces)
+
+        // In legacy visual-order files, the closing neutral quote may be stored
+        // at the beginning of the RTL body while its matching opening quote is
+        // left immediately before the final quoted phrase. Require meaningful
+        // RTL text on both sides so correctly balanced quotations, apostrophes,
+        // measurements, and LTR text are never rewritten.
+        guard directionalCounts(in: precedingText).rightToLeft > 0,
+              directionalCounts(in: quotedText).rightToLeft > 0 else {
+            return nil
+        }
+
+        let correctedBody = "\(precedingText) \(quotationMark)\(quotedText)\(quotationMark)\(terminalSuffix)"
+        guard hasPairedDialogueBoundary else { return correctedBody }
+        return "\(leadingBoundary.trimmingCharacters(in: .whitespaces)) \(correctedBody) \(trailingBoundary.trimmingCharacters(in: .whitespaces))"
+    }
+
+    private static func correctedMirroredLeadingOpening(in text: String) -> String? {
+        guard let first = text.first,
+              let opening = mirroredOpeningDelimiter(for: first) else {
+            return nil
+        }
+        let remainder = text.dropFirst()
+        // `)(text` and `”“text` are complete legacy-reversed pairs handled by
+        // the general boundary repair below. This path is only for a lone
+        // mirrored opener whose matching glyph occurs later in the sentence.
+        guard remainder.drop(while: { $0.isWhitespace }).first != opening else {
+            return nil
+        }
+        // A lone closing glyph at the logical beginning can be a legacy visual
+        // representation of an opening delimiter. Only correct it when the
+        // remainder has an unmatched opener of the same kind; balanced text
+        // and ordinary closing punctuation are left unchanged.
+        let openingCount = remainder.filter { $0 == opening }.count
+        let closingCount = remainder.filter { $0 == first }.count
+        guard openingCount > closingCount else { return nil }
+        return "\(opening)\(remainder)"
+    }
+
+    private static func mirroredOpeningDelimiter(for closing: Character) -> Character? {
+        let pairs: [Character: Character] = [
+            ")": "(", "]": "[", "}": "{",
+            "）": "（", "］": "［", "｝": "｛",
+            "〉": "〈", "》": "《", "」": "「", "』": "『",
+            "】": "【", "〕": "〔", "〗": "〖", "〙": "〘", "〛": "〚",
+            "⟩": "⟨", "⟫": "⟪", "⟭": "⟬", "⟯": "⟮",
+            "❩": "❨", "❫": "❪", "❭": "❬", "❯": "❮", "❱": "❰",
+            "❳": "❲", "❵": "❴",
+            "»": "«", "›": "‹", "”": "“", "’": "‘",
+        ]
+        return pairs[closing]
     }
 
     private static func leadingVisualDecoration(in text: String) -> String {
@@ -711,18 +854,13 @@ enum SubtitleDirectionFormatter {
               !isAmbiguousQuotationMark(character) else {
             return false
         }
-        let commonTerminalMarks: Set<Character> = [
-            ".", ",", "!", "?", ";", ":", "…", "‥",
-            "،", "؛", "؟", "۔", "؍", "׃",
-            "。", "、", "，", "！", "？", "：", "；",
-        ]
-        if commonTerminalMarks.contains(character) { return true }
-
         return character.unicodeScalars.allSatisfy { scalar in
-            guard isRightToLeftBlock(scalar) else { return false }
-            return CharacterSet.punctuationCharacters.contains(scalar) &&
-                !isDelimiterScalar(scalar) &&
-                scalar.properties.generalCategory != .dashPunctuation
+            switch scalar.properties.generalCategory {
+            case .otherPunctuation:
+                true
+            default:
+                false
+            }
         }
     }
 
@@ -749,36 +887,31 @@ enum SubtitleDirectionFormatter {
         ["\"", "'", "׳", "״"].contains(character)
     }
 
-    private static func isDelimiterScalar(_ scalar: Unicode.Scalar) -> Bool {
-        switch scalar.properties.generalCategory {
-        case .openPunctuation, .closePunctuation, .initialPunctuation, .finalPunctuation:
-            true
-        default:
-            false
-        }
-    }
-
     private static func isOnlyEllipsis(_ token: String) -> Bool {
         !token.isEmpty && token.allSatisfy { $0 == "." || $0 == "…" }
     }
 
-    private static func shouldIsolate(_ line: String) -> Bool {
+    private static func shouldMarkRightToLeft(_ line: String) -> Bool {
         let counts = directionalCounts(in: line)
         // Punctuation-only lines inherit the file direction from their cue and
-        // need isolation too. Pure LTR lines in an otherwise RTL file do not.
+        // need a direction mark too. Pure LTR lines in an RTL file do not.
         return counts.rightToLeft > 0 || (counts.leftToRight == 0 && !line.isEmpty)
     }
 
-    private static func hasExplicitRightToLeftDirection(_ line: String) -> Bool {
-        let scalars = line.unicodeScalars.filter { !$0.properties.isWhitespace }
-        guard let first = scalars.first, let last = scalars.last else { return false }
-        let pairedControls: [(UInt32, UInt32)] = [
-            (0x2067, 0x2069), // RIGHT-TO-LEFT ISOLATE ... POP DIRECTIONAL ISOLATE
-            (0x202B, 0x202C), // RIGHT-TO-LEFT EMBEDDING ... POP DIRECTIONAL FORMATTING
-            (0x202E, 0x202C), // RIGHT-TO-LEFT OVERRIDE ... POP DIRECTIONAL FORMATTING
-            (0x200F, 0x200F), // Existing paired RIGHT-TO-LEFT MARKS
-        ]
-        return pairedControls.contains { first.value == $0.0 && last.value == $0.1 }
+    private static func removingDirectionalControls(from text: String) -> String {
+        let filtered = text.unicodeScalars.filter { scalar in
+            switch scalar.value {
+            case 0x061C,       // ARABIC LETTER MARK
+                 0x200E...0x200F, // LEFT/RIGHT-TO-LEFT MARK
+                 0x202A...0x202E, // embeddings, overrides, and PDF
+                 0x2066...0x2069, // directional isolates and PDI
+                 0x206A...0x206F: // deprecated directional formatting controls
+                false
+            default:
+                true
+            }
+        }
+        return String(String.UnicodeScalarView(filtered))
     }
 
     private static func isRightToLeft(languageCode: String?) -> Bool {
@@ -1105,7 +1238,7 @@ enum HLSNativeSubtitleLoader {
         request.setValue(accept, forHTTPHeaderField: "Accept")
         request.setValue(HTTPClient.desktopUserAgent, forHTTPHeaderField: "User-Agent")
         for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
-        return try await client.data(for: request)
+        return try await SubtitleResourceRetry.load(request: request, client: client)
     }
 
     private static func subtitleDescriptors(in playlist: String, relativeTo baseURL: URL) -> [Descriptor] {
@@ -1246,7 +1379,7 @@ enum HLSSubtitleInjector {
         var request = URLRequest(url: source.url)
         request.setValue("application/vnd.apple.mpegurl,application/x-mpegURL,*/*;q=0.8", forHTTPHeaderField: "Accept")
         for (name, value) in source.headers { request.setValue(value, forHTTPHeaderField: name) }
-        let response = try await client.data(for: request)
+        let response = try await SubtitleResourceRetry.load(request: request, client: client)
         try Task.checkCancellation()
         guard let playlist = String(data: response.data, encoding: .utf8),
               playlist.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") else {

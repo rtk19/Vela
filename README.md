@@ -51,7 +51,7 @@ To create an archive, select **Any iOS Device (arm64)** and use **Product → Ar
 - Live ±0.1-second timing adjustment for downloaded subtitle tracks
 - Preferred audio language with automatic English fallback
 - Resume position and continue-watching persistence
-- Versioned JSON export and import for all settings, watchlist entries, watched history, episode progress, Continue Watching selections, and title playback speeds
+- Versioned JSON export and import for all settings, watchlist entries, watched history, episode progress, Continue Watching selections, title playback speeds, and landscape player zoom preferences
 - Automatic next-episode playback and next-episode Continue Watching handoff
 - Picture in Picture, AirPlay, background audio, and native full-screen playback
 - Swift Testing coverage for Inertia/HTML parsing, live response-shape compatibility, shared-model persistence, and Vixcloud token parsing

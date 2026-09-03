@@ -38,14 +38,31 @@ actor VixcloudResolver {
         components.queryItems = query
         guard let playlistURL = components.url else { throw AppError.invalidURL }
 
+        let headers = [
+            "Referer": "\(iframeURL.scheme ?? "https")://\(iframeURL.host ?? "")/",
+            "User-Agent": HTTPClient.desktopUserAgent,
+            "Accept-Language": "en-US,en;q=0.9",
+            "Cookie": "language=en"
+        ]
+        var playlistRequest = URLRequest(url: playlistURL)
+        playlistRequest.cachePolicy = .reloadIgnoringLocalCacheData
+        playlistRequest.setValue(
+            "application/vnd.apple.mpegurl,application/x-mpegURL,*/*;q=0.8",
+            forHTTPHeaderField: "Accept"
+        )
+        for (name, value) in headers {
+            playlistRequest.setValue(value, forHTTPHeaderField: name)
+        }
+        let playlistResponse = try await client.data(for: playlistRequest)
+        try Task.checkCancellation()
+        guard let playlist = String(data: playlistResponse.data, encoding: .utf8),
+              playlist.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") else {
+            throw AppError.decoding("Vixcloud playlist")
+        }
+
         return PlaybackSource(
             url: playlistURL,
-            headers: [
-                "Referer": "\(iframeURL.scheme ?? "https")://\(iframeURL.host ?? "")/",
-                "User-Agent": HTTPClient.desktopUserAgent,
-                "Accept-Language": "en-US,en;q=0.9",
-                "Cookie": "language=en"
-            ],
+            headers: headers,
             subtitles: [],
             preferredPeakBitRate: nil
         )
