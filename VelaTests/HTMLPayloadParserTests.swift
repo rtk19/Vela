@@ -1,9 +1,65 @@
 import Foundation
+import AVFoundation
 import Testing
 @testable import Vela
 
 @Suite("Provider parsing boundaries")
 struct HTMLPayloadParserTests {
+    @Test("Decodes Hebrew subtitles across Unicode and Windows encodings")
+    func subtitleEncodingVariants() throws {
+        let text = "בדיקה בעברית!"
+        let srt = "1\r\n00:00:01,000 --> 00:00:03,000\r\n\(text)\r\n"
+        let hebrew = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(0x0505))
+        for encoding in [String.Encoding.utf8, .utf16, .utf16LittleEndian, .utf16BigEndian,
+                         .utf32, .utf32LittleEndian, .utf32BigEndian, hebrew] {
+            let data = try #require(srt.data(using: encoding))
+            let cues = try SubtitleParser.cues(from: data, languageCode: "he")
+            #expect(cues.count == 1)
+            #expect(cues.first?.text == text)
+            #expect(cues.first?.startTime == 1)
+            #expect(cues.first?.endTime == 3)
+        }
+    }
+
+    @Test("Recovers Hebrew transcoded through Western encodings")
+    func repairsHebrewMojibake() throws {
+        let text = "בדיקה בעברית!"
+        let hebrew = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(0x0505))
+        for original in [String.Encoding.utf8, hebrew] {
+            for western in [String.Encoding.windowsCP1252, .isoLatin1] {
+                let bytes = try #require(text.data(using: original))
+                let garbled = try #require(String(data: bytes, encoding: western))
+                let data = Data("1\n00:00:01,000 --> 00:00:03,000\n\(garbled)".utf8)
+                #expect(try SubtitleParser.cues(from: data, languageCode: "he-IL").first?.text == text)
+                #expect(try SubtitleParser.cues(from: data, languageCode: "fr").first?.text == garbled)
+            }
+        }
+    }
+
+    @Test("Repairs short replies after establishing a file-wide Hebrew encoding error")
+    func repairsShortHebrewReplies() throws {
+        // Reproduce the Western-to-UTF-8 conversion observed in Ktuvit's episode 3 file.
+        let lines = Array(repeating: "<i>בדיקה בעברית</i>", count: 5) + ["כן.", "לא!", "שלום עולם, John!"]
+        let hebrew = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(0x0505))
+        let blocks = try lines.enumerated().map { index, line in
+            let bytes = try #require(line.data(using: hebrew))
+            let garbled = try #require(String(data: bytes, encoding: .isoLatin1))
+            return "\(index + 1)\n00:00:01,000 --> 00:00:03,000\n\(garbled)"
+        }
+        let cues = try SubtitleParser.cues(from: Data(blocks.joined(separator: "\n\n").utf8), languageCode: "he")
+        #expect(cues.map(\.text) == Array(repeating: "בדיקה בעברית", count: 5) + ["כן.", "לא!", "שלום עולם, John!"])
+    }
+
+    @Test("Preserves valid multilingual subtitles and rejects damaged Unicode")
+    func subtitleEncodingSafety() throws {
+        for text in ["שלום, John!", "Hello world!", "Café déjà vu", "كيف حالك؟", "日本語"] {
+            let data = Data("1\n00:00:01,000 --> 00:00:03,000\n\(text)".utf8)
+            #expect(try SubtitleParser.cues(from: data, languageCode: "he").first?.text == text)
+        }
+        let damaged = Data([0xEF, 0xBB, 0xBF, 0xFF])
+        #expect(throws: (any Error).self) { try SubtitleParser.cues(from: damaged, languageCode: "he") }
+    }
+
     @Test("Extracts and decodes an Inertia payload")
     func extractsAndDecodesInertiaPayload() throws {
         let html = #"<main id="app" data-page="{&quot;version&quot;:&quot;abc&quot;,&quot;props&quot;:{}}"></main>"#
@@ -351,6 +407,27 @@ struct HTMLPayloadParserTests {
         #expect(episodeURL?.path == "/subtitles/series/tt0944947:2:3.json")
     }
 
+    @Test("Ktuvit recovers Paradise S1E6 through its full IMDb link when the bridge is empty")
+    func ktuvitDirectEpisodeFallback() async throws {
+        let bridge = URL(string: "https://subtitles.example/")!
+        let searchURL = URL(string: "https://www.ktuvit.me/Services/ContentProvider.svc/SearchPage_search")!
+        let episodeURL = URL(string: "https://www.ktuvit.me/Services/GetModuleAjax.ashx?moduleName=SubtitlesList&SeriesID=correct&Season=1&Episode=6")!
+        let films = #"{"Films":[{"ID":"wrong","IMDB_Link":"https://www.imdb.com/title/tt2744420/","ImdbID":"tt2744420"},{"ID":"correct","IMDB_Link":"https://www.imdb.com/title/tt27444205/","ImdbID":"tt2744420"}]}"#
+        let envelope = try JSONSerialization.data(withJSONObject: ["d": films])
+        let html = #"<tr><td><div>Paradise.2025.S01E06.1080p.WEB.h264-ETHEL<br /><small>Credit</small></div></td><td><a data-subtitle-id="episode-six"></a></td></tr><tr><td>No subtitles</td></tr>"#
+        let client = RoutingHTTPClient(bodies: [
+            bridge.appending(path: "subtitles/series/tt27444205:1:6.json"): Data(#"{"subtitles":[]}"#.utf8),
+            searchURL: envelope,
+            episodeURL: Data(html.utf8),
+        ])
+        let results = try await KtuvitSubtitleProvider(client: client, baseURL: bridge).subtitles(for:
+            SubtitleLookupRequest(kind: .series, imdbID: "tt27444205", seasonNumber: 1, episodeNumber: 6, title: "Paradise"))
+        #expect(results.count == 1)
+        #expect(results.first?.languageCode == "he")
+        #expect(results.first?.label == "Paradise.2025.S01E06.1080p.WEB.h264-ETHEL")
+        #expect(results.first?.url.path == "/srt/correct/episode-six.srt")
+    }
+
     @Test("Resolves a series IMDb ID from its exact TMDb ID")
     func resolvesIMDbIDFromTMDbID() async throws {
         let json = #"{"results":{"bindings":[{"imdb":{"type":"literal","value":"tt15677150"}}]}}"#
@@ -534,6 +611,62 @@ struct HTMLPayloadParserTests {
             "\(rightToLeftMark)- פענוח רשת \"טור\" -",
             "\(rightToLeftMark)— פענוח רשת ״טור״ —",
         ])
+    }
+
+    @Test("Keeps enclosing quotes when terminal punctuation is displaced inside the opening boundary")
+    func repairsSplitQuotedSentenceBoundaries() {
+        let cases: [(String, String)] = [
+            ("\".זה הגרנד קניון שלנו\"", "\"זה הגרנד קניון שלנו\"."),
+            ("\",בוא נלך לצוד את בית מורטון\"\nאמרת.", "\"בוא נלך לצוד את בית מורטון\",\nאמרת."),
+            ("זה הגרנד קניון שלנו\".\"", "\"זה הגרנד קניון שלנו\"."),
+            ("בוא נלך לצוד את בית מורטון\",\"\nאמרת.", "\"בוא נלך לצוד את בית מורטון\",\nאמרת."),
+        ]
+        for (input, expected) in cases {
+            let cues = [SubtitleCue(startTime: 0, endTime: 1, text: input)]
+            let result = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+            let marked = expected.components(separatedBy: "\n").map { "\u{200F}\($0)" }.joined(separator: "\n")
+            #expect(result[0].text == marked)
+            #expect(SubtitleDirectionFormatter.normalizedCues(result, languageCode: "he") == result)
+            #expect(HLSSubtitleInjector.webVTT(cues: cues, languageCode: "he").contains(marked))
+        }
+    }
+
+    @Test("Repairs enclosing quote boundaries across neutral quote and punctuation types",
+          arguments: ["\"", "'", "׳", "״"], [".", ",", "!", "؟", "；"])
+    func repairsEnclosingQuotationMatrix(quote: String, mark: String) {
+        let expected = "\(quote)בדיקת ציטוט\(quote)\(mark)"
+        for input in ["\(quote)\(mark)בדיקת ציטוט\(quote)", "בדיקת ציטוט\(quote)\(mark)\(quote)", expected] {
+            let cues = [SubtitleCue(startTime: 0, endTime: 1, text: input)]
+            let result = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+            #expect(result[0].text == "\u{200F}\(expected)")
+            #expect(SubtitleDirectionFormatter.normalizedCues(result, languageCode: "he") == result)
+        }
+        for input in ["\(quote)בדיקת ציטוט\(mark)\(quote)", "זהו \(quote)ציטוט\(quote)\(mark)"] {
+            let cues = [SubtitleCue(startTime: 0, endTime: 1, text: input)]
+            #expect(SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")[0].text == "\u{200F}\(input)")
+        }
+    }
+
+    @Test("Repairs punctuation inside caption dashes and preserves first-word quotations")
+    func repairsCaptionBodiesAndFirstWordQuotes() {
+        let pairs = [
+            ("- !אל תדלגו -", "- אל תדלגו! -"),
+            ("- אל תדלגו! -", "- אל תדלגו! -"),
+            ("— ؟אל תדלגו —", "— אל תדלגו؟ —"),
+            ("- וודיו\" שק\".", "- \"וודיו\" שק."),
+            ("- וודיו״ שק״.", "- ״וודיו״ שק."),
+            ("- ״וודיו״ שק.", "- ״וודיו״ שק."),
+            ("\"וודיו\" שק.", "\"וודיו\" שק."),
+            ("- \"פענוח רשת \"טור -", "- פענוח רשת \"טור\" -"),
+            ("- \".זה הגרנד קניון שלנו\" -", "- \"זה הגרנד קניון שלנו\". -"),
+        ]
+        for (input, expected) in pairs {
+            let cues = [SubtitleCue(startTime: 0, endTime: 1, text: input)]
+            let result = SubtitleDirectionFormatter.normalizedCues(cues, languageCode: "he")
+            #expect(result[0].text == "\u{200F}\(expected)")
+            #expect(SubtitleDirectionFormatter.normalizedCues(result, languageCode: "he") == result)
+            #expect(HLSSubtitleInjector.webVTT(cues: cues, languageCode: "he").contains("\u{200F}\(expected)"))
+        }
     }
 
     @Test("Removes inherited LTR controls that override RTL subtitle rendering")
@@ -888,6 +1021,53 @@ struct HTMLPayloadParserTests {
         #expect(asset.orderedLanguageTags == ["en-x-bsf-1", "en-x-bsf-2"])
         #expect(asset.languageTags.count == 2)
         #expect(master.contains(#"NAME="Saved Sync +0.3s",LANGUAGE="en-x-bsf-2""#))
+    }
+
+    @MainActor
+    @Test("AVPlayer uses private-use labels only for third-party subtitle versions", arguments: ["ktuvit", "wizdom", "native-hls", "stream"])
+    func nativeSubtitleSelectionNames(providerID: String) async throws {
+        let subtitle = SubtitleSource(id: "he", providerID: providerID, providerName: providerID,
+                                      label: "Release", languageCode: "he", url: URL(string: "https://example.com/sub.srt")!)
+        let asset = try await HLSSubtitleInjector.prepare(
+            source: PlaybackSource(url: URL(string: "https://example.com/video.m3u8")!, headers: [:], subtitles: [], preferredPeakBitRate: nil),
+            renditions: [
+                HLSSubtitleRendition(subtitle: subtitle, cues: [SubtitleCue(startTime: 0, endTime: 5, text: "Hello")]),
+                HLSSubtitleRendition(subtitle: subtitle, cues: [SubtitleCue(startTime: 0, endTime: 5, text: "Hello")], displayNameOverride: "Hebrew (Resynced 1)"),
+            ],
+            client: StubHTTPClient(body: Data("#EXTM3U\n#EXTINF:5,\nsegment.ts\n#EXT-X-ENDLIST\n".utf8))
+        )
+        // One black H.264 frame in MPEG-TS; keep this check entirely offline.
+        let video = Data(base64Encoded: "R0AREABC8CUAAcEAAP8B/wAB/IAUSBIBBkZGbXBlZwlTZXJ2aWNlMDF3fEPK//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////9HQAAQAACwDQABwQAAAAHwACqxBLL//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////0dQABAAArASAAHBAADhAPAAG+EA8AAVvU1W////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////R0EAMAdQAAB7DH4AAAAB4AAAgIAFIQAH2GEAAAABCfAAAAABZ2QACqzZXsBEAAADAAQAAAMACDxIllgAAAABaOvjyyLAAAABBgX//6ncRem95tlIt5Ys2CDZI+7veDI2NCAtIGNvcmUgMTY1IHIzMjIyIGIzNTYwNWEgLSBILjI2NC9NUEVHLTQgQVZDIGNvZGVjIC0gQ29weWxlZnQgMjAwMy0yMDI1IC0gaHR0cDovL3d3dy52aWRlb2xHAQARYW4ub3JnL3gyNjQuaHRtbCAtIG9wdGlvbnM6IGNhYmFjPTEgcmVmPTMgZGVibG9jaz0xOjA6MCBhbmFseXNlPTB4MzoweDExMyBtZT1oZXggc3VibWU9NyBwc3k9MSBwc3lfcmQ9MS4wMDowLjAwIG1peGVkX3JlZj0xIG1lX3JhbmdlPTE2IGNocm9tYV9tZT0xIHRyZWxsaXM9MSA4eDhkY3Q9MSBjcW09MCBkZWFkem9uZT0yMUcBABIsMTEgZmFzdF9wc2tpcD0xIGNocm9tYV9xcF9vZmZzZXQ9LTIgdGhyZWFkcz0xIGxvb2thaGVhZF90aHJlYWRzPTEgc2xpY2VkX3RocmVhZHM9MCBucj0wIGRlY2ltYXRlPTEgaW50ZXJsYWNlZD0wIGJsdXJheV9jb21wYXQ9MCBjb25zdHJhaW5lZF9pbnRyYT0wIGJmcmFtZXM9MyBiX3B5cmFtaWQ9MiBiX2FkYXB0PTEgYl9iRwEAE2lhcz0wIGRpcmVjdD0xIHdlaWdodGI9MSBvcGVuX2dvcD0wIHdlaWdodHA9MiBrZXlpbnQ9MjUwIGtleWludF9taW49MSBzY2VuZWN1dD00MCBpbnRyYV9yZWZyZXNoPTAgcmNfbG9va2FoZWFkPTQwIHJjPWNyZiBtYnRyZWU9MSBjcmY9MjMuMCBxY29tcD0wLjYwIHFwbWluPTAgcXBtYXg9NjkgcXBzdGVwPTQgaXBfcmF0aW9HAQA0kwD//////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////z0xLjQwIGFxPTE6MS4wMACAAAABZYiEABX//vfJ78Cm69vfgQ==")!
+        let videoURL = asset.workingDirectory.appending(path: "video.m3u8")
+        let segmentURL = asset.workingDirectory.appending(path: "video.ts")
+        try video.write(to: segmentURL)
+        try Data("#EXTM3U\n#EXT-X-VERSION:3\n#EXT-X-TARGETDURATION:1\n#EXT-X-MEDIA-SEQUENCE:0\n#EXTINF:1.0,\n\(segmentURL.absoluteString)\n#EXT-X-ENDLIST\n".utf8).write(to: videoURL)
+        let master = try String(contentsOf: asset.masterPlaylistURL)
+            .replacingOccurrences(of: "https://example.com/video.m3u8", with: videoURL.absoluteString)
+        try Data(master.utf8).write(to: asset.masterPlaylistURL)
+        let server = HLSSubtitleLoopbackServer()
+        let url = try await server.publish(asset)
+        let (masterData, _) = try await URLSession.shared.data(from: url)
+        #expect(String(data: masterData, encoding: .utf8)?.contains("#EXTM3U") == true)
+        let avAsset = AVURLAsset(url: url)
+        let group = try #require(try await avAsset.loadMediaSelectionGroup(for: .legible))
+        #expect(group.options.count == 2)
+        var titles: [String] = []
+        for option in group.options {
+            let isThirdParty = providerID == "ktuvit" || providerID == "wizdom"
+            #expect(option.extendedLanguageTag?.contains("-x-bsf-") == isThirdParty)
+            if isThirdParty {
+                #expect(option.displayName.localizedCaseInsensitiveContains("private"))
+            } else {
+                #expect(option.extendedLanguageTag == "he")
+                #expect(!option.displayName.localizedCaseInsensitiveContains("private"))
+            }
+            for metadata in option.commonMetadata where metadata.commonKey == .commonKeyTitle {
+                if let title = try await metadata.load(.stringValue) { titles.append(title) }
+            }
+        }
+        #expect(Set(titles) == Set(asset.orderedDisplayNames))
+        server.clear()
     }
 
     @Test("Decodes external title identifiers from StreamingCommunity")

@@ -39,6 +39,7 @@ struct SubtitleLookupRequest: Hashable, Sendable {
     let imdbID: String
     let seasonNumber: Int?
     let episodeNumber: Int?
+    var title: String? = nil
 }
 
 protocol SubtitleProvider: Sendable {
@@ -195,7 +196,8 @@ actor SubtitleProviderRegistry {
                 kind: request.kind,
                 imdbID: resolvedIMDbID,
                 seasonNumber: request.seasonNumber,
-                episodeNumber: request.episodeNumber
+                episodeNumber: request.episodeNumber,
+                title: request.title
             )
             let fallbackResults = await queryProviders(enabled, for: correctedRequest)
             SubtitleDiagnostics.logger.info(
@@ -301,7 +303,7 @@ struct WizdomSubtitleProvider: SubtitleProvider {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue(HTTPClient.desktopUserAgent, forHTTPHeaderField: "User-Agent")
 
-        let response = try await client.data(for: urlRequest)
+        let response = try await SubtitleResourceRetry.load(request: urlRequest, client: client)
         SubtitleDiagnostics.logger.debug(
             "Wizdom subtitle response: status=\(response.response.statusCode) bytes=\(response.data.count)"
         )
@@ -368,6 +370,18 @@ struct KtuvitSubtitleProvider: SubtitleProvider {
     }
 
     func subtitles(for request: SubtitleLookupRequest) async throws -> [SubtitleSource] {
+        do {
+            let results = try await bridgeSubtitles(for: request)
+            if !results.isEmpty { return results }
+        } catch where error.isCancellation {
+            throw error
+        } catch {
+            SubtitleDiagnostics.logger.error("Ktuvit bridge lookup failed; trying direct search")
+        }
+        return try await directSubtitles(for: request)
+    }
+
+    private func bridgeSubtitles(for request: SubtitleLookupRequest) async throws -> [SubtitleSource] {
         let contentID: String
         switch request.kind {
         case .movie:
@@ -392,7 +406,7 @@ struct KtuvitSubtitleProvider: SubtitleProvider {
         urlRequest.setValue("application/json", forHTTPHeaderField: "Accept")
         urlRequest.setValue(HTTPClient.desktopUserAgent, forHTTPHeaderField: "User-Agent")
 
-        let response = try await client.data(for: urlRequest)
+        let response = try await SubtitleResourceRetry.load(request: urlRequest, client: client)
         SubtitleDiagnostics.logger.debug(
             "Ktuvit subtitle response: status=\(response.response.statusCode) bytes=\(response.data.count)"
         )
@@ -417,6 +431,72 @@ struct KtuvitSubtitleProvider: SubtitleProvider {
             "Ktuvit subtitle response decoded: raw=\(payload.subtitles.count) usable=\(subtitles.count)"
         )
         return subtitles
+    }
+
+    private func directSubtitles(for lookup: SubtitleLookupRequest) async throws -> [SubtitleSource] {
+        guard let title = lookup.title, !title.isEmpty else { return [] }
+        let site = URL(string: "https://www.ktuvit.me/")!
+        var request = URLRequest(url: site.appending(path: "Services/ContentProvider.svc/SearchPage_search"))
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONSerialization.data(withJSONObject: ["request": [
+            "FilmName": title, "Actors": [], "Studios": NSNull(), "Directors": [],
+            "Genres": [], "Countries": [], "Languages": [], "Year": "", "Rating": [],
+            "Page": 1, "SearchType": lookup.kind == .movie ? "0" : "1", "WithSubsOnly": false,
+        ]])
+        let response = try await SubtitleResourceRetry.load(request: request, client: client)
+        struct Envelope: Decodable { let d: String }
+        struct Search: Decodable {
+            let Films: [Film]
+            struct Film: Decodable {
+                let ID: String
+                let IMDB_Link: String?
+                let ImdbID: String?
+            }
+        }
+        let envelope = try JSONDecoder().decode(Envelope.self, from: response.data)
+        let search = try JSONDecoder().decode(Search.self, from: Data(envelope.d.utf8))
+        // Ktuvit's ImdbID field can truncate eight-digit IDs. Prefer the full link,
+        // never a prefix match or title-only match against similarly named series.
+        guard let film = search.Films.first(where: {
+            let linkedID = $0.IMDB_Link.flatMap { link in
+                link.range(of: #"tt[0-9]+"#, options: .regularExpression).map { String(link[$0]) }
+            }
+            return (linkedID ?? $0.ImdbID) == lookup.imdbID
+        }) else { return [] }
+        var components = URLComponents(url: site, resolvingAgainstBaseURL: false)!
+        if lookup.kind == .series {
+            guard let season = lookup.seasonNumber, let episode = lookup.episodeNumber else { return [] }
+            components.path = "/Services/GetModuleAjax.ashx"
+            components.queryItems = [
+                URLQueryItem(name: "moduleName", value: "SubtitlesList"),
+                URLQueryItem(name: "SeriesID", value: film.ID),
+                URLQueryItem(name: "Season", value: String(season)),
+                URLQueryItem(name: "Episode", value: String(episode)),
+            ]
+        } else {
+            components.path = "/MovieInfo.aspx"
+            components.queryItems = [URLQueryItem(name: "ID", value: film.ID)]
+        }
+        guard let url = components.url else { throw AppError.invalidURL }
+        let page = try await SubtitleResourceRetry.load(request: URLRequest(url: url), client: client)
+        guard let html = String(data: page.data, encoding: .utf8) else { throw AppError.decoding("Ktuvit subtitles") }
+        let rows = try NSRegularExpression(pattern: #"(?is)<tr\b[^>]*>(.*?)</tr>"#)
+        let identifier = try NSRegularExpression(pattern: #"data-subtitle-id=["']([^"']+)["']"#)
+        let name = try NSRegularExpression(pattern: #"(?is)<div\b[^>]*>\s*(.*?)<br\s*/?>"#)
+        func capture(_ regex: NSRegularExpression, _ value: String) -> String? {
+            guard let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+                  let range = Range(match.range(at: 1), in: value) else { return nil }
+            return String(value[range]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return rows.matches(in: html, range: NSRange(html.startIndex..., in: html)).compactMap { row in
+            guard let range = Range(row.range, in: html) else { return nil }
+            let value = String(html[range])
+            guard let subtitleID = capture(identifier, value), let label = capture(name, value) else { return nil }
+            let url = baseURL.appending(path: "srt").appending(path: film.ID).appending(path: "\(subtitleID).srt")
+            return SubtitleSource(id: "\(id):\(subtitleID)", providerID: id,
+                                  providerName: displayName, label: label, languageCode: "he", url: url)
+        }
     }
 
     private struct Response: Decodable, Sendable {
@@ -451,7 +531,8 @@ extension PlaybackRequest {
             kind: media.kind,
             imdbID: imdbID,
             seasonNumber: episode?.seasonNumber,
-            episodeNumber: episode?.number
+            episodeNumber: episode?.number,
+            title: media.title
         )
     }
 }
@@ -613,6 +694,28 @@ enum SubtitleDirectionFormatter {
     ) -> String {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
         guard directionalCounts(in: trimmed).rightToLeft > 0 else { return line }
+        // Dialogue/caption dashes form an outer boundary, not part of the
+        // sentence decoration. Normalize inside them so a dash cannot hide a
+        // displaced exclamation mark or quote from the same repair rules.
+        let prefix = edgeToken(in: trimmed, fromStart: true) {
+            isDialogueDash($0) || $0.isWhitespace
+        }
+        if prefix.contains(where: isDialogueDash), prefix.count < trimmed.count {
+            let remainder = String(trimmed.dropFirst(prefix.count))
+            let suffix = trailingVisualDialogueRun(in: remainder)
+            let body = String(remainder.dropLast(suffix.count))
+            let correctedBody = correctedLegacyPunctuation(
+                in: body,
+                repairsAmbiguousLeadingPunctuation: repairsAmbiguousLeadingPunctuation
+            )
+            return prefix + correctedBody + suffix
+        }
+        if let correctedQuotation = correctedTrailingOpeningQuote(in: trimmed) {
+            return correctedQuotation
+        }
+        if let correctedQuotation = correctedEnclosingQuotation(in: trimmed) {
+            return correctedQuotation
+        }
         if let correctedOpening = correctedMirroredLeadingOpening(in: trimmed) {
             return correctedOpening
         }
@@ -677,6 +780,55 @@ enum SubtitleDirectionFormatter {
         return "\(dialoguePrefix)\(core)\(logicalSuffix)"
     }
 
+    private static func correctedTrailingOpeningQuote(in text: String) -> String? {
+        let terminal = edgeToken(in: text, fromStart: false, matching: isTerminalPunctuation)
+        let body = String(text.dropLast(terminal.count))
+        guard let quote = body.last, isAmbiguousQuotationMark(quote),
+              body.first != quote,
+              body.filter({ $0 == quote }).count == 2,
+              let closingIndex = body.firstIndex(of: quote) else { return nil }
+        let afterClosing = body.index(after: closingIndex)
+        // A quote attached to the preceding word and followed by whitespace
+        // closes that word. Its partner at the end is a displaced opener.
+        guard closingIndex > body.startIndex,
+              !body[body.index(before: closingIndex)].isWhitespace,
+              body[afterClosing].isWhitespace else { return nil }
+        let tail = String(body[afterClosing...].dropLast())
+        guard directionalCounts(in: String(body[..<closingIndex])).rightToLeft > 0,
+              directionalCounts(in: tail).rightToLeft > 0 else { return nil }
+        return "\(quote)\(body.dropLast())\(terminal)"
+    }
+
+    private static func correctedEnclosingQuotation(in text: String) -> String? {
+        let leading = leadingVisualDecoration(in: text)
+        let quotes = leading.filter(isAmbiguousQuotationMark)
+        let terminal = leading.filter(isTerminalPunctuation)
+        let remainder = String(text.dropFirst(leading.count))
+        // A quote before displaced sentence punctuation is still an opener
+        // when its sole partner closes the body. The suffix-only boundary
+        // scanner cannot retain it across the intervening period/comma.
+        if let quote = quotes.first, quotes.count == 1, !terminal.isEmpty,
+           leading.allSatisfy({ $0 == quote || isTerminalPunctuation($0) || $0.isWhitespace }),
+           remainder.last == quote, remainder.filter({ $0 == quote }).count == 1 {
+            return "\(quote)\(remainder)\(String(terminal.reversed()))"
+        }
+
+        // Also repair previously displaced openers: text + quote + punctuation
+        // + quote. Require the entire quote pair to be in this terminal run;
+        // ordinary inline quotes and punctuation inside valid quotes stay intact.
+        let trailing = edgeToken(in: text, fromStart: false) {
+            isAmbiguousQuotationMark($0) || isTerminalPunctuation($0)
+        }
+        guard let quote = trailing.first, isAmbiguousQuotationMark(quote),
+              trailing.last == quote,
+              text.filter({ $0 == quote }).count == 2 else { return nil }
+        let punctuation = trailing.dropFirst().dropLast()
+        guard !punctuation.isEmpty, punctuation.allSatisfy(isTerminalPunctuation) else { return nil }
+        let body = String(text.dropLast(trailing.count))
+        guard directionalCounts(in: body).rightToLeft > 0 else { return nil }
+        return "\(quote)\(body)\(quote)\(punctuation)"
+    }
+
     private static func correctedRotatedQuotationPair(in text: String) -> String? {
         let leadingBoundary = edgeToken(in: text, fromStart: true) { character in
             isDialogueDash(character) || character.isWhitespace
@@ -707,6 +859,13 @@ enum SubtitleDirectionFormatter {
         guard let displacedOpeningIndex = afterLeadingQuote.firstIndex(of: quotationMark) else {
             return nil
         }
+        // Only relocate a quote that opens the following phrase. A quote
+        // attached to the preceding word (\"וודיו\" שק.) is already a closer.
+        let followingIndex = afterLeadingQuote.index(after: displacedOpeningIndex)
+        guard displacedOpeningIndex > afterLeadingQuote.startIndex,
+              afterLeadingQuote[afterLeadingQuote.index(before: displacedOpeningIndex)].isWhitespace,
+              followingIndex < afterLeadingQuote.endIndex,
+              !afterLeadingQuote[followingIndex].isWhitespace else { return nil }
         let precedingText = String(afterLeadingQuote[..<displacedOpeningIndex])
             .trimmingCharacters(in: .whitespaces)
         let quotedTail = String(afterLeadingQuote[afterLeadingQuote.index(after: displacedOpeningIndex)...])
@@ -956,8 +1115,8 @@ enum SubtitleDirectionFormatter {
 }
 
 enum SubtitleParser {
-    static func cues(from data: Data) throws -> [SubtitleCue] {
-        guard let decoded = decode(data) else { throw AppError.decoding("Subtitle text encoding") }
+    static func cues(from data: Data, languageCode: String? = nil) throws -> [SubtitleCue] {
+        guard let decoded = decode(data, languageCode: languageCode) else { throw AppError.decoding("Subtitle text encoding") }
         let normalized = decoded
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -969,16 +1128,81 @@ enum SubtitleParser {
         }
     }
 
-    private static func decode(_ data: Data) -> String? {
-        if let value = String(data: data, encoding: .utf8) { return value }
-        if let value = String(data: data, encoding: .utf16) { return value }
-        // Core Foundation's Windows Hebrew (code page 1255) identifier.
-        let windowsHebrew = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
-            CFStringEncoding(0x0505)
-        ))
-        if let value = String(data: data, encoding: windowsHebrew) { return value }
-        if let value = String(data: data, encoding: .windowsCP1252) { return value }
-        return String(data: data, encoding: .isoLatin1)
+    private static let windowsHebrew = String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(
+        CFStringEncoding(0x0505)
+    ))
+
+    private static func decode(_ data: Data, languageCode: String?) -> String? {
+        let bytes = Array(data.prefix(4))
+        // Check UTF-32 first: its little-endian BOM starts with the UTF-16 BOM.
+        let signatures: [([UInt8], String.Encoding)] = [
+            ([0xFF, 0xFE, 0, 0], .utf32LittleEndian),
+            ([0, 0, 0xFE, 0xFF], .utf32BigEndian),
+            ([0xFF, 0xFE], .utf16LittleEndian),
+            ([0xFE, 0xFF], .utf16BigEndian),
+            ([0xEF, 0xBB, 0xBF], .utf8)
+        ]
+        let decoded: String?
+        if let (signature, encoding) = signatures.first(where: { bytes.starts(with: $0.0) }) {
+            // A declared Unicode encoding must never fall through to a legacy guess.
+            decoded = String(data: data.dropFirst(signature.count), encoding: encoding)
+        } else if data.contains(0) {
+            // BOM-less Unicode must preserve the ASCII subtitle timing syntax.
+            decoded = [String.Encoding.utf32LittleEndian, .utf32BigEndian,
+                       .utf16LittleEndian, .utf16BigEndian].compactMap {
+                String(data: data, encoding: $0)
+            }.first { $0.contains("-->") && !$0.contains("\0") }
+        } else if let unicode = String(data: data, encoding: .utf8) {
+            decoded = unicode
+        } else {
+            let encodings: [String.Encoding] = isHebrew(languageCode) || languageCode == nil
+                ? [windowsHebrew, .windowsCP1252, .isoLatin1]
+                : [.windowsCP1252, .isoLatin1]
+            decoded = encodings.lazy.compactMap { String(data: data, encoding: $0) }.first
+        }
+        guard let decoded, !decoded.contains("\u{FFFD}"), !decoded.contains("\0") else { return nil }
+        guard isHebrew(languageCode) else { return decoded }
+        let lines = decoded.components(separatedBy: "\n")
+        let repaired = lines.map { repairHebrewLine($0) }
+        let changed = zip(lines, repaired).filter { $0 != $1 }.count
+        // Repeated successful repairs establish the encoding for short replies too.
+        if changed >= 5 {
+            return repaired.map { repairHebrewLine($0, minimumLetters: 1) }.joined(separator: "\n")
+        }
+        return repaired.joined(separator: "\n")
+    }
+
+    private static func isHebrew(_ languageCode: String?) -> Bool {
+        let base = languageCode?.lowercased().split(whereSeparator: { $0 == "-" || $0 == "_" }).first
+        return base == "he" || base == "heb" || base == "iw"
+    }
+
+    private static func repairHebrewLine(_ line: String, minimumLetters: Int = 3) -> String {
+        var result = line
+        // Some providers transcode bytes through a Western encoding before serving UTF-8.
+        // Only accept lossless reversals with strong Hebrew evidence; leave mixed/valid text alone.
+        for _ in 0..<2 {
+            guard !result.unicodeScalars.contains(where: { (0x0590...0x05FF).contains($0.value) }) else { break }
+            var replacement: String?
+            for western in [String.Encoding.windowsCP1252, .isoLatin1] {
+                guard let bytes = result.data(using: western, allowLossyConversion: false),
+                      String(data: bytes, encoding: western) == result else { continue }
+                for encoding in [String.Encoding.utf8, windowsHebrew] {
+                    guard let candidate = String(data: bytes, encoding: encoding), candidate != result else { continue }
+                    let visible = candidate.replacingOccurrences(of: #"<[^>]+>"#, with: "", options: .regularExpression)
+                    let letters = visible.unicodeScalars.filter { $0.properties.isAlphabetic }
+                    let hebrew = letters.filter { (0x05D0...0x05EA).contains($0.value) }.count
+                    guard hebrew >= minimumLetters, hebrew * 5 >= letters.count * 3,
+                          !candidate.contains("\u{FFFD}") else { continue }
+                    replacement = candidate
+                    break
+                }
+                if replacement != nil { break }
+            }
+            guard let replacement else { break }
+            result = replacement
+        }
+        return result
     }
 
     private static func parseBlock(_ block: String) -> SubtitleCue? {
@@ -1397,9 +1621,9 @@ enum HLSSubtitleInjector {
             }
             let displayNames = uniqueDisplayNames(for: renditions)
             let languageTags = renditions.indices.map { index in
-                uniqueLanguageTag(
-                    for: renditions[index].subtitle.languageCode,
-                    renditionIndex: index
+                renditionLanguageTag(
+                    for: renditions[index].subtitle,
+                    index: index
                 )
             }
             let manifestRenditions = renditions.indices.map { index in
@@ -1474,9 +1698,9 @@ enum HLSSubtitleInjector {
                 subtitleMediaTag(
                     groupID: externalGroupID,
                     name: rendition.displayName,
-                    language: rendition.languageTag ?? uniqueLanguageTag(
-                        for: rendition.subtitle.languageCode,
-                        renditionIndex: index
+                    language: rendition.languageTag ?? renditionLanguageTag(
+                        for: rendition.subtitle,
+                        index: index
                     ),
                     uri: rendition.playlistURL.absoluteString
                 )
@@ -1498,9 +1722,9 @@ enum HLSSubtitleInjector {
                 subtitleMediaTag(
                     groupID: groupID,
                     name: rendition.displayName,
-                    language: rendition.languageTag ?? uniqueLanguageTag(
-                        for: rendition.subtitle.languageCode,
-                        renditionIndex: index
+                    language: rendition.languageTag ?? renditionLanguageTag(
+                        for: rendition.subtitle,
+                        index: index
                     ),
                     uri: rendition.playlistURL.absoluteString
                 )
@@ -1579,11 +1803,11 @@ enum HLSSubtitleInjector {
         }
     }
 
-    private static func uniqueLanguageTag(
-        for languageCode: String?,
-        renditionIndex: Int
+    private static func renditionLanguageTag(
+        for subtitle: SubtitleSource,
+        index: Int
     ) -> String {
-        let suppliedBase = languageCode?
+        let suppliedBase = subtitle.languageCode?
             .lowercased()
             .replacingOccurrences(of: "_", with: "-")
             .split(separator: "-")
@@ -1595,7 +1819,10 @@ enum HLSSubtitleInjector {
         case "eng": base = "en"
         default: base = suppliedBase.allSatisfy(\.isLetter) ? suppliedBase : "und"
         }
-        return "\(base)-x-bsf-\(renditionIndex + 1)"
+        // Only third-party releases and their Studio versions get the visible
+        // private-use distinction. Built-in tracks retain normal language labels.
+        guard subtitle.providerID != "native-hls", subtitle.providerID != "stream" else { return base }
+        return "\(base)-x-bsf-\(index + 1)"
     }
 
     private static func subtitleMediaTag(

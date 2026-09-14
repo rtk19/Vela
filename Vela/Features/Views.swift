@@ -90,6 +90,43 @@ private struct VelaHeroPageTransition: View {
     }
 }
 
+// Resolve the iPad hero from the viewport before artwork loads. Narrow windows
+// retain the phone-like ratio; larger windows leave room for the next section.
+private struct HeroHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat = HeroArtworkScrollEffect.heroHeight
+}
+
+private extension EnvironmentValues {
+    var heroHeight: CGFloat {
+        get { self[HeroHeightKey.self] }
+        set { self[HeroHeightKey.self] = newValue }
+    }
+}
+
+private struct HeroViewportModifier: ViewModifier {
+    @ViewBuilder
+    func body(content: Content) -> some View {
+        if UIDevice.current.userInterfaceIdiom == .pad {
+            GeometryReader { proxy in
+                content.environment(
+                    \.heroHeight,
+                    min(proxy.size.width * (HeroArtworkScrollEffect.heroHeight / 430), proxy.size.height * 0.72, 900)
+                )
+            }
+        } else {
+            content
+        }
+    }
+}
+
+private struct HeroHeightModifier: ViewModifier {
+    @Environment(\.heroHeight) private var height
+
+    func body(content: Content) -> some View {
+        content.frame(height: height)
+    }
+}
+
 private struct HeroArtworkBoundaryClip: ViewModifier {
     let isEnabled: Bool
 
@@ -590,6 +627,7 @@ struct HomeView: View {
         .coordinateSpace(name: HeroArtworkScrollEffect.homeCoordinateSpace)
         .background { VelaScreenBackground() }
         .ignoresSafeArea(edges: .top)
+        .modifier(HeroViewportModifier())
         .toolbar(.hidden, for: .navigationBar)
         .task {
             await model.loadTrending(environment: environment)
@@ -685,7 +723,7 @@ private struct TrendingHeroCarousel: View {
     var body: some View {
         GeometryReader { proxy in
             let minY = proxy.frame(in: .named(HeroArtworkScrollEffect.homeCoordinateSpace)).minY
-            let metrics = HeroArtworkScrollEffect.metrics(minY: minY, reduceMotion: reduceMotion)
+            let metrics = HeroArtworkScrollEffect.metrics(minY: minY, reduceMotion: reduceMotion, heroHeight: proxy.size.height)
 
             ZStack(alignment: .bottom) {
                 ZStack {
@@ -739,7 +777,7 @@ private struct TrendingHeroCarousel: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
         }
         .containerRelativeFrame(.horizontal, alignment: .center)
-        .frame(height: HeroArtworkScrollEffect.heroHeight)
+        .modifier(HeroHeightModifier())
         .titleTransitionSource(
             id: currentTitle.titleTransitionID,
             sourceID: heroTransitionSourceID
@@ -1010,10 +1048,19 @@ private struct CenteredHeroArtwork: View {
             .overlay {
                 Group {
                     if let data, let image = UIImage(data: data) {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        if UIDevice.current.userInterfaceIdiom == .pad {
+                            GeometryReader { proxy in
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .top)
+                            }
+                        } else {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                        }
                     } else {
                         Rectangle().fill(.gray.opacity(0.16))
                     }
@@ -1113,7 +1160,7 @@ private struct TrendingHeroLoadingView: View {
             PageTitleOverlay(title: "Home")
         }
         .containerRelativeFrame(.horizontal, alignment: .center)
-        .frame(height: HeroArtworkScrollEffect.heroHeight)
+        .modifier(HeroHeightModifier())
     }
 }
 
@@ -2645,6 +2692,7 @@ struct DetailsView: View {
         .coordinateSpace(name: HeroArtworkScrollEffect.detailsCoordinateSpace)
         .background { VelaScreenBackground() }
         .ignoresSafeArea(edges: .top)
+        .modifier(HeroViewportModifier())
         .navigationBarTitleDisplayMode(.inline)
         .toolbarBackground(.hidden, for: .navigationBar)
         .toolbarColorScheme(.dark, for: .navigationBar)
@@ -2731,13 +2779,11 @@ struct DetailsView: View {
     private var detailsHero: some View {
         GeometryReader { proxy in
             let minY = proxy.frame(in: .named(HeroArtworkScrollEffect.detailsCoordinateSpace)).minY
-            let metrics = HeroArtworkScrollEffect.metrics(minY: minY, reduceMotion: reduceMotion)
+            let metrics = HeroArtworkScrollEffect.metrics(minY: minY, reduceMotion: reduceMotion, heroHeight: proxy.size.height)
 
             ZStack(alignment: .bottom) {
                 ZStack {
-                    // Keep details artwork identical to the home carousel: the
-                    // image is centered and uniformly fill-cropped inside the
-                    // same fixed-size hero frame.
+                    // Share the carousel's sizing and artwork alignment on each device.
                     CenteredHeroArtwork(data: tmdbHeroArtworkData)
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
                         .overlay {
@@ -2778,7 +2824,7 @@ struct DetailsView: View {
         // details hero instead follows the current proposal so a landscape
         // player presentation cannot leave a stale width behind in portrait.
         .frame(maxWidth: .infinity, alignment: .center)
-        .frame(height: HeroArtworkScrollEffect.heroHeight)
+        .modifier(HeroHeightModifier())
     }
 
     private var detailsTitle: some View {
@@ -3091,14 +3137,14 @@ private enum HeroArtworkScrollEffect {
     static let maximumDimming: Double = 0.64
     static let upwardParallaxCompensation: CGFloat = 0.35
 
-    static func metrics(minY: CGFloat, reduceMotion: Bool) -> Metrics {
+    static func metrics(minY: CGFloat, reduceMotion: Bool, heroHeight: CGFloat) -> Metrics {
         let upwardScroll = max(0, -minY)
         let overscroll = max(0, minY)
         let recessionProgress = min(upwardScroll / recessionDistance, 1)
         let disappearanceProgress = min(upwardScroll / disappearanceDistance, 1)
         let scale = reduceMotion
             ? 1
-            : 1 + (overscroll / heroHeight)
+            : 1 + (overscroll / max(heroHeight, 1))
 
         return Metrics(
             recessionProgress: recessionProgress,
