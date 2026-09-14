@@ -259,6 +259,7 @@ final class PlayerSession: ObservableObject {
     nonisolated(unsafe) private var playbackLikelyToKeepUpObservation: NSKeyValueObservation?
     nonisolated(unsafe) private var itemStatusObservation: NSKeyValueObservation?
     private var mediaOptionsTask: Task<Void, Never>?
+    private var mediaSelectionGeneration = UUID()
     private var subtitleAdjustmentTask: Task<Void, Never>?
     private var qualitySwitchTask: Task<Void, Never>?
     private var nowPlayingArtworkTask: Task<Void, Never>?
@@ -1031,9 +1032,14 @@ final class PlayerSession: ObservableObject {
         preferredSubtitleSelectionID: String? = nil
     ) {
         mediaOptionsTask?.cancel()
+        let mediaSelectionGeneration = UUID()
+        self.mediaSelectionGeneration = mediaSelectionGeneration
         playbackWasRequested = shouldPlay
         shouldResumeAfterBuffering = false
-        isPreparingPlayback = shouldPlay && resumeAt > 0
+        // Keep playback behind the media-selection gate. AVPlayer can otherwise
+        // begin rendering before its asynchronously loaded subtitle group has
+        // received the saved/default selection.
+        isPreparingPlayback = shouldPlay
         if isPreparingPlayback { isBuffering = true }
         let item = AVPlayerItem(asset: asset)
         item.audioTimePitchAlgorithm = .timeDomain
@@ -1065,31 +1071,17 @@ final class PlayerSession: ObservableObject {
         }
         player.replaceCurrentItem(with: item)
         player.defaultRate = playbackRate
-        if resumeAt > 0 {
-            item.seek(
-                to: CMTime(seconds: resumeAt, preferredTimescale: 600),
-                toleranceBefore: .zero,
-                toleranceAfter: .zero,
-                completionHandler: { [weak self, weak item] finished in
-                    Task { @MainActor [weak self, weak item] in
-                        guard let self, let item,
-                              self.player.currentItem === item else { return }
-                        self.isPreparingPlayback = false
-                        guard finished, shouldPlay else {
-                            self.refreshPlaybackState()
-                            return
-                        }
-                        // `play()` deliberately uses `defaultRate`, retaining
-                        // AVPlayer's automatic wait-for-buffer behavior.
-                        self.player.play()
-                    }
+        mediaOptionsTask = Task { @MainActor [weak self, weak item] in
+            guard let self, let item else { return }
+            defer {
+                if self.mediaSelectionGeneration == mediaSelectionGeneration {
+                    self.mediaOptionsTask = nil
                 }
-            )
-        } else if shouldPlay {
-            player.play()
-        }
-        mediaOptionsTask = Task { [weak self] in
-            guard let self else { return }
+            }
+            guard await self.waitUntilReadyForMediaSelection(item),
+                  !Task.isCancelled,
+                  self.mediaSelectionGeneration == mediaSelectionGeneration,
+                  self.player.currentItem === item else { return }
             await self.applyPreferredLanguages(
                 to: asset,
                 primarySubtitleLanguage: self.primarySubtitleLanguage,
@@ -1098,7 +1090,48 @@ final class PlayerSession: ObservableObject {
                 preferredSubtitleDisplayName: preferredSubtitleDisplayName,
                 preferredSubtitleSelectionID: preferredSubtitleSelectionID
             )
+            guard !Task.isCancelled,
+                  self.mediaSelectionGeneration == mediaSelectionGeneration,
+                  self.player.currentItem === item else { return }
+
+            var seekFinished = true
+            if resumeAt > 0 {
+                seekFinished = await item.seek(
+                    to: CMTime(seconds: resumeAt, preferredTimescale: 600),
+                    toleranceBefore: .zero,
+                    toleranceAfter: .zero
+                )
+            }
+            guard !Task.isCancelled,
+                  self.mediaSelectionGeneration == mediaSelectionGeneration,
+                  self.player.currentItem === item else { return }
+            self.isPreparingPlayback = false
+            guard seekFinished, shouldPlay else {
+                self.refreshPlaybackState()
+                return
+            }
+            // `play()` deliberately uses `defaultRate`, retaining AVPlayer's
+            // automatic wait-for-buffer behavior.
+            self.player.play()
         }
+    }
+
+    private func waitUntilReadyForMediaSelection(_ item: AVPlayerItem) async -> Bool {
+        while !Task.isCancelled, player.currentItem === item {
+            switch item.status {
+            case .readyToPlay:
+                return true
+            case .failed:
+                return false
+            default:
+                do {
+                    try await Task.sleep(for: .milliseconds(25))
+                } catch {
+                    return false
+                }
+            }
+        }
+        return false
     }
 
     private func observeBufferingState(
@@ -1234,6 +1267,10 @@ final class PlayerSession: ObservableObject {
     }
 
     private func beginAutomaticBufferRecovery() {
+        // Initial preparation intentionally keeps the item paused until subtitle
+        // and audio selection has completed. An initial empty-buffer callback is
+        // not a playback stall and must not bypass that gate.
+        guard !isPreparingPlayback else { return }
         playbackWasRequested = true
         shouldResumeAfterBuffering = true
         isBuffering = true
@@ -1250,6 +1287,7 @@ final class PlayerSession: ObservableObject {
     }
 
     private func resumeWhenBufferIsReady() {
+        guard !isPreparingPlayback else { return }
         guard playbackWasRequested || shouldResumeAfterBuffering else { return }
         player.play()
     }
@@ -1565,6 +1603,10 @@ final class PlayerSession: ObservableObject {
         preferredSubtitleDisplayName: String?,
         preferredSubtitleSelectionID: String?
     ) {
+        // The initial task owns the readiness/selection/playback sequence. If
+        // readiness arrives while it is active, that task will apply the final
+        // selection itself and must not be cancelled by this observation.
+        guard mediaOptionsTask == nil else { return }
         mediaOptionsTask?.cancel()
         mediaOptionsTask = Task { [weak self, weak item] in
             guard let self, let item, self.player.currentItem === item else { return }

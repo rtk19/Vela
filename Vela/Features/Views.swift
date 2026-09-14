@@ -506,6 +506,13 @@ private struct SplashScreen: View {
     @State private var isVisible = false
     @State private var isPulsing = false
 
+    private var versionText: String {
+        let version = Bundle.main.object(
+            forInfoDictionaryKey: "CFBundleShortVersionString"
+        ) as? String ?? "2.4.0"
+        return "v\(version)"
+    }
+
     var body: some View {
         ZStack {
             environment.theme.backgroundGradient
@@ -544,6 +551,15 @@ private struct SplashScreen: View {
                 reduceMotion ? nil : .easeInOut(duration: 1.6).repeatForever(autoreverses: true),
                 value: isPulsing
             )
+
+            VStack {
+                Spacer()
+                Text(versionText)
+                    .font(.caption2.weight(.light))
+                    .foregroundStyle(VelaTheme.primaryText.opacity(0.35))
+                    .padding(.bottom, 12)
+            }
+            .opacity(isVisible ? 1 : 0)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("Loading Vela")
