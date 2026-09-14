@@ -242,6 +242,7 @@ final class PlayerSession: ObservableObject {
 
     var onEnded: (() -> Void)?
     var onSourceRefreshNeeded: (() async -> Bool)?
+    var onSubtitleVisibilityChanged: ((Bool) -> Void)?
     nonisolated(unsafe) private var timeObserver: Any?
     nonisolated(unsafe) private var studioTimeObserver: Any?
     nonisolated(unsafe) private var endObserver: NSObjectProtocol?
@@ -282,6 +283,8 @@ final class PlayerSession: ObservableObject {
     private var primarySubtitleLanguage = ""
     private var secondarySubtitleLanguage = ""
     private var audioLanguage = "en"
+    private var subtitleVisibilityBaseline: Bool?
+    private var isApplyingPreferredLanguages = false
     private var playbackWasRequested = false
     private var shouldResumeAfterBuffering = false
     private var isPreparingPlayback = false
@@ -302,7 +305,8 @@ final class PlayerSession: ObservableObject {
     private var currentExternalSubtitles: [SubtitleSource] = []
     private let playlistInspector = HLSPlaylistInspector()
     private let subtitleClient: any HTTPClientProtocol
-    private let subtitleServer = HLSSubtitleLoopbackServer()
+    private var subtitleServer = HLSSubtitleLoopbackServer()
+    private var sourceSwitchGeneration = UUID()
     private let audioSessionController = AudioSessionController()
 
     init(subtitleClient: any HTTPClientProtocol = HTTPClient()) {
@@ -369,9 +373,11 @@ final class PlayerSession: ObservableObject {
         externalSubtitles: [SubtitleSource],
         subtitleSyncVersions: [SubtitleSyncVersion],
         automaticallySelectLatestSubtitleSync: Bool,
+        subtitlesEnabled: Bool,
         defaultQualityHeight: Int,
         defaultPlaybackRate: Float
     ) async {
+        sourceSwitchGeneration = UUID()
         // Recovery may replace an item while the user is intentionally paused.
         // Consume the intent before asynchronous subtitle preparation so the
         // replacement cannot unexpectedly start itself later.
@@ -419,7 +425,7 @@ final class PlayerSession: ObservableObject {
         self.audioLanguage = audioLanguage
         player.defaultRate = defaultPlaybackRate
         playbackRate = Double(defaultPlaybackRate)
-        let preferredSyncVersionID = automaticallySelectLatestSubtitleSync
+        let preferredSyncVersionID = subtitlesEnabled && automaticallySelectLatestSubtitleSync
             ? subtitleSyncVersions
                 .sorted { $0.createdAt > $1.createdAt }
                 .compactMap { version in
@@ -427,17 +433,21 @@ final class PlayerSession: ObservableObject {
                 }
                 .first
             : nil
+        subtitleVisibilityBaseline = subtitlesEnabled
         replaceCurrentItem(
             with: asset,
             resumeAt: resumeAt,
             shouldPlay: shouldPlay,
             playbackRate: defaultPlaybackRate,
-            preferredSubtitleSelectionID: preferredSyncVersionID?.1
+            preferredSubtitleSelectionID: subtitlesEnabled
+                ? preferredSyncVersionID?.1
+                : "__subtitles_off__"
         )
         schedulePausedSourceRefreshBeforeExpiration()
     }
 
     func stop() {
+        sourceSwitchGeneration = UUID()
         subtitleAdjustmentTask?.cancel()
         qualitySwitchTask?.cancel()
         nowPlayingArtworkTask?.cancel()
@@ -518,6 +528,99 @@ final class PlayerSession: ObservableObject {
         let value = Double(rate)
         guard abs(playbackRate - value) > 0.001 else { return }
         playbackRate = value
+    }
+
+    /// Prepare using a separate subtitle server so a failed switch cannot delete
+    /// the active stream's playlist or subtitle routes.
+    func switchSource(_ stream: PlayableStream, externalSubtitles: [SubtitleSource],
+                      quality: StreamQuality? = nil, useQualityChoice: Bool = false) async -> Bool {
+        guard let oldItem = player.currentItem else { return false }
+        let generation = UUID()
+        sourceSwitchGeneration = generation
+        let oldServer = subtitleServer
+        let oldNames = injectedSubtitleNames
+        let oldRenditions = subtitleRenditions
+        let oldByName = subtitleRenditionsByDisplayName
+        let oldByID = subtitleRenditionsBySelectionID
+        let oldTracks = subtitleStudioTracks
+        let oldSubtitleSource = subtitlePlaybackSource
+        let oldCanStudio = canOpenSubtitleStudio
+        let oldCanAdjust = canAdjustSubtitleTiming
+        let oldLanguage = primarySubtitleLanguage
+        let subtitleID = await selectedSubtitleSelectionID()
+        let subtitleName = await selectedSubtitleDisplayName()
+        let legible = try? await oldItem.asset.loadMediaSelectionGroup(for: .legible)
+        let audible = try? await oldItem.asset.loadMediaSelectionGroup(for: .audible)
+        let selectedAudioLanguage = audible.flatMap { oldItem.currentMediaSelection.selectedMediaOption(in: $0)?.extendedLanguageTag }
+        let subtitlesWereOff = legible.map { oldItem.currentMediaSelection.selectedMediaOption(in: $0) == nil } ?? false
+        guard generation == sourceSwitchGeneration, !Task.isCancelled else { return false }
+        qualitySwitchTask?.cancel()
+        subtitleAdjustmentTask?.cancel()
+        let height = useQualityChoice ? quality?.height : preferredQualityHeight
+        let newQuality = height.flatMap { StreamQuality.closest(to: $0, in: stream.qualities) }
+        let source = stream.source.preferredForSubtitleLanguage(primarySubtitleLanguage)
+        subtitleServer = HLSSubtitleLoopbackServer()
+        let asset = await assetByInjectingSubtitles(source.subtitles + externalSubtitles, into: source, selectedQuality: newQuality, generation: generation)
+        let playable = await replacementIsReady(asset, generation: generation)
+        guard playable, generation == sourceSwitchGeneration, !Task.isCancelled, player.currentItem === oldItem else {
+            if generation == sourceSwitchGeneration {
+                subtitleServer = oldServer
+                injectedSubtitleNames = oldNames
+                subtitleRenditions = oldRenditions
+                subtitleRenditionsByDisplayName = oldByName
+                subtitleRenditionsBySelectionID = oldByID
+                subtitleStudioTracks = oldTracks
+                subtitlePlaybackSource = oldSubtitleSource
+                canOpenSubtitleStudio = oldCanStudio
+                canAdjustSubtitleTiming = oldCanAdjust
+            }
+            return false
+        }
+        let time = player.currentTime().seconds
+        let resumeAt = time.isFinite ? time : position
+        let shouldPlay = nextReplacementShouldPlay ?? (playbackWasRequested || player.timeControlStatus != .paused)
+        nextReplacementShouldPlay = nil
+        let rate = player.rate > 0 ? player.rate : player.defaultRate
+        availableQualities = stream.qualities
+        selectedQuality = newQuality
+        if useQualityChoice { preferredQualityHeight = quality?.height; qualityPreferenceInitialized = true }
+        currentPlaybackSource = source
+        currentExternalSubtitles = source.subtitles + externalSubtitles
+        currentSourceURL = source.url
+        currentSourceExpiresAt = Self.expirationDate(in: source.url)
+        sourceRefreshRequestedForURL = nil
+        automaticPeakBitRate = source.preferredPeakBitRate
+        playbackErrorMessage = nil
+        // The view model bounds retries per server; allow recovery on the new server.
+        automaticSourceRefreshAttempts = 0
+        if let selectedAudioLanguage { audioLanguage = selectedAudioLanguage }
+        if subtitlesWereOff { primarySubtitleLanguage = "" }
+        replaceCurrentItem(with: asset, resumeAt: resumeAt, shouldPlay: shouldPlay, playbackRate: rate,
+                           preferredSubtitleDisplayName: subtitleName,
+                           preferredSubtitleSelectionID: subtitlesWereOff ? "__subtitles_off__" : subtitleID)
+        primarySubtitleLanguage = oldLanguage
+        schedulePausedSourceRefreshBeforeExpiration()
+        withExtendedLifetime(oldServer) { }
+        return true
+    }
+
+    private func replacementIsReady(_ asset: AVAsset, generation: UUID) async -> Bool {
+        let item = AVPlayerItem(asset: asset)
+        let preparationPlayer = AVPlayer(playerItem: item)
+        preparationPlayer.isMuted = true
+        defer { preparationPlayer.replaceCurrentItem(with: nil) }
+        // Loading a manifest alone does not establish that the native player can
+        // prepare its tracks. Keep the working item until the replacement is ready.
+        for _ in 0..<160 {
+            guard generation == sourceSwitchGeneration, !Task.isCancelled else { return false }
+            switch item.status {
+            case .readyToPlay: return true
+            case .failed: return false
+            default: break
+            }
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return false }
+        }
+        return false
     }
 
     func setQuality(_ quality: StreamQuality?) {
@@ -743,7 +846,8 @@ final class PlayerSession: ObservableObject {
     private func assetByInjectingSubtitles(
         _ subtitles: [SubtitleSource],
         into source: PlaybackSource,
-        selectedQuality: StreamQuality?
+        selectedQuality: StreamQuality?,
+        generation: UUID? = nil
     ) async -> AVURLAsset {
         let originalAsset = AVURLAsset(
             url: source.url,
@@ -759,7 +863,7 @@ final class PlayerSession: ObservableObject {
             client: subtitleClient
         )
         let loadedRenditions = await downloadedRenditions + embeddedRenditions
-        guard !Task.isCancelled else { return originalAsset }
+        guard !Task.isCancelled, generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
         subtitleStudioTracks = loadedRenditions.map {
             SubtitleStudioTrack(source: $0.subtitle, cues: $0.cues)
         }
@@ -772,12 +876,14 @@ final class PlayerSession: ObservableObject {
             let injectedAsset = try await HLSSubtitleInjector.prepare(
                 source: source,
                 renditions: renditions,
+                timingOffset: appliedSubtitleTimingOffset,
                 selectedQualityHeight: selectedQuality?.height,
                 client: subtitleClient
             )
             try Task.checkCancellation()
             let localMasterURL = try await subtitleServer.publish(injectedAsset)
             try Task.checkCancellation()
+            guard generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
             injectedSubtitleNames = injectedAsset.displayNames
             subtitleRenditions = renditions
             subtitleRenditionsByDisplayName = Dictionary(
@@ -794,6 +900,7 @@ final class PlayerSession: ObservableObject {
         } catch where error.isCancellation {
             return originalAsset
         } catch {
+            guard generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
             injectedSubtitleNames = []
             subtitleRenditions = []
             subtitleRenditionsByDisplayName = [:]
@@ -879,6 +986,7 @@ final class PlayerSession: ObservableObject {
                     group.addTask {
                         do {
                             var request = URLRequest(url: subtitle.url)
+                            for (name, value) in subtitle.headers { request.setValue(value, forHTTPHeaderField: name) }
                             request.setValue(
                                 "text/plain,text/vtt,application/x-subrip,*/*;q=0.8",
                                 forHTTPHeaderField: "Accept"
@@ -952,6 +1060,7 @@ final class PlayerSession: ObservableObject {
             MainActor.assumeIsolated {
                 guard let self, let item else { return }
                 self.refreshSubtitleTimingAvailability(for: item)
+                self.recordSubtitleVisibilityChange(for: item)
             }
         }
         player.replaceCurrentItem(with: item)
@@ -1285,14 +1394,20 @@ final class PlayerSession: ObservableObject {
         publishNowPlayingInfo()
     }
 
-    private static func expirationDate(in url: URL) -> Date? {
-        guard let value = URLComponents(
-            url: url,
-            resolvingAgainstBaseURL: false
-        )?.queryItems?.first(where: { $0.name == "expires" })?.value,
-        let timestamp = TimeInterval(value) else { return nil }
-        let seconds = timestamp > 10_000_000_000 ? timestamp / 1_000 : timestamp
-        return Date(timeIntervalSince1970: seconds)
+    static func expirationDate(in url: URL) -> Date? {
+        let query = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
+        if let value = query.first(where: { $0.name == "expires" })?.value, let timestamp = TimeInterval(value) {
+            return Date(timeIntervalSince1970: timestamp > 10_000_000_000 ? timestamp / 1_000 : timestamp)
+        }
+        if let token = query.first(where: { $0.name == "token" })?.value?.split(separator: ".").first {
+            var payload = String(token).replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
+            payload += String(repeating: "=", count: (4 - payload.count % 4) % 4)
+            if let data = Data(base64Encoded: payload), let text = String(data: data, encoding: .utf8),
+               let first = text.split(separator: "|").first, let seconds = TimeInterval(first) {
+                return Date(timeIntervalSince1970: seconds)
+            }
+        }
+        return nil
     }
 
     private func observeAudioSessionEvents() {
@@ -1375,6 +1490,8 @@ final class PlayerSession: ObservableObject {
         preferredSubtitleDisplayName: String? = nil,
         preferredSubtitleSelectionID: String? = nil
     ) async {
+        isApplyingPreferredLanguages = true
+        defer { isApplyingPreferredLanguages = false }
         let subtitleGroup = try? await asset.loadMediaSelectionGroup(for: .legible)
         guard !Task.isCancelled else { return }
         let audioGroup = try? await asset.loadMediaSelectionGroup(for: .audible)
@@ -1412,8 +1529,10 @@ final class PlayerSession: ObservableObject {
                 languageCodes: [secondarySubtitleLanguage]
             )
         }
+        if preferredSubtitleSelectionID == "__subtitles_off__" { embeddedSubtitle = nil }
         if let subtitleGroup {
             player.currentItem?.select(embeddedSubtitle, in: subtitleGroup)
+            subtitleVisibilityBaseline = embeddedSubtitle != nil
             if let embeddedSubtitle {
                 canAdjustSubtitleTiming = await isInjectedSubtitleOption(embeddedSubtitle)
             } else {
@@ -1425,6 +1544,19 @@ final class PlayerSession: ObservableObject {
         if let audioGroup {
             let audio = preferredOption(in: audioGroup.options, languageCodes: [audioLanguage, "en"])
             if let audio { player.currentItem?.select(audio, in: audioGroup) }
+        }
+    }
+
+    private func recordSubtitleVisibilityChange(for item: AVPlayerItem) {
+        guard !isApplyingPreferredLanguages else { return }
+        Task { [weak self, weak item] in
+            guard let self, let item,
+                  let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+                  self.player.currentItem === item else { return }
+            let isEnabled = item.currentMediaSelection.selectedMediaOption(in: group) != nil
+            guard self.subtitleVisibilityBaseline != isEnabled else { return }
+            self.subtitleVisibilityBaseline = isEnabled
+            self.onSubtitleVisibilityChanged?(isEnabled)
         }
     }
 
@@ -1770,7 +1902,7 @@ struct StreamQuality: Identifiable, Hashable, Sendable {
     }
 }
 
-private actor HLSPlaylistInspector {
+actor HLSPlaylistInspector {
     private let client: any HTTPClientProtocol
 
     init(client: any HTTPClientProtocol = HTTPClient()) {
@@ -1778,6 +1910,7 @@ private actor HLSPlaylistInspector {
     }
 
     func availableQualities(for source: PlaybackSource) async -> [StreamQuality] {
+        guard source.url.pathExtension.lowercased() != "mp4" else { return [] }
         do {
             var request = URLRequest(url: source.url)
             for (name, value) in source.headers { request.setValue(value, forHTTPHeaderField: name) }
@@ -1935,6 +2068,10 @@ struct NativePlayerController: UIViewControllerRepresentable {
     let playbackErrorMessage: String?
     let availableQualities: [StreamQuality]
     let selectedQuality: StreamQuality?
+    let streams: [PlayableStream]
+    let selectedSourceID: String?
+    let automaticSource: Bool
+    let onSourceChanged: (String?, StreamQuality?) -> Void
     let subtitleTimingOffset: Double
     let canAdjustSubtitleTiming: Bool
     let onQualityChanged: (StreamQuality?) -> Void
@@ -1982,6 +2119,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
             availableQualities,
             selectedQuality: selectedQuality
         )
+        context.coordinator.updateSources(streams, selectedID: selectedSourceID,
+            automatic: automaticSource, onChanged: onSourceChanged)
         context.coordinator.updateSubtitleTiming(
             offset: subtitleTimingOffset,
             isAvailable: canAdjustSubtitleTiming
@@ -2002,6 +2141,11 @@ struct NativePlayerController: UIViewControllerRepresentable {
         private let subtitleTimingLabel = UILabel()
         private let decreaseSubtitleTimingButton = UIButton(type: .system)
         private let increaseSubtitleTimingButton = UIButton(type: .system)
+        private var streams: [PlayableStream] = []
+        private var selectedSourceID: String?
+        private var automaticSource = true
+        private var sourceMenuSignature = ""
+        private var onSourceChanged: ((String?, StreamQuality?) -> Void)?
         private var availableQualities: [StreamQuality]
         private var selectedQuality: StreamQuality?
         private let onQualityChanged: (StreamQuality?) -> Void
@@ -2299,8 +2443,22 @@ struct NativePlayerController: UIViewControllerRepresentable {
             if discoveredQualities { showSettingsButton() }
         }
 
+        func updateSources(_ streams: [PlayableStream], selectedID: String?, automatic: Bool,
+                           onChanged: @escaping (String?, StreamQuality?) -> Void) {
+            onSourceChanged = onChanged
+            self.streams = streams
+            selectedSourceID = selectedID
+            automaticSource = automatic
+            let signature = streams.map { $0.id + $0.label + $0.qualities.map(\.title).joined() }.joined()
+                + (selectedID ?? "") + String(automatic)
+            guard signature != sourceMenuSignature else { return }
+            sourceMenuSignature = signature
+            rebuildSettingsMenu()
+            showSettingsButton()
+        }
+
         private func rebuildSettingsMenu() {
-            let hasSettings = !availableQualities.isEmpty || subtitleTimingAvailable
+            let hasSettings = !streams.isEmpty || !availableQualities.isEmpty || subtitleTimingAvailable
             settingsButton.isHidden = !hasSettings
             guard hasSettings else {
                 settingsButton.menu = nil
@@ -2318,32 +2476,32 @@ struct NativePlayerController: UIViewControllerRepresentable {
             configuration.baseForegroundColor = .white
             settingsButton.configuration = configuration
 
-            let qualityValue = selectedQuality?.title ?? "Auto"
-            settingsButton.accessibilityValue = "Quality \(qualityValue)"
-
+            settingsButton.accessibilityLabel = "Source & Quality"
+            settingsButton.accessibilityValue = "\(selectedSourceID.flatMap { id in streams.firstIndex { $0.id == id }.map { "Source \($0 + 1)" } } ?? "Automatic"), \(selectedQuality?.title ?? "Auto")"
             var sections: [UIMenuElement] = []
-            if !availableQualities.isEmpty {
-                let automaticAction = UIAction(
-                    title: "Auto",
-                    state: selectedQuality == nil ? .on : .off
-                ) { [weak self] _ in
-                    self?.onQualityChanged(nil)
-                    self?.showSettingsButton()
-                }
-                let qualityActions = availableQualities.reversed().map { quality in
-                    UIAction(
-                        title: quality.title,
-                        state: quality == selectedQuality ? .on : .off
-                    ) { [weak self] _ in
-                        self?.onQualityChanged(quality)
-                        self?.showSettingsButton()
+            if !streams.isEmpty {
+                var sources: [UIMenuElement] = [UIAction(title: "Automatic", state: automaticSource ? .on : .off) { [weak self] _ in
+                    self?.onSourceChanged?(nil, nil)
+                }]
+                for (index, stream) in streams.enumerated() {
+                    let active = selectedSourceID == stream.id
+                    let title = "Source \(index + 1)" + (active ? " ✓" : "")
+                    let qualities = active ? availableQualities : stream.qualities
+                    if qualities.isEmpty {
+                        sources.append(UIAction(title: title, subtitle: stream.label, state: active ? .on : .off) { [weak self] _ in
+                            self?.onSourceChanged?(stream.id, nil)
+                        })
+                    } else {
+                        let choices: [StreamQuality?] = [nil] + qualities.reversed().map { Optional($0) }
+                        let actions = choices.map { quality in
+                            UIAction(title: quality?.title ?? "Auto", state: active && quality == selectedQuality ? .on : .off) { [weak self] _ in
+                                self?.onSourceChanged?(stream.id, quality)
+                            }
+                        }
+                        sources.append(UIMenu(title: title, subtitle: stream.label, children: actions))
                     }
                 }
-                sections.append(UIMenu(
-                    title: "Video Quality",
-                    image: UIImage(systemName: "video"),
-                    children: [automaticAction] + qualityActions
-                ))
+                sections.append(UIMenu(title: "Source & Quality", image: UIImage(systemName: "video"), children: sources))
             }
 
             if subtitleTimingAvailable {

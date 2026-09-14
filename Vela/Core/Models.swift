@@ -211,6 +211,7 @@ struct SubtitleSource: Identifiable, Hashable, Sendable {
     let languageCode: String?
     let url: URL
     let isDefault: Bool
+    let headers: [String: String]
 
     init(
         id: String? = nil,
@@ -219,7 +220,8 @@ struct SubtitleSource: Identifiable, Hashable, Sendable {
         label: String,
         languageCode: String? = nil,
         url: URL,
-        isDefault: Bool = false
+        isDefault: Bool = false,
+        headers: [String: String] = [:]
     ) {
         self.id = id ?? "\(providerID):\(languageCode ?? "und"):\(url.absoluteString)"
         self.providerID = providerID
@@ -228,6 +230,7 @@ struct SubtitleSource: Identifiable, Hashable, Sendable {
         self.languageCode = languageCode
         self.url = url
         self.isDefault = isDefault
+        self.headers = headers
     }
 }
 

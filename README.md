@@ -1,6 +1,6 @@
 # Vela for iOS
 
-Native SwiftUI iOS port focused on the English StreamingCommunity provider. The app is intentionally structured so new providers can be added without changing the catalog, details, persistence, or player features.
+Native SwiftUI iOS port with automatic selection across StreamingCommunity and English/original-audio anime sources (HiAnime and Anikoto). The app is intentionally structured so new providers can be added without changing the catalog, details, persistence, or player features.
 
 ## Requirements
 
@@ -41,11 +41,13 @@ To create an archive, select **Any iOS Device (arm64)** and use **Product → Ar
 - Apple TV-inspired, auto-advancing trending hero carousel backed independently by TMDB
 - Native SwiftUI navigation for Home, Movies, Series, Search, Details, Seasons, Episodes, Watchlist, and Continue Watching
 - StreamingCommunity EN/Inertia catalog client
-- Automatic provider-domain redirect tracking and a configurable fallback domain that can be applied without restarting the app
+- Automatic provider-domain redirect tracking; legacy saved StreamingCommunity domain overrides remain supported without a provider chooser
 - Vixcloud player-token resolution with one automatic expired-token retry
 - HLS playback through AVPlayer
 - Native AVPlayer playback controls, including audio, subtitles, speed, play/pause, and 10-second seeking
-- A compact in-player quality selector populated from each stream's real HLS variants
+- A Source & Quality menu with numbered servers, audio/subtitle labels, and each stream's real HLS qualities
+- Concurrent source discovery, balanced automatic selection, and remembered manual source choice per title
+- Automatic stream refresh and fallback with preserved playback state
 - Default quality with closest-lower fallback and configurable default playback speed
 - Preferred primary and backup subtitle languages
 - Live ±0.1-second timing adjustment for downloaded subtitle tracks
@@ -75,7 +77,7 @@ User preferences belong in the app's `UserDefaults` domain. Durable user library
 
 ## Provider maintenance
 
-Streaming sites change domains and response formats without notice. The current fallback domain can be changed in **My Library → Settings → Provider**. A response-format change requires updating only `StreamingCommunityProvider`, `StreamingCommunityModels`, or `VixcloudResolver`.
+Streaming sites change domains and response formats without notice. Existing saved domain overrides remain honored internally. Provider response-format changes require updating the corresponding adapter and its fixtures.
 
 ## TMDB trending carousel
 
@@ -90,3 +92,13 @@ The hero carousel and discovery shelves use TMDB independently of StreamingCommu
 ## Credits and license
 
 Vela is based on BetterStreamflix and the original Streamflix project. The repository's Apache-2.0 license and existing attribution apply.
+
+## Automatic stream discovery
+
+Browsing and saved episode identities remain TMDB-based. `PlaybackProvider` discovers stable server candidates; its resolver obtains expiring URLs only when needed. StreamingCommunity retains its existing matcher and Vixcloud resolver. Anime lookup verifies title aliases, release year and media type; later seasons require explicit season metadata or a corroborated continuous episode offset.
+
+Discovery compares ready streams for up to two seconds after the first result and stops after 30 seconds overall. Late results populate the player menu without interrupting playback. A manual source choice is saved per title in `playback-source-preferences.json`, included in JSON export/import, and cleared by Automatic or removal from Continue Watching.
+
+Provider response formats are outside the app's control. Missing, ambiguous, or unsupported streams are omitted. The anime resolver supports the current HiAnime WordPress episode API, Anikoto's episode/server API, Nekostream encrypted source responses, and Megacloud sources. It does not execute downloaded JavaScript. Provider protocol changes require fixture and live-playback verification.
+
+The deterministic test suite includes provider fixtures, selection/cancellation, backup replacement, and native player switching. Opt-in `AnimeLivePlaybackTests` require `TEST_RUNNER_VELA_LIVE_STREAMS=1` when invoking Xcode tests and verify that AVPlayer's clock advances. AirPlay and Picture in Picture should also be checked on physical devices before distribution.

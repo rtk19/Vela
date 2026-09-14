@@ -1296,6 +1296,7 @@ enum HLSNativeSubtitleLoader {
         from source: PlaybackSource,
         client: any HTTPClientProtocol
     ) async -> [HLSSubtitleRendition] {
+        guard source.url.pathExtension.lowercased() != "mp4" else { return [] }
         do {
             let response = try await fetch(
                 source.url,

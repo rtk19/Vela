@@ -382,6 +382,11 @@ final class AppEnvironment: ObservableObject {
         )
     }
 
+    func playbackContext(for request: PlaybackRequest) async -> PlaybackLookupContext {
+        guard let token = try? tmdbAccessToken() else { return PlaybackLookupContext(request: request) }
+        return (try? await tmdbClient.playbackContext(for: request, accessToken: token)) ?? PlaybackLookupContext(request: request)
+    }
+
     func tmdbDetails(for item: MediaItem) async throws -> MediaItem {
         let token = try tmdbAccessToken()
         let language = Locale.preferredLanguages.first ?? "en-US"

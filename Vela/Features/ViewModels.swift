@@ -161,7 +161,7 @@ final class SourceLookupCoordinator: ObservableObject {
         playbackOperationID = nil
     }
 
-    private static func providerRequest(
+    nonisolated static func providerRequest(
         for request: PlaybackRequest,
         using provider: any MediaProvider
     ) async throws -> PlaybackRequest {
@@ -412,15 +412,24 @@ final class DetailsViewModel: ObservableObject {
         self.tmdbMetadataSnapshot = tmdbMetadataSnapshot
     }
 
+    var orderedSeasons: [MediaSeason] {
+        item.seasons.sorted {
+            if ($0.number == 0) != ($1.number == 0) { return $1.number == 0 }
+            return $0.number < $1.number
+        }
+    }
+
     func load(environment: AppEnvironment, preferredSeasonNumber: Int? = nil) async {
         guard !isLoading else { return }
         isLoading = true
         defer { isLoading = false }
         do {
             item = try await environment.tmdbDetails(for: item)
-            if let season = preferredSeasonNumber.flatMap({ preferredNumber in
-                item.seasons.first { $0.number == preferredNumber }
-            }) ?? item.seasons.first {
+            if let season = orderedSeasons.first {
+                await loadEpisodes(season, environment: environment)
+            }
+            if let preferredSeasonNumber,
+               let season = item.seasons.first(where: { $0.number == preferredSeasonNumber }) {
                 await loadEpisodes(season, environment: environment)
             }
         } catch where error.isCancellation { }
@@ -439,122 +448,157 @@ final class DetailsViewModel: ObservableObject {
 @MainActor
 final class PlayerViewModel: ObservableObject {
     @Published private(set) var source: PlaybackSource?
+    @Published private(set) var streams: [PlayableStream] = []
+    @Published private(set) var selectedSourceID: String?
+    @Published private(set) var rememberedSource: PlaybackSourcePreference?
     @Published private(set) var thirdPartySubtitles: [SubtitleSource] = []
     @Published private(set) var isLoading = false
+    @Published private(set) var isSwitching = false
     @Published private(set) var sourceRevision = 0
     @Published var errorMessage: String?
-
     @Published private(set) var request: PlaybackRequest
+    private let discovery = PlaybackDiscovery()
+    private var contextTask: Task<PlaybackLookupContext, Never>?
+    private var failedSources: Set<String> = []
+    private var refreshedSources: Set<String> = []
+    private var refreshedURLs: Set<URL> = []
+    private var operation = UUID()
+    private var policy = StreamSelectionPolicy()
 
     init(request: PlaybackRequest) { self.request = request }
 
-    func load(
-        registry: ProviderRegistry,
-        sourceLookup: SourceLookupCoordinator,
-        subtitleRegistry: SubtitleProviderRegistry,
-        enabledSubtitleProviderIDs: Set<String>,
-        force: Bool = false
-    ) async {
+    func load(environment: AppEnvironment, enabledSubtitleProviderIDs: Set<String>,
+              audioLanguage: String, qualityHeight: Int, force: Bool = false) async {
         guard (source == nil || force), !isLoading else { return }
+        let token = UUID()
+        operation = token
         isLoading = true
-        defer { isLoading = false }
+        errorMessage = nil
+        failedSources = []
+        refreshedSources = []
+        refreshedURLs = []
+        rememberedSource = environment.library.sourcePreference(for: request)
+        policy = StreamSelectionPolicy(preference: rememberedSource, audioLanguage: audioLanguage, qualityHeight: qualityHeight)
+        defer { if operation == token { isLoading = false } }
+        let playbackRequest = request
+        discovery.onUpdate = { [weak self] streams in
+            guard self?.operation == token else { return }
+            self?.streams = streams
+        }
         do {
-            let playbackRequest = request
-            let media = playbackRequest.media
-            let season = playbackRequest.episode.map { String($0.seasonNumber) } ?? "none"
-            let episode = playbackRequest.episode.map { String($0.number) } ?? "none"
-            let enabledProviders = enabledSubtitleProviderIDs.sorted().joined(separator: ", ")
-            SubtitleDiagnostics.logger.info(
-                "Preparing subtitle lookup: title=\(media.title, privacy: .public) kind=\(media.kind.rawValue, privacy: .public) imdb=\(media.imdbID ?? "missing", privacy: .public) tmdb=\(media.tmdbID.map(String.init) ?? "missing", privacy: .public) season=\(season, privacy: .public) episode=\(episode, privacy: .public) enabled=[\(enabledProviders, privacy: .public)]"
-            )
-            let subtitleLookup = playbackRequest.subtitleLookupRequest
-            if subtitleLookup == nil {
-                SubtitleDiagnostics.logger.error(
-                    "Subtitle lookup skipped: missing or invalid IMDb ID"
-                )
-            }
-            async let playbackSource = playbackSourceWithRetry(
-                sourceLookup: sourceLookup,
-                registry: registry,
-                request: playbackRequest
-            )
-            async let fetchedSubtitles: [SubtitleSource] = {
-                guard let subtitleLookup else { return [] }
-                return await subtitleRegistry.subtitles(
-                    for: subtitleLookup,
-                    fallbackTMDbID: playbackRequest.media.tmdbID,
-                    enabledProviderIDs: enabledSubtitleProviderIDs
-                )
+            async let subtitles: [SubtitleSource] = {
+                guard let lookup = playbackRequest.subtitleLookupRequest else { return [] }
+                return await environment.subtitleRegistry.subtitles(for: lookup,
+                    fallbackTMDbID: playbackRequest.media.tmdbID, enabledProviderIDs: enabledSubtitleProviderIDs)
             }()
-            let resolvedSource = try await playbackSource
-            let resolvedSubtitles = await fetchedSubtitles
-            guard !Task.isCancelled else { return }
-            thirdPartySubtitles = resolvedSubtitles
-            source = resolvedSource
+            let enrichment = Task { await environment.playbackContext(for: playbackRequest) }
+            contextTask = enrichment
+            let registered = await environment.registry.playbackProviders()
+            let providers = registered.map { provider -> any PlaybackProvider in
+                if provider is StreamingCommunityPlaybackProvider { return provider }
+                return EnrichedPlaybackProvider(provider: provider, context: enrichment)
+            }
+            try Task.checkCancellation()
+            let selected = try await discovery.start(context: PlaybackLookupContext(request: playbackRequest),
+                providers: providers, policy: policy)
+            let external = await subtitles
+            guard operation == token, !Task.isCancelled else { return }
+            thirdPartySubtitles = external
+            source = selected.source
+            selectedSourceID = selected.id
             sourceRevision &+= 1
         } catch where error.isCancellation { }
-        catch { errorMessage = error.localizedDescription }
+        catch { if operation == token { errorMessage = error.localizedDescription } }
     }
 
-    func play(
-        _ request: PlaybackRequest,
-        registry: ProviderRegistry,
-        sourceLookup: SourceLookupCoordinator,
-        subtitleRegistry: SubtitleProviderRegistry,
-        enabledSubtitleProviderIDs: Set<String>
-    ) async {
+    func play(_ request: PlaybackRequest, environment: AppEnvironment,
+              enabledSubtitleProviderIDs: Set<String>, audioLanguage: String, qualityHeight: Int) async {
+        cancel()
         self.request = request
         source = nil
+        streams = []
+        selectedSourceID = nil
         thirdPartySubtitles = []
-        await load(
-            registry: registry,
-            sourceLookup: sourceLookup,
-            subtitleRegistry: subtitleRegistry,
-            enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
-            force: true
-        )
+        await load(environment: environment, enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
+                   audioLanguage: audioLanguage, qualityHeight: qualityHeight)
     }
 
-    func refreshPlaybackSource(
-        registry: ProviderRegistry,
-        sourceLookup: SourceLookupCoordinator
-    ) async -> Bool {
-        guard !isLoading else { return false }
-        isLoading = true
-        defer { isLoading = false }
+    func selectSource(_ id: String?, quality: StreamQuality?, library: LibraryStore,
+                      apply: (PlayableStream, StreamQuality?) async -> Bool) async {
+        guard !isSwitching else { return }
+        if id == nil {
+            library.updateSourcePreference(nil, for: request)
+            rememberedSource = nil
+            policy.preference = nil
+        }
+        guard let target = id.flatMap({ id in streams.first { $0.id == id } }) ?? policy.best(in: streams) else { return }
+        let token = operation
+        isSwitching = true
+        defer { if operation == token { isSwitching = false } }
         do {
-            let refreshedSource = try await playbackSourceWithRetry(
-                sourceLookup: sourceLookup,
-                registry: registry,
-                request: request
-            )
-            guard !Task.isCancelled else { return false }
-            source = refreshedSource
-            sourceRevision &+= 1
-            return true
+            let fresh = try await PlaybackDiscovery.prepare(target.candidate)
+            guard operation == token, !Task.isCancelled else { return }
+            guard await apply(fresh, quality), operation == token else { throw AppError.noStream }
+            source = fresh.source
+            selectedSourceID = fresh.id
+            failedSources.remove(fresh.id)
+            refreshedSources.remove(fresh.id)
+            if id != nil {
+                rememberedSource = fresh.candidate.preference
+                policy.preference = rememberedSource
+                library.updateSourcePreference(rememberedSource, for: request)
+            }
         } catch where error.isCancellation { }
-        catch { return false }
+        catch { if operation == token { errorMessage = "This source could not be opened. Your previous stream is still selected." } }
+    }
+
+    func recover(apply: (PlayableStream) async -> Bool) async -> Bool {
+        guard !isSwitching, let selectedSourceID else { return false }
+        isSwitching = true
+        let token = operation
+        defer { if operation == token { isSwitching = false } }
+        let expirationRefresh = source.flatMap { PlayerSession.expirationDate(in: $0.url) }
+            .map { $0 <= Date().addingTimeInterval(30) } ?? false
+        let canRefresh = expirationRefresh
+            ? source.map { refreshedURLs.insert($0.url).inserted } ?? false
+            : refreshedSources.insert(selectedSourceID).inserted
+        if canRefresh,
+           let current = streams.first(where: { $0.id == selectedSourceID }),
+           let fresh = try? await PlaybackDiscovery.prepare(current.candidate), operation == token,
+           await apply(fresh) { source = fresh.source; return true }
+        failedSources.insert(selectedSourceID)
+        // Discovery may still be finding alternatives when the first stream fails.
+        while operation == token, !Task.isCancelled {
+            if let next = policy.best(in: streams.filter { !failedSources.contains($0.id) }) {
+                failedSources.insert(next.id)
+                if let fresh = try? await PlaybackDiscovery.prepare(next.candidate), operation == token,
+                   await apply(fresh) {
+                    source = fresh.source
+                    self.selectedSourceID = fresh.id
+                    return true
+                }
+            } else if discovery.isSearching {
+                do { try await Task.sleep(for: .milliseconds(100)) } catch { return false }
+            } else { return false }
+        }
         return false
     }
 
-    private func playbackSourceWithRetry(
-        sourceLookup: SourceLookupCoordinator,
-        registry: ProviderRegistry,
-        request: PlaybackRequest,
-        maximumAttempts: Int = 3
-    ) async throws -> PlaybackSource {
-        var lastError: (any Error)?
-        for attempt in 0..<maximumAttempts {
-            do {
-                return try await sourceLookup.resolvePlaybackSource(for: request, registry: registry)
-            } catch where error.isCancellation {
-                throw error
-            } catch {
-                lastError = error
-                guard attempt < maximumAttempts - 1 else { break }
-                try await Task.sleep(for: .seconds(attempt + 1))
-            }
-        }
-        throw lastError ?? AppError.providerUnavailable("The video source is unavailable.")
+    func rememberCurrentSource(library: LibraryStore) {
+        guard let stream = streams.first(where: { $0.id == selectedSourceID }) else { return }
+        rememberedSource = stream.candidate.preference
+        policy.preference = rememberedSource
+        library.updateSourcePreference(rememberedSource, for: request)
+    }
+
+    func resetRecovery() { failedSources = []; refreshedSources = []; refreshedURLs = [] }
+
+    func cancel() {
+        operation = UUID()
+        discovery.cancel()
+        contextTask?.cancel()
+        contextTask = nil
+        isLoading = false
+        isSwitching = false
     }
 }

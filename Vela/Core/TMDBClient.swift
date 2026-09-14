@@ -211,6 +211,51 @@ actor TMDBClient {
         )
     }
 
+    func playbackContext(for request: PlaybackRequest, accessToken: String) async throws -> PlaybackLookupContext {
+        var context = PlaybackLookupContext(request: request)
+        guard let id = request.media.tmdbID,
+              request.media.genres.contains(where: { $0.id == "16" }) else { return context }
+        let kind = request.media.kind == .movie ? "movie" : "tv"
+        let url = URL(string: "https://api.themoviedb.org/3/\(kind)/\(id)?append_to_response=alternative_titles&language=en-US")!
+        var metadataRequest = authorizedRequest(url: url, accessToken: accessToken)
+        metadataRequest.timeoutInterval = 8
+        let response = try await client.data(for: metadataRequest)
+        guard let object = try JSONSerialization.jsonObject(with: response.data) as? [String: Any] else { return context }
+        let alternatives = object["alternative_titles"] as? [String: Any] ?? [:]
+        context.alternativeTitles = ((alternatives["results"] ?? alternatives["titles"]) as? [[String: Any]] ?? []).compactMap { $0["title"] as? String }
+        if let episode = request.episode {
+            let seasons = object["seasons"] as? [[String: Any]] ?? []
+            let current = seasons.first { $0["season_number"] as? Int == episode.seasonNumber }
+            context.seasonTitle = current?["name"] as? String
+            context.seasonYear = AnimeMatching.year(current?["air_date"] as? String)
+            context.seasonEpisodeCount = current?["episode_count"] as? Int
+            let preceding = seasons.filter { ($0["season_number"] as? Int ?? 0) > 0 && ($0["season_number"] as? Int ?? 0) < episode.seasonNumber }
+            context.absoluteEpisodeNumber = Self.absoluteEpisodeNumber(
+                episodeNumber: episode.number,
+                seasonNumber: episode.seasonNumber,
+                seasonEpisodeCount: context.seasonEpisodeCount,
+                precedingSeasonCounts: preceding.compactMap { $0["episode_count"] as? Int }
+            )
+        }
+        return context
+    }
+
+    static func absoluteEpisodeNumber(
+        episodeNumber: Int,
+        seasonNumber: Int,
+        seasonEpisodeCount: Int?,
+        precedingSeasonCounts: [Int]
+    ) -> Int? {
+        if let seasonEpisodeCount, episodeNumber > seasonEpisodeCount {
+            // Some TMDB series already use continuous numbers within each season.
+            return episodeNumber
+        }
+        guard seasonNumber > 0,
+              precedingSeasonCounts.count == seasonNumber - 1,
+              precedingSeasonCounts.allSatisfy({ $0 > 0 }) else { return nil }
+        return precedingSeasonCounts.reduce(episodeNumber, +)
+    }
+
     func details(
         for item: MediaItem,
         accessToken: String,

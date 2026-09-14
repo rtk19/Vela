@@ -7,146 +7,164 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
-		059A1EF57302BC82CECD830C /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */; };
-		18FE2CC746AE1D986BE4F681 /* TMDBClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */; };
-		1C34F5EEF952356309A73FB5 /* Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23BFB819E1F6E6D0FDA303C5 /* Provider.swift */; };
-		2A41AF0C4E4C42B2B8AE0C01 /* PlaybackProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */; };
-		30DB641A2B674F6BA2A84501 /* TMDBCatalogMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */; };
-		4BF2E61CF8166494F858D6DE /* VixcloudResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */; };
-		51EF05D4A5D2D6C8BBCC75EE /* SubtitleProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */; };
-		58BC03FC05E81AA00D175E0B /* StreamingCommunityModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */; };
-		60E9F697F477EE98E69F0762 /* NativePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */; };
-		836C800689F9EF8087607BFE /* HTMLPayloadParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */; };
-		93653BAF494CB0D07F761155 /* ViewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A111E97A6AAFBC8093B3567A /* ViewModels.swift */; };
-		9408C0AEB818318EF3504BF2 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = E417294B9D0DE71665E17CA4 /* Assets.xcassets */; };
-		958CD8C260EA990C57B27042 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = 05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */; };
-		9BAEFDB74B157D6AFF6ED78C /* HTMLPayloadParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */; };
-		A86861C60B467A8B59D81A1F /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */; };
-		A86861C60B467A8B59D81A20 /* UserDataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */; };
-		AE0DA70541F5D1924829137C /* VelaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8CAE86812F97E13B74F2B61D /* VelaApp.swift */; };
-		BDDCBF2A651E7F7AC7C2370E /* HTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */; };
-		C96125C82320414436F98BCC /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = C74A2EA851D7A16B77E578F8 /* Models.swift */; };
-		CA1A02392EDFD451F7AB9EE2 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71DEDA88C858B0270DD5A87F /* Views.swift */; };
-		D095A3DBFADDBE8026344B89 /* StreamingCommunityProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */; };
-		D717B85841750963A4E7A921 /* TMDBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */; };
+		1472CE33F4F8C621E976745E /* PlayerSourceSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */; };
+		194E84373A3313788D7814D8 /* UserDataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BDE955356AA93FC1945591F /* UserDataBackup.swift */; };
+		1C890DC7CEF559EEB339C409 /* TMDBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B5CE7E669118A0E5B774F5E /* TMDBClient.swift */; };
+		25F410B617628369508247B1 /* TMDBCatalogMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */; };
+		35094991060370728B4AD4D1 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9479F8A5079CB583A9DDC46 /* Models.swift */; };
+		3C4EC4FDFA0D184D8C635CAC /* NativePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D8ACF44C2AA41DDFC82AF7F /* NativePlayer.swift */; };
+		49A22876D26A067C086188A4 /* TMDBClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B5DAA1FAC2D295C8971D10 /* TMDBClientTests.swift */; };
+		4A5B080F481FDC01A0663FA2 /* AnimeStreamResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F37C5CF39A492282E2A9EE /* AnimeStreamResolver.swift */; };
+		5357C6AC995464E109DA454E /* PlaybackDiscoveryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 112B4BF98D8F1598D647E6B0 /* PlaybackDiscoveryTests.swift */; };
+		5989D41A9C27B0CA6CAC17D4 /* VixcloudResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 92096146915EE20E85F1D8E7 /* VixcloudResolver.swift */; };
+		59CC5D97DDE60EB30B772F79 /* HTTPClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = DAAD3C33E057EF456186C05C /* HTTPClient.swift */; };
+		68B203C88795D69798DF57D3 /* Views.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6FDB210123ADFA58E67737CA /* Views.swift */; };
+		6E15AD5DE7CC3147442D2BEC /* HTMLPayloadParserTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B429ACDC0C702D23FDC4C3A /* HTMLPayloadParserTests.swift */; };
+		712D241B929CDF81EAC2864F /* StreamingCommunityModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = F9A6BBB0B5768AA4DC07E747 /* StreamingCommunityModels.swift */; };
+		7881E5A49D1E2248771A40D7 /* StreamingCommunityProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8B52A968E034D072D964F5A6 /* StreamingCommunityProvider.swift */; };
+		82A8494D1FD3F2A206A501A2 /* HTMLPayloadParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 07A72147F0EA305FD7782DE1 /* HTMLPayloadParser.swift */; };
+		8B00018A576B73A6DE7152C2 /* LibraryStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = A899E164D7F7A30FB6EA94F6 /* LibraryStore.swift */; };
+		9594B23F951969F0400B19BF /* AppEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2835E04E7476E1DD1E9D6416 /* AppEnvironment.swift */; };
+		AA3A37AC1B4F6EA5624A995C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = FAF8278AFFAD587BE55C0F74 /* PrivacyInfo.xcprivacy */; };
+		B307A32095D1E818891B4561 /* ViewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA0DD84DBBE8CAED217FD2E5 /* ViewModels.swift */; };
+		BEC1589F6E3406A694C40439 /* PlaybackDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D6137ADA4DFE0544DA41AC9 /* PlaybackDiscovery.swift */; };
+		C319696D4F332DC5805B629A /* SubtitleProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = A77A50CD75D840C27F9848DD /* SubtitleProviders.swift */; };
+		E41BA08FACF5DDC4B04EFC95 /* AnimePlaybackProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3CC4AEE056C846C5C23DA7B /* AnimePlaybackProvider.swift */; };
+		EE446B215C538FDD8B9AD6C8 /* VelaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD82797C65EFBC63F3D18491 /* VelaApp.swift */; };
+		EF22D988389224DBB8937340 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 06C3337ACED2B2DC57D7FF2B /* Assets.xcassets */; };
+		F0BB6BEE9D45FBEBC1887CC6 /* Provider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4266A879F83FCBDD41F8A33F /* Provider.swift */; };
+		F5DE133365BE40AAF491897B /* AnimeLivePlaybackTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6682D4E953E4296113E4E3DA /* AnimeLivePlaybackTests.swift */; };
+		FEB9A4FE40E886D3E4CEA690 /* PlaybackProgressTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4D73B945A62B4078F3230F2B /* PlaybackProgressTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		998A72ECB93BBCA77CE1C37C /* PBXContainerItemProxy */ = {
+		3A1F5677571FEAEEC349EA44 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
-			containerPortal = 290220905E8614874ACA3730 /* Project object */;
+			containerPortal = 7FD476A6B78E6892F5E407ED /* Project object */;
 			proxyType = 1;
-			remoteGlobalIDString = 8CA3C1D19F54E1F65D38CFFC;
+			remoteGlobalIDString = 887543FE98EDDB51C0D26FB2;
 			remoteInfo = Vela;
 		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXFileReference section */
-		05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
-		080960E9E3B8ADD4C97B433F /* Vela.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vela.entitlements; sourceTree = "<group>"; };
-		23BFB819E1F6E6D0FDA303C5 /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
-		2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackProgressTests.swift; sourceTree = "<group>"; };
-		30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBCatalogMatcherTests.swift; sourceTree = "<group>"; };
-		3F7E760F287418B23975A2C1 /* Vela.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vela.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePlayer.swift; sourceTree = "<group>"; };
-		642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VixcloudResolver.swift; sourceTree = "<group>"; };
-		71DEDA88C858B0270DD5A87F /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
-		72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityProvider.swift; sourceTree = "<group>"; };
-		731FD062BC7E00D297E466E2 /* VelaTests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = VelaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
-		82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
-		8CAE86812F97E13B74F2B61D /* VelaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VelaApp.swift; sourceTree = "<group>"; };
-		90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParser.swift; sourceTree = "<group>"; };
-		923EB46117EA703E173F5254 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
-		960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
-		960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDataBackup.swift; sourceTree = "<group>"; };
-		9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviders.swift; sourceTree = "<group>"; };
-		A111E97A6AAFBC8093B3567A /* ViewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModels.swift; sourceTree = "<group>"; };
-		ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClient.swift; sourceTree = "<group>"; };
-		B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityModels.swift; sourceTree = "<group>"; };
-		B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClientTests.swift; sourceTree = "<group>"; };
-		B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPClient.swift; sourceTree = "<group>"; };
-		C74A2EA851D7A16B77E578F8 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
-		E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParserTests.swift; sourceTree = "<group>"; };
-		E417294B9D0DE71665E17CA4 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		06C3337ACED2B2DC57D7FF2B /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		07A72147F0EA305FD7782DE1 /* HTMLPayloadParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParser.swift; sourceTree = "<group>"; };
+		112B4BF98D8F1598D647E6B0 /* PlaybackDiscoveryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackDiscoveryTests.swift; sourceTree = "<group>"; };
+		19B5DAA1FAC2D295C8971D10 /* TMDBClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClientTests.swift; sourceTree = "<group>"; };
+		1B5CE7E669118A0E5B774F5E /* TMDBClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClient.swift; sourceTree = "<group>"; };
+		1BDE955356AA93FC1945591F /* UserDataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDataBackup.swift; sourceTree = "<group>"; };
+		2835E04E7476E1DD1E9D6416 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
+		3B429ACDC0C702D23FDC4C3A /* HTMLPayloadParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParserTests.swift; sourceTree = "<group>"; };
+		4266A879F83FCBDD41F8A33F /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
+		4D73B945A62B4078F3230F2B /* PlaybackProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackProgressTests.swift; sourceTree = "<group>"; };
+		55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerSourceSwitchTests.swift; sourceTree = "<group>"; };
+		5B915DCCC596F2477C60BED0 /* Vela.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vela.entitlements; sourceTree = "<group>"; };
+		6682D4E953E4296113E4E3DA /* AnimeLivePlaybackTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeLivePlaybackTests.swift; sourceTree = "<group>"; };
+		6D6137ADA4DFE0544DA41AC9 /* PlaybackDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackDiscovery.swift; sourceTree = "<group>"; };
+		6D8ACF44C2AA41DDFC82AF7F /* NativePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePlayer.swift; sourceTree = "<group>"; };
+		6FDB210123ADFA58E67737CA /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBCatalogMatcherTests.swift; sourceTree = "<group>"; };
+		80F37C5CF39A492282E2A9EE /* AnimeStreamResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeStreamResolver.swift; sourceTree = "<group>"; };
+		8B52A968E034D072D964F5A6 /* StreamingCommunityProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityProvider.swift; sourceTree = "<group>"; };
+		92096146915EE20E85F1D8E7 /* VixcloudResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VixcloudResolver.swift; sourceTree = "<group>"; };
+		A77A50CD75D840C27F9848DD /* SubtitleProviders.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SubtitleProviders.swift; sourceTree = "<group>"; };
+		A899E164D7F7A30FB6EA94F6 /* LibraryStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = LibraryStore.swift; sourceTree = "<group>"; };
+		B9479F8A5079CB583A9DDC46 /* Models.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Models.swift; sourceTree = "<group>"; };
+		C1078DFACB04854902CB04AA /* VelaTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VelaTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		C3CC4AEE056C846C5C23DA7B /* AnimePlaybackProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimePlaybackProvider.swift; sourceTree = "<group>"; };
+		CA0DD84DBBE8CAED217FD2E5 /* ViewModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ViewModels.swift; sourceTree = "<group>"; };
+		DAAD3C33E057EF456186C05C /* HTTPClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPClient.swift; sourceTree = "<group>"; };
+		DB48061975AD87F58267ABB3 /* Vela.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Vela.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		DD82797C65EFBC63F3D18491 /* VelaApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VelaApp.swift; sourceTree = "<group>"; };
+		F19C78EBB3FD08EBF512626A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
+		F9A6BBB0B5768AA4DC07E747 /* StreamingCommunityModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityModels.swift; sourceTree = "<group>"; };
+		FAF8278AFFAD587BE55C0F74 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXGroup section */
-		201104BB3D8E5167A524189F /* Products */ = {
+		30B43768D32E64A9A5EDCA3D /* VelaTests */ = {
 			isa = PBXGroup;
 			children = (
-				3F7E760F287418B23975A2C1 /* Vela.app */,
-				731FD062BC7E00D297E466E2 /* VelaTests.xctest */,
-			);
-			name = Products;
-			sourceTree = "<group>";
-		};
-		83B3DFB0FB2A80892D031267 /* Resources */ = {
-			isa = PBXGroup;
-			children = (
-				E417294B9D0DE71665E17CA4 /* Assets.xcassets */,
-				080960E9E3B8ADD4C97B433F /* Vela.entitlements */,
-				923EB46117EA703E173F5254 /* Info.plist */,
-				05D745E4CAF7369E67A19DDB /* PrivacyInfo.xcprivacy */,
-			);
-			path = Resources;
-			sourceTree = "<group>";
-		};
-		8606092D4A9E218C26F154F2 /* Vela */ = {
-			isa = PBXGroup;
-			children = (
-				8CAE86812F97E13B74F2B61D /* VelaApp.swift */,
-				DF9351FE4E516655AF9CDB66 /* Core */,
-				F1CB07FF60DA734F9D7518A5 /* Features */,
-				83B3DFB0FB2A80892D031267 /* Resources */,
-			);
-			path = Vela;
-			sourceTree = "<group>";
-		};
-		BC1C258F167CCA71A5128771 = {
-			isa = PBXGroup;
-			children = (
-				8606092D4A9E218C26F154F2 /* Vela */,
-				C556FC279805570CC25147C0 /* VelaTests */,
-				201104BB3D8E5167A524189F /* Products */,
-			);
-			sourceTree = "<group>";
-		};
-		C556FC279805570CC25147C0 /* VelaTests */ = {
-			isa = PBXGroup;
-			children = (
-				E2FE9626A4F1864348A40404 /* HTMLPayloadParserTests.swift */,
-				2A41AF0C4E4C42B2B8AE0C02 /* PlaybackProgressTests.swift */,
-				30DB641A2B674F6BA2A84502 /* TMDBCatalogMatcherTests.swift */,
-				B24E11017A8D5F26F7B084ED /* TMDBClientTests.swift */,
+				6682D4E953E4296113E4E3DA /* AnimeLivePlaybackTests.swift */,
+				3B429ACDC0C702D23FDC4C3A /* HTMLPayloadParserTests.swift */,
+				112B4BF98D8F1598D647E6B0 /* PlaybackDiscoveryTests.swift */,
+				4D73B945A62B4078F3230F2B /* PlaybackProgressTests.swift */,
+				55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */,
+				74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */,
+				19B5DAA1FAC2D295C8971D10 /* TMDBClientTests.swift */,
 			);
 			path = VelaTests;
 			sourceTree = "<group>";
 		};
-		DF9351FE4E516655AF9CDB66 /* Core */ = {
+		483BF04F79F6240146C6B63F /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				82D8E606FC7301E7ECD59770 /* AppEnvironment.swift */,
-				90460291DA408EEADE2DCB29 /* HTMLPayloadParser.swift */,
-				B682717EE353E9BFFA1EB6B8 /* HTTPClient.swift */,
-				960F264ACE6DF4E4AC801B34 /* LibraryStore.swift */,
-				960F264ACE6DF4E4AC801B35 /* UserDataBackup.swift */,
-				C74A2EA851D7A16B77E578F8 /* Models.swift */,
-				23BFB819E1F6E6D0FDA303C5 /* Provider.swift */,
-				B1759BB105F018678DF2ACC0 /* StreamingCommunityModels.swift */,
-				72B75DA65BA9F1F42F168CA6 /* StreamingCommunityProvider.swift */,
-				9AD7CC8F29E4558B13FE4DBD /* SubtitleProviders.swift */,
-				ACF0A9BC02D050252FCAE60D /* TMDBClient.swift */,
-				642CC4863A29E5104148AFC4 /* VixcloudResolver.swift */,
+				DB48061975AD87F58267ABB3 /* Vela.app */,
+				C1078DFACB04854902CB04AA /* VelaTests.xctest */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+		4D294A30460170810C8D746B /* Core */ = {
+			isa = PBXGroup;
+			children = (
+				C3CC4AEE056C846C5C23DA7B /* AnimePlaybackProvider.swift */,
+				80F37C5CF39A492282E2A9EE /* AnimeStreamResolver.swift */,
+				2835E04E7476E1DD1E9D6416 /* AppEnvironment.swift */,
+				07A72147F0EA305FD7782DE1 /* HTMLPayloadParser.swift */,
+				DAAD3C33E057EF456186C05C /* HTTPClient.swift */,
+				A899E164D7F7A30FB6EA94F6 /* LibraryStore.swift */,
+				B9479F8A5079CB583A9DDC46 /* Models.swift */,
+				6D6137ADA4DFE0544DA41AC9 /* PlaybackDiscovery.swift */,
+				4266A879F83FCBDD41F8A33F /* Provider.swift */,
+				F9A6BBB0B5768AA4DC07E747 /* StreamingCommunityModels.swift */,
+				8B52A968E034D072D964F5A6 /* StreamingCommunityProvider.swift */,
+				A77A50CD75D840C27F9848DD /* SubtitleProviders.swift */,
+				1B5CE7E669118A0E5B774F5E /* TMDBClient.swift */,
+				1BDE955356AA93FC1945591F /* UserDataBackup.swift */,
+				92096146915EE20E85F1D8E7 /* VixcloudResolver.swift */,
 			);
 			path = Core;
 			sourceTree = "<group>";
 		};
-		F1CB07FF60DA734F9D7518A5 /* Features */ = {
+		76FBB74658D664F4F3F40A89 /* Vela */ = {
 			isa = PBXGroup;
 			children = (
-				5B4C2ECADF496BBBFBD9C240 /* NativePlayer.swift */,
-				A111E97A6AAFBC8093B3567A /* ViewModels.swift */,
-				71DEDA88C858B0270DD5A87F /* Views.swift */,
+				DD82797C65EFBC63F3D18491 /* VelaApp.swift */,
+				4D294A30460170810C8D746B /* Core */,
+				DFED9320DF3E1E4A3715E40C /* Features */,
+				DE70DEAC71713F95D9C3A38A /* Resources */,
+			);
+			path = Vela;
+			sourceTree = "<group>";
+		};
+		8D8AC28433B2AC935501E5A2 = {
+			isa = PBXGroup;
+			children = (
+				76FBB74658D664F4F3F40A89 /* Vela */,
+				30B43768D32E64A9A5EDCA3D /* VelaTests */,
+				483BF04F79F6240146C6B63F /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		DE70DEAC71713F95D9C3A38A /* Resources */ = {
+			isa = PBXGroup;
+			children = (
+				06C3337ACED2B2DC57D7FF2B /* Assets.xcassets */,
+				F19C78EBB3FD08EBF512626A /* Info.plist */,
+				FAF8278AFFAD587BE55C0F74 /* PrivacyInfo.xcprivacy */,
+				5B915DCCC596F2477C60BED0 /* Vela.entitlements */,
+			);
+			path = Resources;
+			sourceTree = "<group>";
+		};
+		DFED9320DF3E1E4A3715E40C /* Features */ = {
+			isa = PBXGroup;
+			children = (
+				6D8ACF44C2AA41DDFC82AF7F /* NativePlayer.swift */,
+				CA0DD84DBBE8CAED217FD2E5 /* ViewModels.swift */,
+				6FDB210123ADFA58E67737CA /* Views.swift */,
 			);
 			path = Features;
 			sourceTree = "<group>";
@@ -154,12 +172,12 @@
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
-		8CA3C1D19F54E1F65D38CFFC /* Vela */ = {
+		887543FE98EDDB51C0D26FB2 /* Vela */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = C5BA187B2ADDE62984AC921C /* Build configuration list for PBXNativeTarget "Vela" */;
+			buildConfigurationList = 6E36DFB38ED9B78C5432D865 /* Build configuration list for PBXNativeTarget "Vela" */;
 			buildPhases = (
-				03337F14E6E4160792A19F5E /* Sources */,
-				0A0F470F33B63EF8E22FC589 /* Resources */,
+				41EE8B5767B0C17BE620D5EB /* Sources */,
+				D2CBC3C0A47F2DDAC075D2B2 /* Resources */,
 			);
 			buildRules = (
 			);
@@ -169,123 +187,126 @@
 			packageProductDependencies = (
 			);
 			productName = Vela;
-			productReference = 3F7E760F287418B23975A2C1 /* Vela.app */;
+			productReference = DB48061975AD87F58267ABB3 /* Vela.app */;
 			productType = "com.apple.product-type.application";
 		};
-		EE9A3246C1C04BA88E6ADDE3 /* VelaTests */ = {
+		BCCFD8D037ED6DA65F70506A /* VelaTests */ = {
 			isa = PBXNativeTarget;
-			buildConfigurationList = 0CF6D0AE8CCCE42607230CDF /* Build configuration list for PBXNativeTarget "VelaTests" */;
+			buildConfigurationList = EBE048412C188E0C02EB3FBB /* Build configuration list for PBXNativeTarget "VelaTests" */;
 			buildPhases = (
-				D6A7F594F9DF64555A712DC9 /* Sources */,
+				ED0A716E8CBDA2A819B54C5D /* Sources */,
 			);
 			buildRules = (
 			);
 			dependencies = (
-				711A59943F90A10EA6A7832C /* PBXTargetDependency */,
+				0A16816192FC832CFD7D6BBB /* PBXTargetDependency */,
 			);
 			name = VelaTests;
 			packageProductDependencies = (
 			);
 			productName = VelaTests;
-			productReference = 731FD062BC7E00D297E466E2 /* VelaTests.xctest */;
+			productReference = C1078DFACB04854902CB04AA /* VelaTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
-		290220905E8614874ACA3730 /* Project object */ = {
+		7FD476A6B78E6892F5E407ED /* Project object */ = {
 			isa = PBXProject;
 			attributes = {
 				BuildIndependentTargetsInParallel = YES;
 				LastUpgradeCheck = 2700;
 				TargetAttributes = {
-					8CA3C1D19F54E1F65D38CFFC = {
-						DevelopmentTeam = "";
-					};
-					EE9A3246C1C04BA88E6ADDE3 = {
+					BCCFD8D037ED6DA65F70506A = {
 						DevelopmentTeam = "";
 					};
 				};
 			};
-			buildConfigurationList = 7CE5B19B0043968EB32D33F8 /* Build configuration list for PBXProject "Vela" */;
+			buildConfigurationList = 070106BC6C9C9A3557F945E6 /* Build configuration list for PBXProject "Vela" */;
 			developmentRegion = en;
 			hasScannedForEncodings = 0;
 			knownRegions = (
 				Base,
 				en,
 			);
-			mainGroup = BC1C258F167CCA71A5128771;
+			mainGroup = 8D8AC28433B2AC935501E5A2;
 			minimizedProjectReferenceProxies = 1;
 			preferredProjectObjectVersion = 77;
-			productRefGroup = 201104BB3D8E5167A524189F /* Products */;
+			productRefGroup = 483BF04F79F6240146C6B63F /* Products */;
 			projectDirPath = "";
 			projectRoot = "";
 			targets = (
-				8CA3C1D19F54E1F65D38CFFC /* Vela */,
-				EE9A3246C1C04BA88E6ADDE3 /* VelaTests */,
+				887543FE98EDDB51C0D26FB2 /* Vela */,
+				BCCFD8D037ED6DA65F70506A /* VelaTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
-		0A0F470F33B63EF8E22FC589 /* Resources */ = {
+		D2CBC3C0A47F2DDAC075D2B2 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				9408C0AEB818318EF3504BF2 /* Assets.xcassets in Resources */,
-				958CD8C260EA990C57B27042 /* PrivacyInfo.xcprivacy in Resources */,
+				EF22D988389224DBB8937340 /* Assets.xcassets in Resources */,
+				AA3A37AC1B4F6EA5624A995C /* PrivacyInfo.xcprivacy in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
-		03337F14E6E4160792A19F5E /* Sources */ = {
+		41EE8B5767B0C17BE620D5EB /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				059A1EF57302BC82CECD830C /* AppEnvironment.swift in Sources */,
-				AE0DA70541F5D1924829137C /* VelaApp.swift in Sources */,
-				9BAEFDB74B157D6AFF6ED78C /* HTMLPayloadParser.swift in Sources */,
-				BDDCBF2A651E7F7AC7C2370E /* HTTPClient.swift in Sources */,
-				A86861C60B467A8B59D81A1F /* LibraryStore.swift in Sources */,
-				A86861C60B467A8B59D81A20 /* UserDataBackup.swift in Sources */,
-				C96125C82320414436F98BCC /* Models.swift in Sources */,
-				60E9F697F477EE98E69F0762 /* NativePlayer.swift in Sources */,
-				1C34F5EEF952356309A73FB5 /* Provider.swift in Sources */,
-				58BC03FC05E81AA00D175E0B /* StreamingCommunityModels.swift in Sources */,
-				D095A3DBFADDBE8026344B89 /* StreamingCommunityProvider.swift in Sources */,
-				51EF05D4A5D2D6C8BBCC75EE /* SubtitleProviders.swift in Sources */,
-				D717B85841750963A4E7A921 /* TMDBClient.swift in Sources */,
-				93653BAF494CB0D07F761155 /* ViewModels.swift in Sources */,
-				CA1A02392EDFD451F7AB9EE2 /* Views.swift in Sources */,
-				4BF2E61CF8166494F858D6DE /* VixcloudResolver.swift in Sources */,
+				E41BA08FACF5DDC4B04EFC95 /* AnimePlaybackProvider.swift in Sources */,
+				4A5B080F481FDC01A0663FA2 /* AnimeStreamResolver.swift in Sources */,
+				9594B23F951969F0400B19BF /* AppEnvironment.swift in Sources */,
+				82A8494D1FD3F2A206A501A2 /* HTMLPayloadParser.swift in Sources */,
+				59CC5D97DDE60EB30B772F79 /* HTTPClient.swift in Sources */,
+				8B00018A576B73A6DE7152C2 /* LibraryStore.swift in Sources */,
+				35094991060370728B4AD4D1 /* Models.swift in Sources */,
+				3C4EC4FDFA0D184D8C635CAC /* NativePlayer.swift in Sources */,
+				BEC1589F6E3406A694C40439 /* PlaybackDiscovery.swift in Sources */,
+				F0BB6BEE9D45FBEBC1887CC6 /* Provider.swift in Sources */,
+				712D241B929CDF81EAC2864F /* StreamingCommunityModels.swift in Sources */,
+				7881E5A49D1E2248771A40D7 /* StreamingCommunityProvider.swift in Sources */,
+				C319696D4F332DC5805B629A /* SubtitleProviders.swift in Sources */,
+				1C890DC7CEF559EEB339C409 /* TMDBClient.swift in Sources */,
+				194E84373A3313788D7814D8 /* UserDataBackup.swift in Sources */,
+				EE446B215C538FDD8B9AD6C8 /* VelaApp.swift in Sources */,
+				B307A32095D1E818891B4561 /* ViewModels.swift in Sources */,
+				68B203C88795D69798DF57D3 /* Views.swift in Sources */,
+				5989D41A9C27B0CA6CAC17D4 /* VixcloudResolver.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
-		D6A7F594F9DF64555A712DC9 /* Sources */ = {
+		ED0A716E8CBDA2A819B54C5D /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				836C800689F9EF8087607BFE /* HTMLPayloadParserTests.swift in Sources */,
-				2A41AF0C4E4C42B2B8AE0C01 /* PlaybackProgressTests.swift in Sources */,
-				30DB641A2B674F6BA2A84501 /* TMDBCatalogMatcherTests.swift in Sources */,
-				18FE2CC746AE1D986BE4F681 /* TMDBClientTests.swift in Sources */,
+				F5DE133365BE40AAF491897B /* AnimeLivePlaybackTests.swift in Sources */,
+				6E15AD5DE7CC3147442D2BEC /* HTMLPayloadParserTests.swift in Sources */,
+				5357C6AC995464E109DA454E /* PlaybackDiscoveryTests.swift in Sources */,
+				FEB9A4FE40E886D3E4CEA690 /* PlaybackProgressTests.swift in Sources */,
+				1472CE33F4F8C621E976745E /* PlayerSourceSwitchTests.swift in Sources */,
+				25F410B617628369508247B1 /* TMDBCatalogMatcherTests.swift in Sources */,
+				49A22876D26A067C086188A4 /* TMDBClientTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		711A59943F90A10EA6A7832C /* PBXTargetDependency */ = {
+		0A16816192FC832CFD7D6BBB /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
-			target = 8CA3C1D19F54E1F65D38CFFC /* Vela */;
-			targetProxy = 998A72ECB93BBCA77CE1C37C /* PBXContainerItemProxy */;
+			target = 887543FE98EDDB51C0D26FB2 /* Vela */;
+			targetProxy = 3A1F5677571FEAEEC349EA44 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
 /* Begin XCBuildConfiguration section */
-		3A2CE0010A2DE9BEB9A0F32F /* Debug */ = {
+		1CEE218FF8A747D74AC0ED38 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -295,19 +316,18 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A97K2SS8D9;
 				INFOPLIST_FILE = Vela/Resources/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
-			name = Debug;
+			name = Release;
 		};
-		499BB9AB528AA85437FBB428 /* Debug */ = {
+		33385A60476E304021E1BEE4 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -323,77 +343,10 @@
 			};
 			name = Debug;
 		};
-		9993320FA9A73B4921DA1471 /* Release */ = {
+		476CFC287C549CE5B64C8F41 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
-				CLANG_ANALYZER_NONNULL = YES;
-				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
-				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
-				CLANG_CXX_LIBRARY = "libc++";
-				CLANG_ENABLE_MODULES = YES;
-				CLANG_ENABLE_OBJC_ARC = YES;
-				CLANG_ENABLE_OBJC_WEAK = YES;
-				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
-				CLANG_WARN_BOOL_CONVERSION = YES;
-				CLANG_WARN_COMMA = YES;
-				CLANG_WARN_CONSTANT_CONVERSION = YES;
-				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
-				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
-				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
-				CLANG_WARN_EMPTY_BODY = YES;
-				CLANG_WARN_ENUM_CONVERSION = YES;
-				CLANG_WARN_INFINITE_RECURSION = YES;
-				CLANG_WARN_INT_CONVERSION = YES;
-				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
-				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
-				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
-				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
-				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
-				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
-				CLANG_WARN_STRICT_PROTOTYPES = YES;
-				CLANG_WARN_SUSPICIOUS_MOVE = YES;
-				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
-				CLANG_WARN_UNREACHABLE_CODE = YES;
-				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
-				COPY_PHASE_STRIP = NO;
-				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
-				DEVELOPMENT_TEAM = "";
-				ENABLE_NS_ASSERTIONS = NO;
-				ENABLE_STRICT_OBJC_MSGSEND = YES;
-				ENABLE_USER_SCRIPT_SANDBOXING = YES;
-				GCC_C_LANGUAGE_STANDARD = gnu11;
-				GCC_NO_COMMON_BLOCKS = YES;
-				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
-				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
-				GCC_WARN_UNDECLARED_SELECTOR = YES;
-				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
-				GCC_WARN_UNUSED_FUNCTION = YES;
-				GCC_WARN_UNUSED_VARIABLE = YES;
-				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
-				MTL_ENABLE_DEBUG_INFO = NO;
-				MTL_FAST_MATH = YES;
-				OTHER_LDFLAGS = (
-					"$(inherited)",
-					"-framework",
-					AppIntents,
-				);
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SDKROOT = iphoneos;
-				STRING_CATALOG_GENERATE_SYMBOLS = YES;
-				SWIFT_COMPILATION_MODE = wholemodule;
-				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_STRICT_CONCURRENCY = complete;
-				SWIFT_VERSION = 5.10;
-			};
-			name = Release;
-		};
-		DE0826C0ED91B96FC8298458 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				ALWAYS_SEARCH_USER_PATHS = NO;
-				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
 				CLANG_ANALYZER_NONNULL = YES;
 				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
 				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
@@ -462,7 +415,7 @@
 			};
 			name = Debug;
 		};
-		EB0A3F893BDC4E1272E6E48C /* Release */ = {
+		C06002D0C3EF0D1741FEDF3F /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				BUNDLE_LOADER = "$(TEST_HOST)";
@@ -478,7 +431,72 @@
 			};
 			name = Release;
 		};
-		F495F3A9B95AC7D0286C05D4 /* Release */ = {
+		D79908D40D80D98CCA71B49C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++14";
+				CLANG_CXX_LIBRARY = "libc++";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = "";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-framework",
+					AppIntents,
+				);
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SDKROOT = iphoneos;
+				STRING_CATALOG_GENERATE_SYMBOLS = YES;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_STRICT_CONCURRENCY = complete;
+				SWIFT_VERSION = 5.10;
+			};
+			name = Release;
+		};
+		D7AB7837F21C8FEF021F50B9 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
 				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
@@ -488,49 +506,48 @@
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = A97K2SS8D9;
 				INFOPLIST_FILE = Vela/Resources/Info.plist;
-				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.video";
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.3.0;
+				MARKETING_VERSION = 2.4.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
 			};
-			name = Release;
+			name = Debug;
 		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
-		0CF6D0AE8CCCE42607230CDF /* Build configuration list for PBXNativeTarget "VelaTests" */ = {
+		070106BC6C9C9A3557F945E6 /* Build configuration list for PBXProject "Vela" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				499BB9AB528AA85437FBB428 /* Debug */,
-				EB0A3F893BDC4E1272E6E48C /* Release */,
+				476CFC287C549CE5B64C8F41 /* Debug */,
+				D79908D40D80D98CCA71B49C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		7CE5B19B0043968EB32D33F8 /* Build configuration list for PBXProject "Vela" */ = {
+		6E36DFB38ED9B78C5432D865 /* Build configuration list for PBXNativeTarget "Vela" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				DE0826C0ED91B96FC8298458 /* Debug */,
-				9993320FA9A73B4921DA1471 /* Release */,
+				D7AB7837F21C8FEF021F50B9 /* Debug */,
+				1CEE218FF8A747D74AC0ED38 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
-		C5BA187B2ADDE62984AC921C /* Build configuration list for PBXNativeTarget "Vela" */ = {
+		EBE048412C188E0C02EB3FBB /* Build configuration list for PBXNativeTarget "VelaTests" */ = {
 			isa = XCConfigurationList;
 			buildConfigurations = (
-				3A2CE0010A2DE9BEB9A0F32F /* Debug */,
-				F495F3A9B95AC7D0286C05D4 /* Release */,
+				33385A60476E304021E1BEE4 /* Debug */,
+				C06002D0C3EF0D1741FEDF3F /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Debug;
 		};
 /* End XCConfigurationList section */
 	};
-	rootObject = 290220905E8614874ACA3730 /* Project object */;
+	rootObject = 7FD476A6B78E6892F5E407ED /* Project object */;
 }

@@ -25,6 +25,8 @@ final class LibraryStore: ObservableObject {
     private let decoder = JSONDecoder()
     private var currentSeriesProgressKeys: [String: String] = [:]
     private var playbackRates: [String: Double] = [:]
+    private var sourcePreferences: [String: PlaybackSourcePreference] = [:]
+    private var subtitleVisibilityPreferences: [String: Bool] = [:]
     private var playerZoomedToFillByTitle: [String: Bool] = [:]
     private var completedSeriesCheckpoints: [String: WatchProgress] = [:]
     private var subtitleSyncVersionsByContent: [String: [SubtitleSyncVersion]] = [:]
@@ -81,6 +83,24 @@ final class LibraryStore: ObservableObject {
         guard rate.isFinite, rate > 0 else { return }
         playbackRates[titleKey(for: request.media)] = rate
         savePlaybackRates()
+    }
+
+    func sourcePreference(for request: PlaybackRequest) -> PlaybackSourcePreference? {
+        sourcePreferences[titleKey(for: request.media)]
+    }
+
+    func updateSourcePreference(_ preference: PlaybackSourcePreference?, for request: PlaybackRequest) {
+        sourcePreferences[titleKey(for: request.media)] = preference
+        save(sourcePreferences, to: "playback-source-preferences.json")
+    }
+
+    func subtitleVisibilityPreference(for request: PlaybackRequest) -> Bool? {
+        subtitleVisibilityPreferences[titleKey(for: request.media)]
+    }
+
+    func updateSubtitleVisibilityPreference(_ isEnabled: Bool, for request: PlaybackRequest) {
+        subtitleVisibilityPreferences[titleKey(for: request.media)] = isEnabled
+        save(subtitleVisibilityPreferences, to: "subtitle-visibility-preferences.json")
     }
 
     func isPlayerZoomedToFill(for request: PlaybackRequest) -> Bool {
@@ -180,6 +200,10 @@ final class LibraryStore: ObservableObject {
             currentSeriesProgressKeys.removeValue(forKey: seriesKey(for: value.media))
         }
         playbackRates.removeValue(forKey: titleKey(for: value.media))
+        sourcePreferences.removeValue(forKey: titleKey(for: value.media))
+        save(sourcePreferences, to: "playback-source-preferences.json")
+        subtitleVisibilityPreferences.removeValue(forKey: titleKey(for: value.media))
+        save(subtitleVisibilityPreferences, to: "subtitle-visibility-preferences.json")
         playerZoomedToFillByTitle.removeValue(forKey: titleKey(for: value.media))
         saveProgress()
         savePlaybackRates()
@@ -337,6 +361,8 @@ final class LibraryStore: ObservableObject {
         watchedEpisodes = []
         currentSeriesProgressKeys = [:]
         playbackRates = [:]
+        sourcePreferences = [:]
+        subtitleVisibilityPreferences = [:]
         playerZoomedToFillByTitle = [:]
         completedSeriesCheckpoints = [:]
         subtitleSyncVersionsByContent = [:]
@@ -370,6 +396,11 @@ final class LibraryStore: ObservableObject {
         } else {
             currentSeriesProgressKeys = migratedCurrentSeriesProgressKeys()
         }
+        sourcePreferences = read([String: PlaybackSourcePreference].self, from: "playback-source-preferences.json") ?? [:]
+        subtitleVisibilityPreferences = read(
+            [String: Bool].self,
+            from: "subtitle-visibility-preferences.json"
+        ) ?? [:]
         playbackRates = read([String: Double].self, from: "playback-rates.json") ?? [:]
         playerZoomedToFillByTitle = read(
             [String: Bool].self,

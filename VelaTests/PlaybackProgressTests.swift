@@ -396,6 +396,45 @@ struct PlaybackProgressTests {
     }
 
     @MainActor
+    @Test("Importing an older backup removes source preferences absent from that backup")
+    func sourcePreferenceLegacyBackup() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        let directory = root.appending(path: "BetterStreamflix")
+        let suite = "Vela.SourceBackup.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite); try? FileManager.default.removeItem(at: root) }
+        let library = LibraryStore(directory: directory)
+        let service = UserDataBackupService(applicationSupportDirectory: directory, userDefaults: defaults,
+            preferencesDomain: suite, appVersion: "2.3.0")
+        let backup = try service.exportData()
+        let request = request(episodeNumber: 1)
+        library.updateSourcePreference(.init(providerID: "anikoto", serverName: "HD", audioLanguage: "en"), for: request)
+        try service.restore(from: backup)
+        #expect(LibraryStore(directory: directory).sourcePreference(for: request) == nil)
+        #expect(!FileManager.default.fileExists(atPath: directory.appending(path: "playback-source-preferences.json").path))
+    }
+
+    @MainActor
+    @Test("Source preference persists across episodes and resets on removal")
+    func playbackSourceMemory() throws {
+        let directory = FileManager.default.temporaryDirectory.appending(path: UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let library = LibraryStore(directory: directory)
+        let first = request(episodeNumber: 1), second = request(episodeNumber: 2)
+        let preference = PlaybackSourcePreference(providerID: "anikoto", serverName: "HD-1", audioLanguage: "ja")
+        #expect(library.sourcePreference(for: first) == nil)
+        library.updateSourcePreference(preference, for: first)
+        #expect(library.sourcePreference(for: second) == preference)
+        #expect(LibraryStore(directory: directory).sourcePreference(for: second) == preference)
+        library.updateProgress(request: first, position: 120, duration: 1800)
+        library.updateProgress(request: second, position: 240, duration: 1800)
+        library.removeProgress(try #require(library.progress(for: second)))
+        #expect(library.sourcePreference(for: first) == nil)
+        #expect(library.resumePosition(for: first) == 120)
+        #expect(LibraryStore(directory: directory).sourcePreference(for: first) == nil)
+    }
+
+    @MainActor
     @Test("Playback speed persists per title and removal resets it to Settings")
     func playbackSpeedMemory() throws {
         let directory = FileManager.default.temporaryDirectory
@@ -425,6 +464,28 @@ struct PlaybackProgressTests {
             for: firstEpisode,
             defaultRate: 0.75
         ) == 0.75)
+    }
+
+    @MainActor
+    @Test("Subtitle visibility persists per title across episodes and resets on removal")
+    func subtitleVisibilityMemory() throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appending(path: UUID().uuidString, directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let first = request(episodeNumber: 1)
+        let second = request(episodeNumber: 2)
+        let library = LibraryStore(directory: directory)
+
+        #expect(library.subtitleVisibilityPreference(for: first) == nil)
+        library.updateSubtitleVisibilityPreference(false, for: first)
+        #expect(library.subtitleVisibilityPreference(for: second) == false)
+        #expect(LibraryStore(directory: directory).subtitleVisibilityPreference(for: second) == false)
+
+        library.updateProgress(request: first, position: 120, duration: 1_800)
+        library.removeProgress(try #require(library.progress(for: first)))
+
+        #expect(library.subtitleVisibilityPreference(for: second) == nil)
+        #expect(LibraryStore(directory: directory).subtitleVisibilityPreference(for: second) == nil)
     }
 
     @MainActor
@@ -513,8 +574,14 @@ struct PlaybackProgressTests {
         try Data(#"{"episode":[{"offsetTenths":3}]}"#.utf8).write(
             to: dataDirectory.appending(path: "subtitle-sync-versions.json")
         )
+        let sourceData = try JSONEncoder().encode(["tmdb:1": PlaybackSourcePreference(providerID: "anikoto", serverName: "HD-1", audioLanguage: "ja")])
+        try sourceData.write(to: dataDirectory.appending(path: "playback-source-preferences.json"))
+        let subtitleVisibilityData = try JSONEncoder().encode(["tmdb:tv:1": false])
+        try subtitleVisibilityData.write(to: dataDirectory.appending(path: "subtitle-visibility-preferences.json"))
         defaults.set("purple", forKey: "appearance.themeColor")
         defaults.set(1.75, forKey: "player.defaultPlaybackRate")
+        defaults.set("ja", forKey: "player.animeAudioLanguage")
+        defaults.set(false, forKey: "player.subtitlesEnabledByDefault")
 
         let service = UserDataBackupService(
             applicationSupportDirectory: dataDirectory,
@@ -533,10 +600,13 @@ struct PlaybackProgressTests {
         )
         #expect(Set(exportedFiles.compactMap { $0["relativePath"] as? String }) == [
             "future-feature/.history-data",
+            "playback-source-preferences.json",
             "progress.json",
+            "subtitle-visibility-preferences.json",
             "subtitle-sync-versions.json"
         ])
 
+        try Data("{}".utf8).write(to: dataDirectory.appending(path: "playback-source-preferences.json"))
         try Data("changed".utf8).write(to: dataDirectory.appending(path: "progress.json"))
         try Data("remove-me".utf8).write(to: dataDirectory.appending(path: "created-after-export.json"))
         defaults.set("green", forKey: "appearance.themeColor")
@@ -544,17 +614,21 @@ struct PlaybackProgressTests {
 
         try service.restore(from: backup)
 
+        #expect(try Data(contentsOf: dataDirectory.appending(path: "playback-source-preferences.json")) == sourceData)
+        #expect(try Data(contentsOf: dataDirectory.appending(path: "subtitle-visibility-preferences.json")) == subtitleVisibilityData)
         #expect(try Data(contentsOf: dataDirectory.appending(path: "progress.json")) == Data("progress-before-export".utf8))
         #expect(try Data(contentsOf: nestedDirectory.appending(path: ".history-data")) == Data([0, 1, 2, 3]))
         #expect(try Data(contentsOf: dataDirectory.appending(path: "subtitle-sync-versions.json")) == Data(#"{"episode":[{"offsetTenths":3}]}"#.utf8))
         #expect(!FileManager.default.fileExists(atPath: dataDirectory.appending(path: "created-after-export.json").path))
         #expect(defaults.string(forKey: "appearance.themeColor") == "purple")
         #expect(defaults.double(forKey: "player.defaultPlaybackRate") == 1.75)
+        #expect(defaults.string(forKey: "player.animeAudioLanguage") == "ja")
+        #expect(defaults.bool(forKey: "player.subtitlesEnabledByDefault") == false)
         #expect(defaults.object(forKey: "future.setting") == nil)
         #expect(try service.summary(for: backup) == UserDataBackupSummary(
             exportedAt: exportedAt,
             appVersion: "9.9.9",
-            fileCount: 3
+            fileCount: 5
         ))
     }
 

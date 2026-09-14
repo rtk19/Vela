@@ -14,7 +14,7 @@
             buildForAnalyzing = "YES">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "8CA3C1D19F54E1F65D38CFFC"
+               BlueprintIdentifier = "887543FE98EDDB51C0D26FB2"
                BuildableName = "Vela.app"
                BlueprintName = "Vela"
                ReferencedContainer = "container:Vela.xcodeproj">
@@ -30,7 +30,7 @@
       <MacroExpansion>
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "8CA3C1D19F54E1F65D38CFFC"
+            BlueprintIdentifier = "887543FE98EDDB51C0D26FB2"
             BuildableName = "Vela.app"
             BlueprintName = "Vela"
             ReferencedContainer = "container:Vela.xcodeproj">
@@ -42,7 +42,7 @@
             parallelizable = "NO">
             <BuildableReference
                BuildableIdentifier = "primary"
-               BlueprintIdentifier = "EE9A3246C1C04BA88E6ADDE3"
+               BlueprintIdentifier = "BCCFD8D037ED6DA65F70506A"
                BuildableName = "VelaTests.xctest"
                BlueprintName = "VelaTests"
                ReferencedContainer = "container:Vela.xcodeproj">
@@ -64,7 +64,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "8CA3C1D19F54E1F65D38CFFC"
+            BlueprintIdentifier = "887543FE98EDDB51C0D26FB2"
             BuildableName = "Vela.app"
             BlueprintName = "Vela"
             ReferencedContainer = "container:Vela.xcodeproj">
@@ -81,7 +81,7 @@
          runnableDebuggingMode = "0">
          <BuildableReference
             BuildableIdentifier = "primary"
-            BlueprintIdentifier = "8CA3C1D19F54E1F65D38CFFC"
+            BlueprintIdentifier = "887543FE98EDDB51C0D26FB2"
             BuildableName = "Vela.app"
             BlueprintName = "Vela"
             ReferencedContainer = "container:Vela.xcodeproj">

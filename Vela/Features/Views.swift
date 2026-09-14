@@ -145,7 +145,7 @@ private enum MediaArtworkLayout {
     static let gridSpacing: CGFloat = 12
     static let gridHorizontalPadding: CGFloat = 20
     static let gridColumns = Array(
-        repeating: GridItem(.flexible(), spacing: gridSpacing),
+        repeating: GridItem(.flexible(), spacing: gridSpacing, alignment: .top),
         count: 3
     )
 }
@@ -359,6 +359,8 @@ struct RootView: View {
     @State private var selectedTab: Tab = .home
     @State private var searchIsPresented = false
     @State private var searchFocusRequest = 0
+    @State private var searchReturnToRootRequest = 0
+    @State private var searchIsShowingDetails = false
     @State private var isHomeReady = false
     @State private var pendingAutomaticUpdate: GitHubRelease?
     @State private var automaticUpdateRelease: GitHubRelease?
@@ -373,7 +375,6 @@ struct RootView: View {
                 set: { tab in
                     selectedTab = tab
                     searchIsPresented = tab == .search
-                    if tab == .search { searchFocusRequest += 1 }
                 }
             )) {
                 NavigationStack { HomeView(onInitialLoadCompleted: showHome) }
@@ -394,7 +395,9 @@ struct RootView: View {
                 NavigationStack {
                     SearchView(
                         isSearchPresented: $searchIsPresented,
-                        focusRequest: searchFocusRequest
+                        isShowingDetails: $searchIsShowingDetails,
+                        focusRequest: searchFocusRequest,
+                        returnToRootRequest: searchReturnToRootRequest
                     )
                 }
                     .environment(\.titleTransitionNamespace, searchTitleTransitionNamespace)
@@ -409,7 +412,11 @@ struct RootView: View {
             .background {
                 TabBarTapObserver(tabIndex: 3) {
                     guard selectedTab == .search else { return }
-                    searchFocusRequest += 1
+                    if searchIsShowingDetails {
+                        searchReturnToRootRequest += 1
+                    } else {
+                        searchFocusRequest += 1
+                    }
                 }
             }
             .overlay(alignment: .top) {
@@ -1356,6 +1363,7 @@ private struct TabBarTapObserver: UIViewRepresentable {
         var onTap: () -> Void
         private weak var tabBar: UITabBar?
         private weak var marker: AttachmentView?
+        private var wasSelectedAtTouchStart = false
         private lazy var tap: UITapGestureRecognizer = {
             let recognizer = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
             recognizer.delegate = self
@@ -1391,12 +1399,35 @@ private struct TabBarTapObserver: UIViewRepresentable {
             true
         }
 
+        func gestureRecognizer(_ gestureRecognizer: UIGestureRecognizer, shouldReceive touch: UITouch) -> Bool {
+            guard let tabBar,
+                  let items = tabBar.items,
+                  items.indices.contains(tabIndex),
+                  tappedTabIndex(
+                    in: tabBar,
+                    itemCount: items.count,
+                    location: touch.location(in: tabBar)
+                  ) == tabIndex
+            else {
+                wasSelectedAtTouchStart = false
+                return true
+            }
+            wasSelectedAtTouchStart = tabBar.selectedItem === items[tabIndex]
+            return true
+        }
+
         @objc private func handleTap(_ recognizer: UITapGestureRecognizer) {
+            defer { wasSelectedAtTouchStart = false }
             guard recognizer.state == .ended,
+                  wasSelectedAtTouchStart,
                   let tabBar,
                   let items = tabBar.items,
                   items.indices.contains(tabIndex),
-                  tappedTabIndex(in: tabBar, itemCount: items.count, recognizer: recognizer) == tabIndex
+                  tappedTabIndex(
+                    in: tabBar,
+                    itemCount: items.count,
+                    location: recognizer.location(in: tabBar)
+                  ) == tabIndex
             else { return }
             onTap()
         }
@@ -1404,9 +1435,8 @@ private struct TabBarTapObserver: UIViewRepresentable {
         private func tappedTabIndex(
             in tabBar: UITabBar,
             itemCount: Int,
-            recognizer: UITapGestureRecognizer
+            location: CGPoint
         ) -> Int? {
-            let location = recognizer.location(in: tabBar)
             let controls = tabBar.subviews
                 .compactMap { $0 as? UIControl }
                 .filter { !$0.isHidden && $0.alpha > 0 && $0.frame.contains(location) }
@@ -2081,9 +2111,12 @@ private struct PosterGridCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
             ZStack(alignment: .bottomLeading) {
-                CanonicalPosterArtwork(item: item)
+                // The cell defines the size; loaded artwork must not expand it.
+                Color.clear
                     .aspectRatio(2 / 3, contentMode: .fit)
-                    .frame(maxWidth: .infinity)
+                    .overlay {
+                        CanonicalPosterArtwork(item: item)
+                    }
                     .clipped()
                     .clipShape(RoundedRectangle(cornerRadius: 8))
                 if let progress {
@@ -2093,7 +2126,7 @@ private struct PosterGridCard: View {
             }
             Text(item.title)
                 .font(.caption.weight(.semibold))
-                .lineLimit(2)
+                .lineLimit(2, reservesSpace: true)
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let progressDetail {
                 Text(progressDetail)
@@ -2249,20 +2282,23 @@ private struct TMDBPosterCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            CachedRemoteImage(url: title.posterURL ?? title.backdropURL) { image in
-                image.resizable().scaledToFill()
-            } placeholder: {
-                Rectangle().fill(.gray.opacity(0.22))
-                    .overlay { Image(systemName: title.kind == .movie ? "film" : "tv") }
-            }
+            Color.clear
             .aspectRatio(2 / 3, contentMode: .fit)
             .frame(width: width)
             .frame(maxWidth: width == nil ? .infinity : width)
+            .overlay {
+                CachedRemoteImage(url: title.posterURL ?? title.backdropURL) { image in
+                    image.resizable().scaledToFill()
+                } placeholder: {
+                    Rectangle().fill(.gray.opacity(0.22))
+                        .overlay { Image(systemName: title.kind == .movie ? "film" : "tv") }
+                }
+            }
             .clipped()
             .clipShape(RoundedRectangle(cornerRadius: 10))
             Text(title.title)
                 .font(.caption.weight(.semibold))
-                .lineLimit(2)
+                .lineLimit(2, reservesSpace: true)
                 .frame(width: width, alignment: .leading)
                 .frame(maxWidth: width == nil ? .infinity : width, alignment: .leading)
         }
@@ -2495,7 +2531,9 @@ struct SearchView: View {
     @State private var selectedDetails: ResolvedMediaItem?
     @FocusState private var searchFieldIsFocused: Bool
     @Binding var isSearchPresented: Bool
+    @Binding var isShowingDetails: Bool
     let focusRequest: Int
+    let returnToRootRequest: Int
 
     var body: some View {
         ScrollView {
@@ -2571,10 +2609,18 @@ struct SearchView: View {
         .toolbar(.hidden, for: .navigationBar)
         .onChange(of: model.query) { _, _ in model.search(environment: environment) }
         .onChange(of: isSearchPresented) { _, presented in
-            if presented { searchFieldIsFocused = true }
+            if !presented { searchFieldIsFocused = false }
         }
         .onChange(of: focusRequest) { _, _ in
             searchFieldIsFocused = true
+        }
+        .onChange(of: returnToRootRequest) { _, _ in
+            searchFieldIsFocused = false
+            selectedDetails = nil
+        }
+        .onChange(of: selectedDetails) { _, details in
+            isShowingDetails = details != nil
+            if details == nil { searchFieldIsFocused = false }
         }
         .overlay {
             if model.isLoading || (
@@ -2590,7 +2636,6 @@ struct SearchView: View {
             DetailsView(item: $0.media, tmdbMetadata: $0.tmdbMetadata)
         }
         .task {
-            if isSearchPresented { searchFieldIsFocused = true }
             await discovery.load(environment: environment)
         }
         .errorAlert($model.errorMessage)
@@ -2598,10 +2643,12 @@ struct SearchView: View {
     }
 
     private func open(_ title: TrendingTitle) {
+        searchFieldIsFocused = false
         selectedDetails = ResolvedMediaItem(media: .tmdbCatalogItem(from: title), tmdbMetadata: title)
     }
 
     private func open(_ item: MediaItem) {
+        searchFieldIsFocused = false
         transitionSelection?.select(
             titleID: item.artworkIdentityKey,
             sourceID: transitionSourceID(for: item)
@@ -2712,9 +2759,8 @@ struct DetailsView: View {
             let initialItem = model.item
             let preferredSeasonNumber = library.latestProgress(for: initialItem)?.episode?.seasonNumber
 
-            // Season selection is playback state, so establish it before any artwork
-            // or network request can delay what the picker presents.
-            selectedSeasonNumber = preferredSeasonNumber ?? initialItem.seasons.first?.number
+            // Present the first regular season immediately, with Specials listed last.
+            selectedSeasonNumber = model.orderedSeasons.first?.number
 
             let artworkTask = Task { @MainActor in
                 let artwork = await sourceLookup.resolveArtwork(
@@ -2762,9 +2808,7 @@ struct DetailsView: View {
                 model.item.seasons.contains { $0.number == selectedNumber }
             } ?? false
             if !selectionIsStillAvailable {
-                selectedSeasonNumber = model.item.seasons.first {
-                    $0.number == preferredSeasonNumber
-                }?.number ?? model.item.seasons.first?.number
+                selectedSeasonNumber = model.orderedSeasons.first?.number
             }
         }
         .fullScreenCover(isPresented: Binding(get: { playback != nil }, set: { if !$0 { playback = nil } })) {
@@ -2900,13 +2944,13 @@ struct DetailsView: View {
 
     private var seasonsSection: some View {
         VStack(alignment: .leading, spacing: 12) {
-            if let firstSeason = model.item.seasons.first {
+            if let firstSeason = model.orderedSeasons.first {
                 Picker("Season", selection: Binding(get: { selectedSeasonNumber ?? firstSeason.number }, set: { seasonNumber in
                     selectedSeasonNumber = seasonNumber
                     guard let season = model.item.seasons.first(where: { $0.number == seasonNumber }) else { return }
                     Task { await model.loadEpisodes(season, environment: environment) }
                 })) {
-                    ForEach(model.item.seasons) { Text($0.title ?? "Season \($0.number)").tag($0.number) }
+                    ForEach(model.orderedSeasons) { Text($0.title ?? "Season \($0.number)").tag($0.number) }
                 }
                 .pickerStyle(.menu)
 
@@ -3316,10 +3360,10 @@ struct SettingsView: View {
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
+    @AppStorage("player.animeAudioLanguage") private var animeAudioLanguage = "en"
+    @AppStorage("player.subtitlesEnabledByDefault") private var subtitlesEnabledByDefault = true
     @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
     @AppStorage("player.subtitleSync.autoSelectLatest") private var autoSelectLatestSubtitleSync = true
-    @State private var providerDomain = ""
-    @State private var providerMessage: String?
     @State private var isCheckingForUpdates = false
     @State private var updateCheckResult: UpdateCheckResult?
     @State private var exportDocument: UserDataJSONDocument?
@@ -3341,28 +3385,6 @@ struct SettingsView: View {
                 }
                 .listRowBackground(VelaTheme.surface)
 
-                Section("Provider") {
-                    LabeledContent("Active", value: "StreamingCommunity (EN)")
-                    TextField("Domain", text: $providerDomain)
-                        .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    Button("Apply domain") {
-                        Task {
-                            do {
-                                try await environment.applyProviderDomain(providerDomain)
-                                providerDomain = environment.providerDomain
-                                providerMessage = "Provider updated."
-                            } catch {
-                                providerMessage = error.localizedDescription
-                            }
-                        }
-                    }
-                    .disabled(providerDomain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-                    if let providerMessage {
-                        Text(providerMessage).font(.caption).foregroundStyle(.secondary)
-                    }
-                    Text("Change this only when the provider moves to a new domain.").font(.caption).foregroundStyle(.secondary)
-                }
-                .listRowBackground(VelaTheme.surface)
                 Section("Player") {
                     Toggle("Automatically play next episode", isOn: $autoNext)
                     Picker("Default quality", selection: $defaultQualityHeight) {
@@ -3393,10 +3415,19 @@ struct SettingsView: View {
                 }
                 .listRowBackground(VelaTheme.surface)
                 Section("Playback Languages") {
+                    Picker("Anime audio", selection: $animeAudioLanguage) {
+                        Text("English").tag("en")
+                        Text("Japanese").tag("ja")
+                    }
+                    .tint(environment.theme.accent)
+                    Toggle("Subtitles on by default", isOn: $subtitlesEnabledByDefault)
                     languagePicker("Default subtitles", selection: $primarySubtitleLanguage)
                     languagePicker("Backup subtitles", selection: $secondarySubtitleLanguage, allowsNone: true)
                     languagePicker("Default audio", selection: $audioLanguage)
-                    Text("If the selected audio track is unavailable, English is used automatically.")
+                    Text("Anime uses the preferred English or Japanese stream when a title has no saved source. Subtitle visibility also applies only until you choose on or off for that title.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Text("For multi-audio streams, if the selected audio track is unavailable, English is used automatically.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                 }
@@ -3485,9 +3516,6 @@ struct SettingsView: View {
         .background { VelaScreenBackground() }
         .ignoresSafeArea(edges: .top)
         .toolbar(.hidden, for: .navigationBar)
-        .task {
-            if providerDomain.isEmpty { providerDomain = environment.providerDomain }
-        }
         .sheet(item: $updateCheckResult) { result in
             UpdateCheckSheet(result: result)
                 .presentationDetents([.medium, .large])
@@ -3571,7 +3599,6 @@ struct SettingsView: View {
             try environment.library.importUserData(pending.data)
             Task {
                 await environment.reloadAfterUserDataImport()
-                providerDomain = environment.providerDomain
                 backupNotice = UserDataBackupNotice(
                     title: "Backup imported",
                     message: "All progress, history, watchlist entries, playback speeds, and settings were restored."
@@ -4337,6 +4364,8 @@ struct PlayerScreen: View {
     @AppStorage("player.subtitleLanguage.primary") private var primarySubtitleLanguage = "en"
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
+    @AppStorage("player.animeAudioLanguage") private var animeAudioLanguage = "en"
+    @AppStorage("player.subtitlesEnabledByDefault") private var subtitlesEnabledByDefault = true
     @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
     @AppStorage("player.subtitleSync.autoSelectLatest") private var autoSelectLatestSubtitleSync = true
     @StateObject private var model: PlayerViewModel
@@ -4355,15 +4384,41 @@ struct PlayerScreen: View {
             player: session.player,
             isZoomedToFill: library.isPlayerZoomedToFill(for: model.request),
             isBuffering: session.isBuffering || model.isLoading,
-            playbackErrorMessage: session.playbackErrorMessage,
+            playbackErrorMessage: session.playbackErrorMessage ?? (model.source == nil ? model.errorMessage : nil),
             availableQualities: session.availableQualities,
             selectedQuality: session.selectedQuality,
+            streams: model.streams,
+            selectedSourceID: model.selectedSourceID,
+            automaticSource: model.rememberedSource == nil,
+            onSourceChanged: { id, quality in
+                guard !model.isSwitching else { return }
+                Task {
+                    if id != nil, id == model.selectedSourceID {
+                        model.rememberCurrentSource(library: library)
+                        session.setQuality(quality)
+                    } else {
+                        await model.selectSource(id, quality: quality, library: library) { stream, choice in
+                            await session.switchSource(stream, externalSubtitles: model.thirdPartySubtitles,
+                                quality: choice, useQualityChoice: id != nil)
+                        }
+                    }
+                }
+            },
             subtitleTimingOffset: session.subtitleTimingOffset,
             canAdjustSubtitleTiming: session.canOpenSubtitleStudio,
             onQualityChanged: { session.setQuality($0) },
             onAdjustSubtitleTiming: { session.adjustSubtitleTiming(by: $0) },
             onOpenSubtitleSync: { openSubtitleStudio() },
-            onRetryPlayback: { session.retryPlayback() },
+            onRetryPlayback: {
+                model.resetRecovery()
+                if model.source == nil {
+                    Task {
+                        await model.load(environment: environment,
+                            enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
+                            audioLanguage: animeAudioLanguage, qualityHeight: defaultQualityHeight)
+                    }
+                } else { session.retryPlayback() }
+            },
             onZoomChanged: {
                 library.updatePlayerZoomedToFill($0, for: model.request)
             },
@@ -4379,12 +4434,9 @@ struct PlayerScreen: View {
         .ignoresSafeArea()
         .task {
             library.markPlaybackStarted(request: model.request)
-            await model.load(
-                registry: environment.registry,
-                sourceLookup: environment.sourceLookup,
-                subtitleRegistry: environment.subtitleRegistry,
-                enabledSubtitleProviderIDs: enabledSubtitleProviderIDs
-            )
+            await model.load(environment: environment,
+                enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
+                audioLanguage: animeAudioLanguage, qualityHeight: defaultQualityHeight)
         }
         .task(id: model.sourceRevision) {
             guard let source = model.source else { return }
@@ -4403,6 +4455,8 @@ struct PlayerScreen: View {
                 externalSubtitles: (source.subtitles + model.thirdPartySubtitles),
                 subtitleSyncVersions: library.subtitleSyncVersions(for: model.request),
                 automaticallySelectLatestSubtitleSync: autoSelectLatestSubtitleSync,
+                subtitlesEnabled: library.subtitleVisibilityPreference(for: model.request)
+                    ?? subtitlesEnabledByDefault,
                 defaultQualityHeight: defaultQualityHeight,
                 defaultPlaybackRate: Float(initialPlaybackRate)
             )
@@ -4430,17 +4484,21 @@ struct PlayerScreen: View {
             library.updatePlaybackRate(rate, for: model.request)
         }
         .onAppear {
+            session.onSubtitleVisibilityChanged = { isEnabled in
+                library.updateSubtitleVisibilityPreference(isEnabled, for: model.request)
+            }
             session.onSourceRefreshNeeded = {
                 saveProgress()
-                return await model.refreshPlaybackSource(
-                    registry: environment.registry,
-                    sourceLookup: environment.sourceLookup
-                )
+                return await model.recover { stream in
+                    await session.switchSource(stream, externalSubtitles: model.thirdPartySubtitles)
+                }
             }
             AppOrientationController.shared.beginPlayback(using: playerOrientation)
         }
         .onDisappear {
+            session.onSubtitleVisibilityChanged = nil
             session.onSourceRefreshNeeded = nil
+            model.cancel()
             saveProgress(markNearEndFinished: true)
             session.stop()
             AppOrientationController.shared.endPlayback()
@@ -4453,7 +4511,8 @@ struct PlayerScreen: View {
                 initialContext: context
             )
         }
-        .errorAlert($model.errorMessage)
+        .errorAlert(Binding(get: { model.source == nil ? nil : model.errorMessage },
+            set: { model.errorMessage = $0 }))
     }
 
     private func saveProgress(markNearEndFinished: Bool = false) {
@@ -4512,13 +4571,9 @@ struct PlayerScreen: View {
         nextRequest = nil
         library.markPlaybackStarted(request: request)
         Task {
-            await model.play(
-                request,
-                registry: environment.registry,
-                sourceLookup: environment.sourceLookup,
-                subtitleRegistry: environment.subtitleRegistry,
-                enabledSubtitleProviderIDs: enabledSubtitleProviderIDs
-            )
+            await model.play(request, environment: environment,
+                enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
+                audioLanguage: animeAudioLanguage, qualityHeight: defaultQualityHeight)
             finishedContentID = nil
         }
     }
