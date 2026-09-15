@@ -12,6 +12,7 @@
 		1C890DC7CEF559EEB339C409 /* TMDBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B5CE7E669118A0E5B774F5E /* TMDBClient.swift */; };
 		25F410B617628369508247B1 /* TMDBCatalogMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */; };
 		35094991060370728B4AD4D1 /* Models.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9479F8A5079CB583A9DDC46 /* Models.swift */; };
+		37850C3BF6EB0809B715691D /* StremioAddonProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = 7376D52AEC6961ADAD1B97DA /* StremioAddonProvider.swift */; };
 		3C4EC4FDFA0D184D8C635CAC /* NativePlayer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D8ACF44C2AA41DDFC82AF7F /* NativePlayer.swift */; };
 		49A22876D26A067C086188A4 /* TMDBClientTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 19B5DAA1FAC2D295C8971D10 /* TMDBClientTests.swift */; };
 		4A5B080F481FDC01A0663FA2 /* AnimeStreamResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 80F37C5CF39A492282E2A9EE /* AnimeStreamResolver.swift */; };
@@ -28,6 +29,7 @@
 		AA3A37AC1B4F6EA5624A995C /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = FAF8278AFFAD587BE55C0F74 /* PrivacyInfo.xcprivacy */; };
 		B307A32095D1E818891B4561 /* ViewModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA0DD84DBBE8CAED217FD2E5 /* ViewModels.swift */; };
 		BEC1589F6E3406A694C40439 /* PlaybackDiscovery.swift in Sources */ = {isa = PBXBuildFile; fileRef = 6D6137ADA4DFE0544DA41AC9 /* PlaybackDiscovery.swift */; };
+		C01C3860FCBD106BB2A63C3D /* StremioAddonProviderTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2361987E924D39BB64E83C03 /* StremioAddonProviderTests.swift */; };
 		C319696D4F332DC5805B629A /* SubtitleProviders.swift in Sources */ = {isa = PBXBuildFile; fileRef = A77A50CD75D840C27F9848DD /* SubtitleProviders.swift */; };
 		E41BA08FACF5DDC4B04EFC95 /* AnimePlaybackProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = C3CC4AEE056C846C5C23DA7B /* AnimePlaybackProvider.swift */; };
 		EE446B215C538FDD8B9AD6C8 /* VelaApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = DD82797C65EFBC63F3D18491 /* VelaApp.swift */; };
@@ -54,6 +56,7 @@
 		19B5DAA1FAC2D295C8971D10 /* TMDBClientTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClientTests.swift; sourceTree = "<group>"; };
 		1B5CE7E669118A0E5B774F5E /* TMDBClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBClient.swift; sourceTree = "<group>"; };
 		1BDE955356AA93FC1945591F /* UserDataBackup.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UserDataBackup.swift; sourceTree = "<group>"; };
+		2361987E924D39BB64E83C03 /* StremioAddonProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StremioAddonProviderTests.swift; sourceTree = "<group>"; };
 		2835E04E7476E1DD1E9D6416 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		3B429ACDC0C702D23FDC4C3A /* HTMLPayloadParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParserTests.swift; sourceTree = "<group>"; };
 		4266A879F83FCBDD41F8A33F /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
@@ -64,6 +67,7 @@
 		6D6137ADA4DFE0544DA41AC9 /* PlaybackDiscovery.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackDiscovery.swift; sourceTree = "<group>"; };
 		6D8ACF44C2AA41DDFC82AF7F /* NativePlayer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NativePlayer.swift; sourceTree = "<group>"; };
 		6FDB210123ADFA58E67737CA /* Views.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Views.swift; sourceTree = "<group>"; };
+		7376D52AEC6961ADAD1B97DA /* StremioAddonProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StremioAddonProvider.swift; sourceTree = "<group>"; };
 		74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TMDBCatalogMatcherTests.swift; sourceTree = "<group>"; };
 		80F37C5CF39A492282E2A9EE /* AnimeStreamResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AnimeStreamResolver.swift; sourceTree = "<group>"; };
 		8B52A968E034D072D964F5A6 /* StreamingCommunityProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StreamingCommunityProvider.swift; sourceTree = "<group>"; };
@@ -91,6 +95,7 @@
 				112B4BF98D8F1598D647E6B0 /* PlaybackDiscoveryTests.swift */,
 				4D73B945A62B4078F3230F2B /* PlaybackProgressTests.swift */,
 				55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */,
+				2361987E924D39BB64E83C03 /* StremioAddonProviderTests.swift */,
 				74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */,
 				19B5DAA1FAC2D295C8971D10 /* TMDBClientTests.swift */,
 			);
@@ -120,6 +125,7 @@
 				4266A879F83FCBDD41F8A33F /* Provider.swift */,
 				F9A6BBB0B5768AA4DC07E747 /* StreamingCommunityModels.swift */,
 				8B52A968E034D072D964F5A6 /* StreamingCommunityProvider.swift */,
+				7376D52AEC6961ADAD1B97DA /* StremioAddonProvider.swift */,
 				A77A50CD75D840C27F9848DD /* SubtitleProviders.swift */,
 				1B5CE7E669118A0E5B774F5E /* TMDBClient.swift */,
 				1BDE955356AA93FC1945591F /* UserDataBackup.swift */,
@@ -271,6 +277,7 @@
 				F0BB6BEE9D45FBEBC1887CC6 /* Provider.swift in Sources */,
 				712D241B929CDF81EAC2864F /* StreamingCommunityModels.swift in Sources */,
 				7881E5A49D1E2248771A40D7 /* StreamingCommunityProvider.swift in Sources */,
+				37850C3BF6EB0809B715691D /* StremioAddonProvider.swift in Sources */,
 				C319696D4F332DC5805B629A /* SubtitleProviders.swift in Sources */,
 				1C890DC7CEF559EEB339C409 /* TMDBClient.swift in Sources */,
 				194E84373A3313788D7814D8 /* UserDataBackup.swift in Sources */,
@@ -290,6 +297,7 @@
 				5357C6AC995464E109DA454E /* PlaybackDiscoveryTests.swift in Sources */,
 				FEB9A4FE40E886D3E4CEA690 /* PlaybackProgressTests.swift in Sources */,
 				1472CE33F4F8C621E976745E /* PlayerSourceSwitchTests.swift in Sources */,
+				C01C3860FCBD106BB2A63C3D /* StremioAddonProviderTests.swift in Sources */,
 				25F410B617628369508247B1 /* TMDBCatalogMatcherTests.swift in Sources */,
 				49A22876D26A067C086188A4 /* TMDBClientTests.swift in Sources */,
 			);

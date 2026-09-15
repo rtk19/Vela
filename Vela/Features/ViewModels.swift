@@ -454,6 +454,7 @@ final class PlayerViewModel: ObservableObject {
     @Published private(set) var thirdPartySubtitles: [SubtitleSource] = []
     @Published private(set) var isLoading = false
     @Published private(set) var isSwitching = false
+    @Published private(set) var isSearching = false
     @Published private(set) var sourceRevision = 0
     @Published var errorMessage: String?
     @Published private(set) var request: PlaybackRequest
@@ -465,10 +466,17 @@ final class PlayerViewModel: ObservableObject {
     private var operation = UUID()
     private var policy = StreamSelectionPolicy()
 
+    var allSubtitles: [SubtitleSource] {
+        var seenResources: Set<String> = []
+        return (streams.flatMap(\.source.subtitles) + thirdPartySubtitles).filter { subtitle in
+            seenResources.insert("\(subtitle.providerID):\(subtitle.url.absoluteString)").inserted
+        }
+    }
+
     init(request: PlaybackRequest) { self.request = request }
 
     func load(environment: AppEnvironment, enabledSubtitleProviderIDs: Set<String>,
-              audioLanguage: String, qualityHeight: Int, force: Bool = false) async {
+              audioLanguage: String, backupAudioLanguage: String = "", qualityHeight: Int, force: Bool = false) async {
         guard (source == nil || force), !isLoading else { return }
         let token = UUID()
         operation = token
@@ -478,12 +486,17 @@ final class PlayerViewModel: ObservableObject {
         refreshedSources = []
         refreshedURLs = []
         rememberedSource = environment.library.sourcePreference(for: request)
-        policy = StreamSelectionPolicy(preference: rememberedSource, audioLanguage: audioLanguage, qualityHeight: qualityHeight)
+        policy = StreamSelectionPolicy(preference: rememberedSource, audioLanguage: audioLanguage,
+            backupAudioLanguage: backupAudioLanguage, qualityHeight: qualityHeight)
         defer { if operation == token { isLoading = false } }
         let playbackRequest = request
         discovery.onUpdate = { [weak self] streams in
             guard self?.operation == token else { return }
             self?.streams = streams
+        }
+        discovery.onSearchingChanged = { [weak self] isSearching in
+            guard self?.operation == token else { return }
+            self?.isSearching = isSearching
         }
         do {
             async let subtitles: [SubtitleSource] = {
@@ -512,7 +525,8 @@ final class PlayerViewModel: ObservableObject {
     }
 
     func play(_ request: PlaybackRequest, environment: AppEnvironment,
-              enabledSubtitleProviderIDs: Set<String>, audioLanguage: String, qualityHeight: Int) async {
+              enabledSubtitleProviderIDs: Set<String>, audioLanguage: String,
+              backupAudioLanguage: String = "", qualityHeight: Int) async {
         cancel()
         self.request = request
         source = nil
@@ -520,24 +534,24 @@ final class PlayerViewModel: ObservableObject {
         selectedSourceID = nil
         thirdPartySubtitles = []
         await load(environment: environment, enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
-                   audioLanguage: audioLanguage, qualityHeight: qualityHeight)
+                   audioLanguage: audioLanguage, backupAudioLanguage: backupAudioLanguage, qualityHeight: qualityHeight)
     }
 
     func selectSource(_ id: String?, quality: StreamQuality?, library: LibraryStore,
-                      apply: (PlayableStream, StreamQuality?) async -> Bool) async {
-        guard !isSwitching else { return }
+                      apply: (PlayableStream, StreamQuality?) async -> Bool) async -> Bool {
+        guard !isSwitching else { return false }
         if id == nil {
             library.updateSourcePreference(nil, for: request)
             rememberedSource = nil
             policy.preference = nil
         }
-        guard let target = id.flatMap({ id in streams.first { $0.id == id } }) ?? policy.best(in: streams) else { return }
+        guard let target = id.flatMap({ id in streams.first { $0.id == id } }) ?? policy.best(in: streams) else { return false }
         let token = operation
         isSwitching = true
         defer { if operation == token { isSwitching = false } }
         do {
             let fresh = try await PlaybackDiscovery.prepare(target.candidate)
-            guard operation == token, !Task.isCancelled else { return }
+            guard operation == token, !Task.isCancelled else { return false }
             guard await apply(fresh, quality), operation == token else { throw AppError.noStream }
             source = fresh.source
             selectedSourceID = fresh.id
@@ -548,8 +562,10 @@ final class PlayerViewModel: ObservableObject {
                 policy.preference = rememberedSource
                 library.updateSourcePreference(rememberedSource, for: request)
             }
+            return true
         } catch where error.isCancellation { }
-        catch { if operation == token { errorMessage = "This source could not be opened. Your previous stream is still selected." } }
+        catch { if operation == token { errorMessage = "This source could not be opened. Playback returned to your previous source." } }
+        return false
     }
 
     func recover(apply: (PlayableStream) async -> Bool) async -> Bool {
@@ -600,5 +616,6 @@ final class PlayerViewModel: ObservableObject {
         contextTask = nil
         isLoading = false
         isSwitching = false
+        isSearching = false
     }
 }

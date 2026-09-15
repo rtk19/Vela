@@ -223,6 +223,20 @@ struct SubtitleStudioContext: Identifiable, Sendable {
     var id: String { selectedTrackID }
 }
 
+enum SubtitleSelectionLookup {
+    static func make(
+        displayNames: [String],
+        languageTags: [String],
+        renditions: [HLSSubtitleRendition]
+    ) -> [String: HLSSubtitleRendition] {
+        var result = Dictionary(uniqueKeysWithValues: zip(displayNames, renditions))
+        for (languageTag, rendition) in zip(languageTags, renditions) {
+            result[languageTag.lowercased()] = rendition
+        }
+        return result
+    }
+}
+
 @MainActor
 final class PlayerSession: ObservableObject {
     let player = AVPlayer()
@@ -235,6 +249,7 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var canOpenSubtitleStudio = false
     @Published private(set) var subtitleStudioTracks: [SubtitleStudioTrack] = []
     @Published private(set) var subtitleStudioPosition: Double = 0
+    @Published private(set) var activeSubtitleText: String?
     @Published private(set) var isSubtitleStudioSeeking = false
     @Published private(set) var playbackRate: Double = 1
     @Published private(set) var isBuffering = false
@@ -244,6 +259,7 @@ final class PlayerSession: ObservableObject {
     var onSourceRefreshNeeded: (() async -> Bool)?
     var onSubtitleVisibilityChanged: ((Bool) -> Void)?
     nonisolated(unsafe) private var timeObserver: Any?
+    nonisolated(unsafe) private var subtitleOverlayTimeObserver: Any?
     nonisolated(unsafe) private var studioTimeObserver: Any?
     nonisolated(unsafe) private var endObserver: NSObjectProtocol?
     nonisolated(unsafe) private var mediaSelectionObserver: NSObjectProtocol?
@@ -272,9 +288,13 @@ final class PlayerSession: ObservableObject {
     private var nowPlayingArtwork: MPMediaItemArtwork?
     private var remoteCommandTargets: [(command: MPRemoteCommand, target: Any)] = []
     private var injectedSubtitleNames: Set<String> = []
+    private var injectedSubtitleLanguageTags: Set<String> = []
     private var subtitleRenditions: [HLSSubtitleRendition] = []
     private var subtitleRenditionsByDisplayName: [String: HLSSubtitleRendition] = [:]
     private var subtitleRenditionsBySelectionID: [String: HLSSubtitleRendition] = [:]
+    private var activeSubtitleRendition: HLSSubtitleRendition?
+    private weak var subtitleOutputItem: AVPlayerItem?
+    private var subtitleLegibleOutput: AVPlayerItemLegibleOutput?
     private var subtitlePlaybackSource: PlaybackSource?
     private var subtitleSyncVersions: [SubtitleSyncVersion] = []
     private var studioPreviousSubtitleDisplayName: String?
@@ -286,6 +306,7 @@ final class PlayerSession: ObservableObject {
     private var audioLanguage = "en"
     private var subtitleVisibilityBaseline: Bool?
     private var isApplyingPreferredLanguages = false
+    private var isStabilizingMediaSelection = false
     private var playbackWasRequested = false
     private var shouldResumeAfterBuffering = false
     private var isPreparingPlayback = false
@@ -308,6 +329,11 @@ final class PlayerSession: ObservableObject {
     private let subtitleClient: any HTTPClientProtocol
     private var subtitleServer = HLSSubtitleLoopbackServer()
     private var sourceSwitchGeneration = UUID()
+    private var pendingSourceSwitchTime: Double?
+    private var pendingSourceSwitchShouldPlay: Bool?
+    private var pendingSourceSwitchRate: Float?
+    private var pendingSourceSwitchItem: AVPlayerItem?
+    private var isSourceSwitching = false
     private let audioSessionController = AudioSessionController()
 
     init(subtitleClient: any HTTPClientProtocol = HTTPClient()) {
@@ -342,6 +368,14 @@ final class PlayerSession: ObservableObject {
                 self.publishNowPlayingInfo()
             }
         }
+        subtitleOverlayTimeObserver = player.addPeriodicTimeObserver(
+            forInterval: CMTime(seconds: 0.1, preferredTimescale: 10),
+            queue: .main
+        ) { [weak self] time in
+            Task { @MainActor [weak self] in
+                self?.updateActiveSubtitle(at: time.seconds)
+            }
+        }
         observeAudioSessionEvents()
     }
 
@@ -354,6 +388,7 @@ final class PlayerSession: ObservableObject {
         sourceRefreshTask?.cancel()
         sourceExpirationTask?.cancel()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
+        if let subtitleOverlayTimeObserver { player.removeTimeObserver(subtitleOverlayTimeObserver) }
         if let studioTimeObserver { player.removeTimeObserver(studioTimeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let mediaSelectionObserver { NotificationCenter.default.removeObserver(mediaSelectionObserver) }
@@ -379,6 +414,11 @@ final class PlayerSession: ObservableObject {
         defaultPlaybackRate: Float
     ) async {
         sourceSwitchGeneration = UUID()
+        pendingSourceSwitchTime = nil
+        pendingSourceSwitchShouldPlay = nil
+        pendingSourceSwitchRate = nil
+        pendingSourceSwitchItem = nil
+        isSourceSwitching = false
         // Recovery may replace an item while the user is intentionally paused.
         // Consume the intent before asynchronous subtitle preparation so the
         // replacement cannot unexpectedly start itself later.
@@ -459,11 +499,19 @@ final class PlayerSession: ObservableObject {
         shouldResumeAfterBuffering = false
         isPreparingPlayback = false
         nextReplacementShouldPlay = nil
+        pendingSourceSwitchTime = nil
+        pendingSourceSwitchShouldPlay = nil
+        pendingSourceSwitchRate = nil
+        pendingSourceSwitchItem = nil
+        isSourceSwitching = false
         currentSourceURL = nil
         currentPlaybackSource = nil
         currentExternalSubtitles = []
         subtitleSyncVersions = []
         subtitleStudioTracks = []
+        activeSubtitleRendition = nil
+        activeSubtitleText = nil
+        removeSubtitleLegibleOutput()
         isSubtitleStudioSeeking = false
         currentSourceExpiresAt = nil
         sourceRefreshRequestedForURL = nil
@@ -519,6 +567,37 @@ final class PlayerSession: ObservableObject {
         requestSourceRefresh()
     }
 
+    /// Disconnect the active item as soon as the user chooses another source.
+    /// Retain it privately only so a failed replacement can be restored.
+    func beginSourceSwitch() {
+        guard let item = player.currentItem, pendingSourceSwitchItem == nil else { return }
+        let time = player.currentTime().seconds
+        pendingSourceSwitchTime = time.isFinite ? time : position
+        pendingSourceSwitchShouldPlay = player.rate > 0 || player.timeControlStatus != .paused
+        pendingSourceSwitchRate = player.rate > 0 ? player.rate : player.defaultRate
+        pendingSourceSwitchItem = item
+        isSourceSwitching = true
+        player.pause()
+        player.replaceCurrentItem(with: nil)
+        isBuffering = true
+    }
+
+    func cancelSourceSwitch(resumePrevious: Bool) {
+        let shouldResume = resumePrevious && pendingSourceSwitchShouldPlay == true
+        let rate = pendingSourceSwitchRate ?? player.defaultRate
+        let previousItem = pendingSourceSwitchItem
+        pendingSourceSwitchTime = nil
+        pendingSourceSwitchShouldPlay = nil
+        pendingSourceSwitchRate = nil
+        pendingSourceSwitchItem = nil
+        isSourceSwitching = false
+        if resumePrevious, player.currentItem == nil, let previousItem {
+            player.replaceCurrentItem(with: previousItem)
+        }
+        isBuffering = false
+        if shouldResume { player.playImmediately(atRate: rate) }
+    }
+
     private func recordPlaybackRate(_ rate: Float) {
         guard rate.isFinite, rate > 0 else { return }
         // Video content is dominated by dialogue. The time-domain processor
@@ -535,11 +614,12 @@ final class PlayerSession: ObservableObject {
     /// the active stream's playlist or subtitle routes.
     func switchSource(_ stream: PlayableStream, externalSubtitles: [SubtitleSource],
                       quality: StreamQuality? = nil, useQualityChoice: Bool = false) async -> Bool {
-        guard let oldItem = player.currentItem else { return false }
+        guard let oldItem = pendingSourceSwitchItem ?? player.currentItem else { return false }
         let generation = UUID()
         sourceSwitchGeneration = generation
         let oldServer = subtitleServer
         let oldNames = injectedSubtitleNames
+        let oldLanguageTags = injectedSubtitleLanguageTags
         let oldRenditions = subtitleRenditions
         let oldByName = subtitleRenditionsByDisplayName
         let oldByID = subtitleRenditionsBySelectionID
@@ -563,10 +643,14 @@ final class PlayerSession: ObservableObject {
         subtitleServer = HLSSubtitleLoopbackServer()
         let asset = await assetByInjectingSubtitles(source.subtitles + externalSubtitles, into: source, selectedQuality: newQuality, generation: generation)
         let playable = await replacementIsReady(asset, generation: generation)
-        guard playable, generation == sourceSwitchGeneration, !Task.isCancelled, player.currentItem === oldItem else {
+        let oldItemIsStillCurrent = player.currentItem === oldItem
+        let oldItemIsDetachedForSwitch = player.currentItem == nil && pendingSourceSwitchItem === oldItem
+        guard playable, generation == sourceSwitchGeneration, !Task.isCancelled,
+              oldItemIsStillCurrent || oldItemIsDetachedForSwitch else {
             if generation == sourceSwitchGeneration {
                 subtitleServer = oldServer
                 injectedSubtitleNames = oldNames
+                injectedSubtitleLanguageTags = oldLanguageTags
                 subtitleRenditions = oldRenditions
                 subtitleRenditionsByDisplayName = oldByName
                 subtitleRenditionsBySelectionID = oldByID
@@ -575,13 +659,20 @@ final class PlayerSession: ObservableObject {
                 canOpenSubtitleStudio = oldCanStudio
                 canAdjustSubtitleTiming = oldCanAdjust
             }
+            cancelSourceSwitch(resumePrevious: true)
             return false
         }
         let time = player.currentTime().seconds
-        let resumeAt = time.isFinite ? time : position
-        let shouldPlay = nextReplacementShouldPlay ?? (playbackWasRequested || player.timeControlStatus != .paused)
+        let resumeAt = pendingSourceSwitchTime ?? (time.isFinite ? time : position)
+        let shouldPlay = nextReplacementShouldPlay ?? pendingSourceSwitchShouldPlay
+            ?? (playbackWasRequested || player.timeControlStatus != .paused)
         nextReplacementShouldPlay = nil
-        let rate = player.rate > 0 ? player.rate : player.defaultRate
+        let rate = pendingSourceSwitchRate ?? (player.rate > 0 ? player.rate : player.defaultRate)
+        pendingSourceSwitchTime = nil
+        pendingSourceSwitchShouldPlay = nil
+        pendingSourceSwitchRate = nil
+        pendingSourceSwitchItem = nil
+        isSourceSwitching = false
         availableQualities = stream.qualities
         selectedQuality = newQuality
         if useQualityChoice { preferredQualityHeight = quality?.height; qualityPreferenceInitialized = true }
@@ -700,6 +791,9 @@ final class PlayerSession: ObservableObject {
                     ? self.player.rate
                     : self.player.defaultRate
                 self.injectedSubtitleNames = injectedAsset.displayNames
+                self.injectedSubtitleLanguageTags = Set(
+                    injectedAsset.languageTags.map { $0.lowercased() }
+                )
                 self.appliedSubtitleTimingOffset = updatedOffset
                 self.replaceCurrentItem(
                     with: AVURLAsset(
@@ -728,6 +822,7 @@ final class PlayerSession: ObservableObject {
             ? player.currentTime().seconds
             : position
         installStudioTimeObserver()
+        await logSubtitleDiagnostics(at: subtitleStudioPosition)
         studioPreviousSubtitleDisplayName = await selectedSubtitleDisplayName()
         let selectedLanguageTag = await selectedSubtitleSelectionID()
         let selectedRendition = selectedLanguageTag.flatMap {
@@ -747,6 +842,15 @@ final class PlayerSession: ObservableObject {
             ?? selectedEmbeddedTrack?.id
             ?? subtitleStudioTracks.first?.id
         guard let selectedTrackID else { return nil }
+        let selectedTrack = subtitleStudioTracks.first { $0.id == selectedTrackID }
+        let studioOffset = selectedRendition?.timingOffset ?? 0
+        let sourceTime = subtitleStudioPosition - studioOffset
+        let activeCue = selectedTrack?.cues.first {
+            $0.startTime <= sourceTime && sourceTime < $0.endTime
+        }
+        SubtitleDiagnostics.logger.notice(
+            "SUBSYNC studio: playerID=\(selectedLanguageTag ?? "none", privacy: .public) resolvedProvider=\(selectedTrack?.source.providerID ?? "none", privacy: .public) resolvedLabel=\(selectedTrack?.source.label ?? "none", privacy: .public) playerTime=\(self.subtitleStudioPosition, privacy: .public) offset=\(studioOffset, privacy: .public) cueStart=\(activeCue?.startTime ?? -1, privacy: .public) cueEnd=\(activeCue?.endTime ?? -1, privacy: .public)"
+        )
         player.pause()
         if let item = player.currentItem,
            let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
@@ -886,13 +990,24 @@ final class PlayerSession: ObservableObject {
             try Task.checkCancellation()
             guard generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
             injectedSubtitleNames = injectedAsset.displayNames
+            injectedSubtitleLanguageTags = Set(
+                injectedAsset.languageTags.map { $0.lowercased() }
+            )
             subtitleRenditions = renditions
             subtitleRenditionsByDisplayName = Dictionary(
                 uniqueKeysWithValues: zip(injectedAsset.orderedDisplayNames, renditions)
             )
-            subtitleRenditionsBySelectionID = Dictionary(
-                uniqueKeysWithValues: zip(injectedAsset.orderedDisplayNames, renditions)
+            subtitleRenditionsBySelectionID = SubtitleSelectionLookup.make(
+                displayNames: injectedAsset.orderedDisplayNames,
+                languageTags: injectedAsset.orderedLanguageTags,
+                renditions: renditions
             )
+            for (index, rendition) in renditions.enumerated() {
+                let languageTag = injectedAsset.orderedLanguageTags[index]
+                SubtitleDiagnostics.logger.notice(
+                    "SUBSYNC generated: tag=\(languageTag, privacy: .public) provider=\(rendition.subtitle.providerID, privacy: .public) label=\(rendition.subtitle.label, privacy: .public) offset=\(rendition.timingOffset, privacy: .public) cues=\(rendition.cues.count, privacy: .public)"
+                )
+            }
             subtitlePlaybackSource = loadedRenditions.isEmpty ? nil : source
             return AVURLAsset(
                 url: localMasterURL,
@@ -903,6 +1018,7 @@ final class PlayerSession: ObservableObject {
         } catch {
             guard generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
             injectedSubtitleNames = []
+            injectedSubtitleLanguageTags = []
             subtitleRenditions = []
             subtitleRenditionsByDisplayName = [:]
             subtitleRenditionsBySelectionID = [:]
@@ -1034,6 +1150,7 @@ final class PlayerSession: ObservableObject {
         mediaOptionsTask?.cancel()
         let mediaSelectionGeneration = UUID()
         self.mediaSelectionGeneration = mediaSelectionGeneration
+        isStabilizingMediaSelection = true
         playbackWasRequested = shouldPlay
         shouldResumeAfterBuffering = false
         // Keep playback behind the media-selection gate. AVPlayer can otherwise
@@ -1075,6 +1192,7 @@ final class PlayerSession: ObservableObject {
             guard let self, let item else { return }
             defer {
                 if self.mediaSelectionGeneration == mediaSelectionGeneration {
+                    self.isStabilizingMediaSelection = false
                     self.mediaOptionsTask = nil
                 }
             }
@@ -1082,6 +1200,23 @@ final class PlayerSession: ObservableObject {
                   !Task.isCancelled,
                   self.mediaSelectionGeneration == mediaSelectionGeneration,
                   self.player.currentItem === item else { return }
+            await self.applyPreferredLanguages(
+                to: asset,
+                primarySubtitleLanguage: self.primarySubtitleLanguage,
+                secondarySubtitleLanguage: self.secondarySubtitleLanguage,
+                audioLanguage: self.audioLanguage,
+                preferredSubtitleDisplayName: preferredSubtitleDisplayName,
+                preferredSubtitleSelectionID: preferredSubtitleSelectionID
+            )
+            // Some HLS manifests publish a forced/default rendition as the item
+            // settles. AVPlayer can momentarily restore that choice even with
+            // automatic criteria disabled, so reassert our explicit selection
+            // after the initial media-selection notification cycle.
+            do {
+                try await Task.sleep(for: .milliseconds(100))
+            } catch {
+                return
+            }
             await self.applyPreferredLanguages(
                 to: asset,
                 primarySubtitleLanguage: self.primarySubtitleLanguage,
@@ -1102,6 +1237,16 @@ final class PlayerSession: ObservableObject {
                     toleranceAfter: .zero
                 )
             }
+            // Seeking can cause another HLS rendition reconciliation. Selection
+            // must be the last preparation step before playback is released.
+            await self.applyPreferredLanguages(
+                to: asset,
+                primarySubtitleLanguage: self.primarySubtitleLanguage,
+                secondarySubtitleLanguage: self.secondarySubtitleLanguage,
+                audioLanguage: self.audioLanguage,
+                preferredSubtitleDisplayName: preferredSubtitleDisplayName,
+                preferredSubtitleSelectionID: preferredSubtitleSelectionID
+            )
             guard !Task.isCancelled,
                   self.mediaSelectionGeneration == mediaSelectionGeneration,
                   self.player.currentItem === item else { return }
@@ -1113,6 +1258,24 @@ final class PlayerSession: ObservableObject {
             // `play()` deliberately uses `defaultRate`, retaining AVPlayer's
             // automatic wait-for-buffer behavior.
             self.player.play()
+            // Starting playback is the final point at which AVPlayer may honor
+            // a manifest's forced/default flags. Keep startup changes isolated
+            // from preference persistence and reconcile once more afterward.
+            do {
+                try await Task.sleep(for: .milliseconds(250))
+            } catch {
+                return
+            }
+            guard self.mediaSelectionGeneration == mediaSelectionGeneration,
+                  self.player.currentItem === item else { return }
+            await self.applyPreferredLanguages(
+                to: asset,
+                primarySubtitleLanguage: self.primarySubtitleLanguage,
+                secondarySubtitleLanguage: self.secondarySubtitleLanguage,
+                audioLanguage: self.audioLanguage,
+                preferredSubtitleDisplayName: preferredSubtitleDisplayName,
+                preferredSubtitleSelectionID: preferredSubtitleSelectionID
+            )
         }
     }
 
@@ -1224,6 +1387,11 @@ final class PlayerSession: ObservableObject {
     }
 
     private func refreshPlaybackState() {
+        if isSourceSwitching {
+            isBuffering = true
+            publishNowPlayingInfo()
+            return
+        }
         switch player.timeControlStatus {
         case .playing:
             playbackWasRequested = true
@@ -1579,6 +1747,9 @@ final class PlayerSession: ObservableObject {
         } else {
             canAdjustSubtitleTiming = false
         }
+        if let item = player.currentItem, item.asset === asset {
+            refreshSubtitleTimingAvailability(for: item)
+        }
         if let audioGroup {
             let audio = preferredOption(in: audioGroup.options, languageCodes: [audioLanguage, "en"])
             if let audio { player.currentItem?.select(audio, in: audioGroup) }
@@ -1586,7 +1757,7 @@ final class PlayerSession: ObservableObject {
     }
 
     private func recordSubtitleVisibilityChange(for item: AVPlayerItem) {
-        guard !isApplyingPreferredLanguages else { return }
+        guard !isApplyingPreferredLanguages, !isStabilizingMediaSelection else { return }
         Task { [weak self, weak item] in
             guard let self, let item,
                   let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
@@ -1629,6 +1800,41 @@ final class PlayerSession: ObservableObject {
         return await subtitleSelectionID(option)
     }
 
+    private func logSubtitleDiagnostics(at playerTime: Double) async {
+        guard let item = player.currentItem,
+              let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+              player.currentItem === item else {
+            SubtitleDiagnostics.logger.notice("SUBSYNC player: no legible media-selection group")
+            return
+        }
+        let selected = item.currentMediaSelection.selectedMediaOption(in: group)
+        SubtitleDiagnostics.logger.notice(
+            "SUBSYNC player: time=\(playerTime, privacy: .public) optionCount=\(group.options.count, privacy: .public)"
+        )
+        for (index, option) in group.options.enumerated() {
+            let isSelected = selected.map { option == $0 } ?? false
+            let identity = await subtitleSelectionID(option)
+            let title = await subtitleTitle(option) ?? "none"
+            let languageTag = option.extendedLanguageTag ?? "none"
+            let rendition = subtitleRenditionsBySelectionID[identity]
+                ?? subtitleRenditionsByDisplayName[identity]
+            let sourceTime = playerTime - (rendition?.timingOffset ?? 0)
+            let cue = rendition?.cues.first {
+                $0.startTime <= sourceTime && sourceTime < $0.endTime
+            }
+            SubtitleDiagnostics.logger.notice(
+                "SUBSYNC option[\(index, privacy: .public)]: selected=\(isSelected, privacy: .public) identity=\(identity, privacy: .public) tag=\(languageTag, privacy: .public) display=\(option.displayName, privacy: .public) title=\(title, privacy: .public) provider=\(rendition?.subtitle.providerID ?? "unmapped", privacy: .public) label=\(rendition?.subtitle.label ?? "unmapped", privacy: .public) offset=\(rendition?.timingOffset ?? -999, privacy: .public) cueStart=\(cue?.startTime ?? -1, privacy: .public) cueEnd=\(cue?.endTime ?? -1, privacy: .public)"
+            )
+        }
+    }
+
+    private func subtitleTitle(_ option: AVMediaSelectionOption) async -> String? {
+        for item in option.commonMetadata where item.commonKey == .commonKeyTitle {
+            if let title = try? await item.load(.stringValue), !title.isEmpty { return title }
+        }
+        return nil
+    }
+
     private func selectedSubtitleSelectionID() async -> String? {
         guard let item = player.currentItem,
               let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
@@ -1644,22 +1850,77 @@ final class PlayerSession: ObservableObject {
                   self.player.currentItem === item else { return }
             let selected = item.currentMediaSelection.selectedMediaOption(in: group)
             if let selected {
-                self.canAdjustSubtitleTiming = await self.isInjectedSubtitleOption(selected)
+                let identity = await self.subtitleSelectionID(selected)
+                let isInjected = await self.isInjectedSubtitleOption(selected)
+                self.canAdjustSubtitleTiming = isInjected
+                if isInjected, let rendition = self.subtitleRenditionsBySelectionID[identity]
+                    ?? self.subtitleRenditionsByDisplayName[identity] {
+                    self.activeSubtitleRendition = rendition
+                    self.installSubtitleLegibleOutput(on: item)
+                    self.updateActiveSubtitle(at: self.player.currentTime().seconds)
+                } else {
+                    self.activeSubtitleRendition = nil
+                    self.activeSubtitleText = nil
+                    self.removeSubtitleLegibleOutput()
+                }
             } else {
                 self.canAdjustSubtitleTiming = false
+                self.activeSubtitleRendition = nil
+                self.activeSubtitleText = nil
+                self.removeSubtitleLegibleOutput()
             }
         }
     }
 
-    private func subtitleSelectionID(_ option: AVMediaSelectionOption) async -> String {
-        for item in option.commonMetadata where item.commonKey == .commonKeyTitle {
-            if let title = try? await item.load(.stringValue), !title.isEmpty { return title }
+    private func installSubtitleLegibleOutput(on item: AVPlayerItem) {
+        guard subtitleOutputItem !== item else { return }
+        removeSubtitleLegibleOutput()
+        let output = AVPlayerItemLegibleOutput()
+        output.suppressesPlayerRendering = true
+        item.add(output)
+        subtitleOutputItem = item
+        subtitleLegibleOutput = output
+    }
+
+    private func removeSubtitleLegibleOutput() {
+        if let subtitleOutputItem, let subtitleLegibleOutput {
+            subtitleOutputItem.remove(subtitleLegibleOutput)
         }
+        subtitleOutputItem = nil
+        subtitleLegibleOutput = nil
+    }
+
+    private func updateActiveSubtitle(at playerTime: Double) {
+        guard playerTime.isFinite, let rendition = activeSubtitleRendition else {
+            activeSubtitleText = nil
+            return
+        }
+        let sourceTime = playerTime - rendition.timingOffset - appliedSubtitleTimingOffset
+        activeSubtitleText = rendition.cues.first {
+            $0.startTime <= sourceTime && sourceTime < $0.endTime
+        }.map {
+            SubtitleDirectionFormatter.displayText(
+                $0.text,
+                languageCode: rendition.subtitle.languageCode
+            )
+        }
+    }
+
+    private func subtitleSelectionID(_ option: AVMediaSelectionOption) async -> String {
+        if let languageTag = option.extendedLanguageTag?.lowercased(),
+           injectedSubtitleLanguageTags.contains(languageTag) {
+            return languageTag
+        }
+        if let title = await subtitleTitle(option) { return title }
         return option.displayName
     }
 
     private func isInjectedSubtitleOption(_ option: AVMediaSelectionOption) async -> Bool {
-        injectedSubtitleNames.contains(await subtitleSelectionID(option))
+        if let languageTag = option.extendedLanguageTag?.lowercased(),
+           injectedSubtitleLanguageTags.contains(languageTag) {
+            return true
+        }
+        return injectedSubtitleNames.contains(await subtitleSelectionID(option))
     }
 
     private func preferredOption(
@@ -1897,9 +2158,13 @@ final class PlayerSession: ObservableObject {
     private func removeInjectedSubtitleAsset() {
         subtitleServer.clear()
         injectedSubtitleNames = []
+        injectedSubtitleLanguageTags = []
         subtitleRenditions = []
         subtitleRenditionsByDisplayName = [:]
         subtitleRenditionsBySelectionID = [:]
+        activeSubtitleRendition = nil
+        activeSubtitleText = nil
+        removeSubtitleLegibleOutput()
         subtitleStudioTracks = []
         subtitlePlaybackSource = nil
         canAdjustSubtitleTiming = false
@@ -2113,6 +2378,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
     let streams: [PlayableStream]
     let selectedSourceID: String?
     let automaticSource: Bool
+    let isSearchingForSources: Bool
     let onSourceChanged: (String?, StreamQuality?) -> Void
     let subtitleTimingOffset: Double
     let canAdjustSubtitleTiming: Bool
@@ -2146,7 +2412,10 @@ struct NativePlayerController: UIViewControllerRepresentable {
         controller.showsPlaybackControls = true
         controller.allowsPictureInPicturePlayback = true
         controller.canStartPictureInPictureAutomaticallyFromInline = true
-        controller.entersFullScreenWhenPlaybackBegins = true
+        // PlayerScreen is already presented as a full-screen cover. Letting
+        // AVKit present another full-screen layer causes a second close step
+        // after replacing an item during a source switch.
+        controller.entersFullScreenWhenPlaybackBegins = false
         controller.onLayout = { [weak coordinator = context.coordinator] controller in
             coordinator?.playerViewDidLayout(controller)
         }
@@ -2162,7 +2431,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
             selectedQuality: selectedQuality
         )
         context.coordinator.updateSources(streams, selectedID: selectedSourceID,
-            automatic: automaticSource, onChanged: onSourceChanged)
+            automatic: automaticSource, isSearching: isSearchingForSources, onChanged: onSourceChanged)
         context.coordinator.updateSubtitleTiming(
             offset: subtitleTimingOffset,
             isAvailable: canAdjustSubtitleTiming
@@ -2186,6 +2455,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
         private var streams: [PlayableStream] = []
         private var selectedSourceID: String?
         private var automaticSource = true
+        private var isSearchingForSources = false
         private var sourceMenuSignature = ""
         private var onSourceChanged: ((String?, StreamQuality?) -> Void)?
         private var availableQualities: [StreamQuality]
@@ -2239,14 +2509,33 @@ struct NativePlayerController: UIViewControllerRepresentable {
             bufferingIndicator.color = .white
             bufferingIndicator.hidesWhenStopped = true
             bufferingIndicator.accessibilityLabel = "Buffering video"
-            overlay.addSubview(bufferingIndicator)
             configurePlaybackErrorView()
-            overlay.addSubview(playbackErrorView)
             settingsButton.translatesAutoresizingMaskIntoConstraints = false
             settingsButton.showsMenuAsPrimaryAction = true
             settingsButton.accessibilityLabel = "Playback settings"
-            overlay.addSubview(settingsButton)
             configureSubtitleTimingControl()
+            attachControls(to: overlay)
+            let tapGesture = UITapGestureRecognizer(target: self, action: #selector(playerTapped(_:)))
+            tapGesture.cancelsTouchesInView = false
+            tapGesture.delegate = self
+            controller.view.addGestureRecognizer(tapGesture)
+            let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(playerPinched(_:)))
+            pinchGesture.cancelsTouchesInView = false
+            pinchGesture.delegate = self
+            controller.view.addGestureRecognizer(pinchGesture)
+            updateQualities(availableQualities, selectedQuality: selectedQuality)
+            showSettingsButton()
+        }
+
+        private func attachControls(to overlay: UIView) {
+            guard settingsButton.superview !== overlay else { return }
+            bufferingIndicator.removeFromSuperview()
+            playbackErrorView.removeFromSuperview()
+            settingsButton.removeFromSuperview()
+            subtitleTimingControl.removeFromSuperview()
+            overlay.addSubview(bufferingIndicator)
+            overlay.addSubview(playbackErrorView)
+            overlay.addSubview(settingsButton)
             overlay.addSubview(subtitleTimingControl)
             NSLayoutConstraint.activate([
                 bufferingIndicator.centerXAnchor.constraint(equalTo: overlay.centerXAnchor),
@@ -2263,16 +2552,6 @@ struct NativePlayerController: UIViewControllerRepresentable {
                 subtitleTimingControl.widthAnchor.constraint(equalToConstant: 156),
                 subtitleTimingControl.heightAnchor.constraint(equalToConstant: 44)
             ])
-            let tapGesture = UITapGestureRecognizer(target: self, action: #selector(playerTapped(_:)))
-            tapGesture.cancelsTouchesInView = false
-            tapGesture.delegate = self
-            controller.view.addGestureRecognizer(tapGesture)
-            let pinchGesture = UIPinchGestureRecognizer(target: self, action: #selector(playerPinched(_:)))
-            pinchGesture.cancelsTouchesInView = false
-            pinchGesture.delegate = self
-            controller.view.addGestureRecognizer(pinchGesture)
-            updateQualities(availableQualities, selectedQuality: selectedQuality)
-            showSettingsButton()
         }
 
         func updateZoomPreference(_ isZoomedToFill: Bool, in controller: AVPlayerViewController) {
@@ -2282,6 +2561,9 @@ struct NativePlayerController: UIViewControllerRepresentable {
         }
 
         func playerViewDidLayout(_ controller: AVPlayerViewController) {
+            if let overlay = controller.contentOverlayView {
+                attachControls(to: overlay)
+            }
             let isLandscape = controller.view.bounds.width > controller.view.bounds.height
             guard lastIsLandscape != isLandscape else { return }
             lastIsLandscape = isLandscape
@@ -2485,14 +2767,15 @@ struct NativePlayerController: UIViewControllerRepresentable {
             if discoveredQualities { showSettingsButton() }
         }
 
-        func updateSources(_ streams: [PlayableStream], selectedID: String?, automatic: Bool,
+        func updateSources(_ streams: [PlayableStream], selectedID: String?, automatic: Bool, isSearching: Bool,
                            onChanged: @escaping (String?, StreamQuality?) -> Void) {
             onSourceChanged = onChanged
             self.streams = streams
             selectedSourceID = selectedID
             automaticSource = automatic
+            isSearchingForSources = isSearching
             let signature = streams.map { $0.id + $0.label + $0.qualities.map(\.title).joined() }.joined()
-                + (selectedID ?? "") + String(automatic)
+                + (selectedID ?? "") + String(automatic) + String(isSearching)
             guard signature != sourceMenuSignature else { return }
             sourceMenuSignature = signature
             rebuildSettingsMenu()
@@ -2543,6 +2826,9 @@ struct NativePlayerController: UIViewControllerRepresentable {
                         sources.append(UIMenu(title: title, subtitle: stream.label, children: actions))
                     }
                 }
+                if isSearchingForSources {
+                    sources.append(UIAction(title: "Searching for more sources…", image: UIImage(systemName: "magnifyingglass"), attributes: [.disabled]) { _ in })
+                }
                 sections.append(UIMenu(title: "Source & Quality", image: UIImage(systemName: "video"), children: sources))
             }
 
@@ -2581,7 +2867,8 @@ struct NativePlayerController: UIViewControllerRepresentable {
         }
 
         private func showSettingsButton() {
-            guard !availableQualities.isEmpty
+            guard !streams.isEmpty
+                    || !availableQualities.isEmpty
                     || subtitleTimingAvailable else { return }
             hideTask?.cancel()
             UIView.animate(withDuration: 0.2) { [settingsButton] in

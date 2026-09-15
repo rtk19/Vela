@@ -19,9 +19,12 @@ struct PlaybackDiscoveryTests {
     func ranking() async throws {
         let english = try await Self.prepare(Self.candidate("english"))
         let japanese = try await Self.prepare(Self.candidate("japanese", language: "ja"))
+        let hebrew = try await Self.prepare(Self.candidate("hebrew", language: "he"))
         let embedded = try await Self.prepare(Self.candidate("embedded", kind: .embeddedEnglish))
         #expect(StreamSelectionPolicy().best(in: [embedded, japanese, english])?.id == "english")
         #expect(StreamSelectionPolicy(audioLanguage: "ja").best(in: [english, japanese])?.id == "japanese")
+        #expect(StreamSelectionPolicy(audioLanguage: "he", backupAudioLanguage: "ja").best(in: [english, japanese, hebrew])?.id == "hebrew")
+        #expect(StreamSelectionPolicy(audioLanguage: "he", backupAudioLanguage: "ja").best(in: [english, japanese])?.id == "japanese")
         #expect(StreamSelectionPolicy(preference: japanese.candidate.preference).best(in: [english, japanese])?.id == "japanese")
         #expect(StreamSelectionPolicy(preference: Self.candidate("missing").preference).best(in: [embedded, english])?.id == "english")
         #expect(StreamSelectionPolicy().best(in: [embedded])?.id == "embedded")
@@ -41,8 +44,11 @@ struct PlaybackDiscoveryTests {
 
     @MainActor @Test("Late sources are appended without changing the delivered initial selection")
     func lateSources() async throws {
-        let discovery = PlaybackDiscovery(settleDelay: .milliseconds(10), deadline: .seconds(2), prepare: { try await Self.prepare($0) })
+        let discovery = PlaybackDiscovery(settleDelay: .milliseconds(10), initialDeadline: .milliseconds(100),
+            backgroundDeadline: .seconds(2), prepare: { try await Self.prepare($0) })
         defer { discovery.cancel() }
+        var updates: [[String]] = []
+        discovery.onUpdate = { updates.append($0.map(\.id)) }
         let first = try await discovery.start(context: .init(request: Self.request), providers: [
             DelayedProvider(id: "early", delay: .milliseconds(1)),
             DelayedProvider(id: "late", delay: .milliseconds(90))
@@ -50,7 +56,9 @@ struct PlaybackDiscoveryTests {
         #expect(first.id == "early")
         try await Task.sleep(for: .milliseconds(150))
         #expect(discovery.streams.map(\.id) == ["early", "late"])
+        #expect(updates.contains(["early", "late"]))
         #expect(!discovery.isSearching)
+        #expect(first.id == "early")
     }
 
     @MainActor @Test("Failed providers do not suppress a usable source")
@@ -63,24 +71,85 @@ struct PlaybackDiscoveryTests {
         discovery.cancel()
     }
 
-    @MainActor @Test("The overall deadline ends a slow lookup")
-    func deadline() async {
-        let discovery = PlaybackDiscovery(deadline: .milliseconds(20), prepare: { try await Self.prepare($0) })
+    @MainActor @Test("The initial deadline fails playback but leaves background discovery running")
+    func initialDeadline() async {
+        let discovery = PlaybackDiscovery(initialDeadline: .milliseconds(20), backgroundDeadline: .milliseconds(200),
+            prepare: { try await Self.prepare($0) })
         do {
-            _ = try await discovery.start(context: .init(request: Self.request), providers: [DelayedProvider(id: "slow", delay: .seconds(10))], policy: .init())
+            _ = try await discovery.start(context: .init(request: Self.request),
+                providers: [DelayedProvider(id: "slow", delay: .milliseconds(80))], policy: .init())
             Issue.record("Expected no stream")
-        } catch { #expect(!discovery.isSearching) }
+        } catch { #expect(discovery.isSearching) }
+        try? await Task.sleep(for: .milliseconds(100))
+        #expect(discovery.streams.map(\.id) == ["slow"])
+        #expect(!discovery.isSearching)
         discovery.cancel()
     }
 
-    @MainActor @Test("Cancellation rejects stale results")
+    @MainActor @Test("A provider may finish after the former overall deadline")
+    func extendedBackgroundDeadline() async throws {
+        let discovery = PlaybackDiscovery(settleDelay: .milliseconds(1), initialDeadline: .milliseconds(20),
+            backgroundDeadline: .milliseconds(150), prepare: { try await Self.prepare($0) })
+        let task = Task { try await discovery.start(context: .init(request: Self.request), providers: [
+            DelayedProvider(id: "late", delay: .milliseconds(60))
+        ], policy: .init()) }
+        do { _ = try await task.value; Issue.record("Expected the initial lookup to time out") } catch { }
+        try await Task.sleep(for: .milliseconds(70))
+        #expect(discovery.streams.map(\.id) == ["late"])
+        discovery.cancel()
+    }
+
+    @MainActor @Test("Cancellation stops every outstanding provider and timer")
     func cancellation() async throws {
-        let discovery = PlaybackDiscovery(prepare: { try await Self.prepare($0) })
-        let task = Task { try await discovery.start(context: .init(request: Self.request), providers: [DelayedProvider(id: "slow", delay: .seconds(10))], policy: .init()) }
+        let probe = CancellationProbe()
+        let discovery = PlaybackDiscovery(initialDeadline: .seconds(5), backgroundDeadline: .seconds(10),
+            prepare: { try await Self.prepare($0) })
+        let task = Task { try await discovery.start(context: .init(request: Self.request), providers: [
+            ObservedProvider(id: "one", probe: probe), ObservedProvider(id: "two", probe: probe)
+        ], policy: .init()) }
         try await Task.sleep(for: .milliseconds(10))
         task.cancel()
         do { _ = try await task.value; Issue.record("Expected cancellation") } catch { #expect(error is CancellationError) }
+        try await Task.sleep(for: .milliseconds(20))
+        #expect(await probe.cancelled == 2)
         #expect(discovery.streams.isEmpty)
+        #expect(!discovery.isSearching)
+    }
+
+    @MainActor @Test("Starting a new lookup invalidates late results from the previous generation")
+    func newLookupRejectsStaleResults() async throws {
+        let discovery = PlaybackDiscovery(settleDelay: .milliseconds(1), initialDeadline: .milliseconds(100),
+            backgroundDeadline: .seconds(1), prepare: { try await Self.prepare($0) })
+        let old = Task { try await discovery.start(context: .init(request: Self.request), providers: [
+            DelayedProvider(id: "old", delay: .milliseconds(80), ignoresCancellation: true)
+        ], policy: .init()) }
+        try await Task.sleep(for: .milliseconds(5))
+        let current = try await discovery.start(context: .init(request: Self.request), providers: [
+            DelayedProvider(id: "new")
+        ], policy: .init())
+        do { _ = try await old.value; Issue.record("Expected old lookup cancellation") } catch { }
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(current.id == "new")
+        #expect(discovery.streams.map(\.id) == ["new"])
+        discovery.cancel()
+    }
+
+    @MainActor @Test("Background timeout ends searching and cancels a stuck provider")
+    func backgroundCompletion() async throws {
+        let probe = CancellationProbe()
+        let discovery = PlaybackDiscovery(settleDelay: .milliseconds(1), initialDeadline: .milliseconds(20),
+            backgroundDeadline: .milliseconds(50), prepare: { try await Self.prepare($0) })
+        var searchStates: [Bool] = []
+        discovery.onSearchingChanged = { searchStates.append($0) }
+        do {
+            _ = try await discovery.start(context: .init(request: Self.request),
+                providers: [ObservedProvider(id: "stuck", probe: probe)], policy: .init())
+            Issue.record("Expected no stream")
+        } catch { }
+        try await Task.sleep(for: .milliseconds(60))
+        #expect(!discovery.isSearching)
+        #expect(searchStates == [true, false])
+        #expect(await probe.cancelled == 1)
     }
 
     @MainActor @Test("All missing sources produce a single failure")
@@ -95,10 +164,30 @@ private struct DelayedProvider: PlaybackProvider {
     let id: String
     var delay: Duration = .zero
     var fails = false
+    var ignoresCancellation = false
     func candidates(for context: PlaybackLookupContext) async throws -> [PlaybackCandidate] {
-        try await Task.sleep(for: delay)
+        if ignoresCancellation { try? await Task.sleep(for: delay) }
+        else { try await Task.sleep(for: delay) }
         if fails { throw AppError.noStream }
         return [PlaybackDiscoveryTests.candidate(id)]
+    }
+}
+
+private actor CancellationProbe {
+    private(set) var cancelled = 0
+    func recordCancellation() { cancelled += 1 }
+}
+
+private struct ObservedProvider: PlaybackProvider {
+    let id: String
+    let probe: CancellationProbe
+    func candidates(for context: PlaybackLookupContext) async throws -> [PlaybackCandidate] {
+        try await withTaskCancellationHandler {
+            try await Task.sleep(for: .seconds(60))
+            return []
+        } onCancel: {
+            Task { await probe.recordCancellation() }
+        }
     }
 }
 
@@ -190,6 +279,40 @@ struct AnimePlaybackTests {
 
 @Suite("Anime provider response fixtures")
 struct AnimeProviderFixtureTests {
+    @Test("AnimeIL maps IMDb movie and episode routes to native Hebrew sources")
+    func animeIL() async throws {
+        let client = AnimeILFixtureClient()
+        let provider = AnimeILPlaybackProvider(client: client, baseURL: URL(string: "https://animeil.example")!)
+
+        let movie = MediaItem(id: "movie", providerID: "tmdb", kind: .movie, title: "Your Name.",
+            imdbID: "tt5311514", tmdbID: 372058, genres: [.init(id: "16", name: "Animation")])
+        let movieCandidate = try #require(try await provider.candidates(for: .init(request: .init(media: movie, episode: nil))).first)
+        #expect(movieCandidate.preference.providerID == "animeil")
+        #expect(movieCandidate.preference.audioLanguage == "he")
+        #expect(movieCandidate.providerName == "AnimeIL")
+        #expect(try await movieCandidate.resolve().url.absoluteString == "https://video.example/movie.m3u8")
+
+        let episode = MediaEpisode(id: "episode", providerID: "tmdb", showID: "series",
+            seasonNumber: 2, number: 3, title: nil, overview: nil, posterURL: nil)
+        let series = MediaItem(id: "series", providerID: "tmdb", kind: .series, title: "Example Anime",
+            imdbID: "tt1234567", genres: [.init(id: "16", name: "Animation")])
+        let seriesCandidate = try #require(try await provider.candidates(for: .init(request: .init(media: series, episode: episode))).first)
+        #expect(try await seriesCandidate.resolve().url.absoluteString == "https://video.example/episode.m3u8")
+        #expect(client.requestedPaths == ["/stream/movie/tt5311514.json", "/stream/series/tt1234567:2:3.json"])
+    }
+
+    @Test("AnimeIL stays absent when a title has no verified IMDb-backed stream")
+    func animeILUnavailable() async throws {
+        let provider = AnimeILPlaybackProvider(client: AnimeILFixtureClient(empty: true), baseURL: URL(string: "https://animeil.example")!)
+        let missingID = MediaItem(id: "1", providerID: "tmdb", kind: .movie, title: "Anime",
+            genres: [.init(id: "16", name: "Animation")])
+        #expect(try await provider.candidates(for: .init(request: .init(media: missingID, episode: nil))).isEmpty)
+
+        let withID = MediaItem(id: "2", providerID: "tmdb", kind: .movie, title: "Anime", imdbID: "tt1234567",
+            genres: [.init(id: "16", name: "Animation")])
+        #expect(try await provider.candidates(for: .init(request: .init(media: withID, episode: nil))).isEmpty)
+    }
+
     @Test("Anikoto resolves title, episode, dub server and playable source")
     func anikoto() async throws {
         let client = AnimeFixtureClient(site: .anikoto)
@@ -230,6 +353,25 @@ struct AnimeProviderFixtureTests {
     func changedPage() async throws {
         let provider = AnimePlaybackProvider(site: .hiAnime, client: AnimeFixtureClient(site: .hiAnime, empty: true))
         #expect(try await provider.candidates(for: AnimePlaybackTests().context()).isEmpty)
+    }
+}
+
+private final class AnimeILFixtureClient: HTTPClientProtocol, @unchecked Sendable {
+    private let lock = NSLock()
+    private var paths: [String] = []
+    let empty: Bool
+    var requestedPaths: [String] { lock.withLock { paths } }
+
+    init(empty: Bool = false) { self.empty = empty }
+
+    func data(for request: URLRequest) async throws -> HTTPResponse {
+        let url = try #require(request.url)
+        lock.withLock { paths.append(url.path) }
+        let streamURL = url.path.contains("/series/") ? "https://video.example/episode.m3u8" : "https://video.example/movie.m3u8"
+        let body = empty ? #"{"streams":[]}"# : #"{"streams":[{"name":"AnimeIL-TV","url":"\#(streamURL)","behaviorHints":{"notWebReady":true}}]}"#
+        return HTTPResponse(data: Data(body.utf8), response: HTTPURLResponse(
+            url: url, statusCode: 200, httpVersion: nil, headerFields: nil
+        )!)
     }
 }
 

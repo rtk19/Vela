@@ -359,6 +359,43 @@ struct HTMLPayloadParserTests {
         #expect(episodeURL?.path == "/subtitles/series/tt0944947:2:3.json")
     }
 
+    @Test("Builds SubDL routes, keeps API keys out of URLs, and maps unpacked files")
+    func subDLRoutesAndResponse() async throws {
+        let json = #"{"status":true,"subtitles":[{"release_name":"Example.S02E03.1080p","lang":"English","language":"EN","hi":false,"unpack_files":[{"file_n_id":"file-one","name":"Example.srt","release_name":"Example.S02E03.1080p","season":2,"episode":3,"language":"EN","hi":false,"format":"srt","url":"/subtitle/title/file-one?api_key=legacy"},{"file_n_id":"wrong-episode","name":"Wrong.srt","season":2,"episode":4,"language":"EN","url":"/subtitle/title/wrong?api_key=legacy"}]}]}"#
+        let client = RequestRecordingHTTPClient(body: Data(json.utf8))
+        let baseURL = try #require(URL(string: "https://api.subdl.example/"))
+        let provider = SubDLSubtitleProvider(
+            client: client,
+            baseURL: baseURL,
+            apiKey: "test-key",
+            preferredLanguageCodes: { ["en-US", "heb", "en"] }
+        )
+
+        let results = try await provider.subtitles(for: SubtitleLookupRequest(
+            kind: .series,
+            imdbID: "tt0944947",
+            seasonNumber: 2,
+            episodeNumber: 3
+        ))
+        let requests = await client.requests()
+        let request = try #require(requests.first)
+        let requestURL = try #require(request.url)
+        let components = try #require(URLComponents(url: requestURL, resolvingAgainstBaseURL: false))
+
+        #expect(components.path == "/api/v2/subtitles/search")
+        #expect(components.queryItems?.contains(URLQueryItem(name: "imdb_id", value: "tt0944947")) == true)
+        #expect(components.queryItems?.contains(URLQueryItem(name: "season", value: "2")) == true)
+        #expect(components.queryItems?.contains(URLQueryItem(name: "episode", value: "3")) == true)
+        #expect(components.queryItems?.first(where: { $0.name == "languages" })?.value == "en,he")
+        #expect(request.value(forHTTPHeaderField: "Authorization") == "Bearer test-key")
+        #expect(results.count == 1)
+        #expect(results.first?.id == "subdl:file-one")
+        #expect(results.first?.providerName == "SubDL")
+        #expect(results.first?.languageCode == "en")
+        #expect(results.first?.url.absoluteString == "https://api.subdl.example/subtitle/title/file-one")
+        #expect(results.first?.headers["Authorization"] == "Bearer test-key")
+    }
+
     @Test("Chooses the first matching third-party subtitle by provider and option name")
     func preferredThirdPartySubtitleOrder() throws {
         let baseURL = try #require(URL(string: "https://subtitles.example/"))
@@ -412,7 +449,7 @@ struct HTMLPayloadParserTests {
         let bridge = URL(string: "https://subtitles.example/")!
         let searchURL = URL(string: "https://www.ktuvit.me/Services/ContentProvider.svc/SearchPage_search")!
         let episodeURL = URL(string: "https://www.ktuvit.me/Services/GetModuleAjax.ashx?moduleName=SubtitlesList&SeriesID=correct&Season=1&Episode=6")!
-        let films = #"{"Films":[{"ID":"wrong","IMDB_Link":"https://www.imdb.com/title/tt2744420/","ImdbID":"tt2744420"},{"ID":"correct","IMDB_Link":"https://www.imdb.com/title/tt27444205/","ImdbID":"tt2744420"}]}"#
+        let films = #"{"Films":[{"ID":"wrong","EngName":"Paradise Lost","IMDB_Link":"https://www.imdb.com/title/tt2744420/","ImdbID":"tt2744420"},{"ID":"correct","EngName":"Paradise","IMDB_Link":"https://www.imdb.com/title/tt27444205/","ImdbID":"tt2744420"}]}"#
         let envelope = try JSONSerialization.data(withJSONObject: ["d": films])
         let html = #"<tr><td><div>Paradise.2025.S01E06.1080p.WEB.h264-ETHEL<br /><small>Credit</small></div></td><td><a data-subtitle-id="episode-six"></a></td></tr><tr><td>No subtitles</td></tr>"#
         let client = RoutingHTTPClient(bodies: [
@@ -426,6 +463,29 @@ struct HTMLPayloadParserTests {
         #expect(results.first?.languageCode == "he")
         #expect(results.first?.label == "Paradise.2025.S01E06.1080p.WEB.h264-ETHEL")
         #expect(results.first?.url.path == "/srt/correct/episode-six.srt")
+    }
+
+    @Test("Ktuvit recovers Paradise S2E1 when the catalog carries its truncated IMDb ID")
+    func ktuvitParadiseSeasonTwoTruncatedIMDbID() async throws {
+        let bridge = URL(string: "https://subtitles.example/")!
+        let searchURL = URL(string: "https://www.ktuvit.me/Services/ContentProvider.svc/SearchPage_search")!
+        let episodeURL = URL(string: "https://www.ktuvit.me/Services/GetModuleAjax.ashx?moduleName=SubtitlesList&SeriesID=paradise&Season=2&Episode=1")!
+        let films = #"{"Films":[{"ID":"other","EngName":"Paradise PD","IMDB_Link":"https://www.imdb.com/title/tt8235236/","ImdbID":"tt8235236"},{"ID":"paradise","EngName":"Paradise","IMDB_Link":"https://www.imdb.com/title/tt27444205/","ImdbID":"tt2744420"}]}"#
+        let envelope = try JSONSerialization.data(withJSONObject: ["d": films])
+        let html = #"<tr><td><div>Paradise.2025.S02E01.1080p.WEB.h264-ETHEL<br /><small>Credit</small></div></td><td><a data-subtitle-id="season-two-episode-one"></a></td></tr>"#
+        let client = RoutingHTTPClient(bodies: [
+            bridge.appending(path: "subtitles/series/tt2744420:2:1.json"): Data(#"{"subtitles":[]}"#.utf8),
+            searchURL: envelope,
+            episodeURL: Data(html.utf8),
+        ])
+
+        let results = try await KtuvitSubtitleProvider(client: client, baseURL: bridge).subtitles(for:
+            SubtitleLookupRequest(kind: .series, imdbID: "tt2744420", seasonNumber: 2, episodeNumber: 1, title: "Paradise"))
+
+        #expect(results.count == 1)
+        #expect(results.first?.languageCode == "he")
+        #expect(results.first?.label == "Paradise.2025.S02E01.1080p.WEB.h264-ETHEL")
+        #expect(results.first?.url.path == "/srt/paradise/season-two-episode-one.srt")
     }
 
     @Test("Resolves a series IMDb ID from its exact TMDb ID")
@@ -865,8 +925,8 @@ struct HTMLPayloadParserTests {
         #expect(rewritten.contains(#"TYPE=SUBTITLES,GROUP-ID="native-subs",NAME="Hebrew - Ktuvit - Release 1080p""#))
         #expect(rewritten.contains(#"NAME="Hebrew - Wizdom - Another Release""#))
         #expect(rewritten.components(separatedBy: "TYPE=SUBTITLES").count == 5)
-        #expect(rewritten.contains(#"NAME="Hebrew - Ktuvit - Release 1080p",LANGUAGE="he-x-bsf-1""#))
-        #expect(rewritten.contains(#"NAME="Hebrew - Wizdom - Another Release",LANGUAGE="he-x-bsf-2""#))
+        #expect(rewritten.contains(#"NAME="Hebrew - Ktuvit - Release 1080p",LANGUAGE="he-x-ktuvit-1""#))
+        #expect(rewritten.contains(#"NAME="Hebrew - Wizdom - Another Release",LANGUAGE="he-x-wizdom-1""#))
         #expect(rewritten.contains(#"SUBTITLES="native-subs""#))
         #expect(rewritten.contains("https://media.example/catalog/subs/en.m3u8"))
         #expect(rewritten.contains("https://media.example/catalog/subs/he.m3u8"))
@@ -896,7 +956,9 @@ struct HTMLPayloadParserTests {
             webVTTURL: URL(fileURLWithPath: "/tmp/external-subtitles.vtt")
         )
 
-        #expect(webVTT.hasPrefix("WEBVTT\n"))
+        #expect(webVTT.hasPrefix(
+            "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0\n\n"
+        ))
         #expect(webVTT.contains("00:00:01.250 --> 00:00:03.500"))
         #expect(webVTT.contains("\u{200F}שלום עולם."))
         #expect(webVTT.contains("\u{200F}- מבוקש לחקירה -"))
@@ -1018,13 +1080,40 @@ struct HTMLPayloadParserTests {
         #expect(original.contains("00:00:01.000 --> 00:00:02.000"))
         #expect(synced.contains("00:00:01.300 --> 00:00:02.300"))
         #expect(asset.orderedDisplayNames.last == "Saved Sync +0.3s")
-        #expect(asset.orderedLanguageTags == ["en-x-bsf-1", "en-x-bsf-2"])
+        #expect(asset.orderedLanguageTags == ["en-x-ktuvit-1", "en-x-ktuvit-2"])
         #expect(asset.languageTags.count == 2)
-        #expect(master.contains(#"NAME="Saved Sync +0.3s",LANGUAGE="en-x-bsf-2""#))
+        #expect(master.contains(#"NAME="Saved Sync +0.3s",LANGUAGE="en-x-ktuvit-2""#))
+    }
+
+    @Test("Subtitle Studio resolves AVPlayer private-use tags to the exact rendition")
+    func resolvesSubtitleSelectionByLanguageTag() throws {
+        let first = SubtitleSource(
+            id: "ktuvit-first", providerID: "ktuvit", providerName: "Ktuvit",
+            label: "First release", languageCode: "he",
+            url: try #require(URL(string: "https://example.com/first.srt"))
+        )
+        let second = SubtitleSource(
+            id: "ktuvit-second", providerID: "ktuvit", providerName: "Ktuvit",
+            label: "Second release", languageCode: "he",
+            url: try #require(URL(string: "https://example.com/second.srt"))
+        )
+        let renditions = [
+            HLSSubtitleRendition(subtitle: first, cues: []),
+            HLSSubtitleRendition(subtitle: second, cues: []),
+        ]
+
+        let lookup = SubtitleSelectionLookup.make(
+            displayNames: ["Hebrew - Ktuvit - First release", "Hebrew - Ktuvit - Second release"],
+            languageTags: ["he-x-ktuvit-1", "he-x-ktuvit-2"],
+            renditions: renditions
+        )
+
+        #expect(lookup["he-x-ktuvit-1"]?.subtitle.id == first.id)
+        #expect(lookup["he-x-ktuvit-2"]?.subtitle.id == second.id)
     }
 
     @MainActor
-    @Test("AVPlayer uses private-use labels only for third-party subtitle versions", arguments: ["ktuvit", "wizdom", "native-hls", "stream"])
+    @Test("AVPlayer uses private-use labels only for third-party subtitle versions", arguments: ["subdl", "ktuvit", "wizdom", "native-hls", "stream"])
     func nativeSubtitleSelectionNames(providerID: String) async throws {
         let subtitle = SubtitleSource(id: "he", providerID: providerID, providerName: providerID,
                                       label: "Release", languageCode: "he", url: URL(string: "https://example.com/sub.srt")!)
@@ -1054,8 +1143,8 @@ struct HTMLPayloadParserTests {
         #expect(group.options.count == 2)
         var titles: [String] = []
         for option in group.options {
-            let isThirdParty = providerID == "ktuvit" || providerID == "wizdom"
-            #expect(option.extendedLanguageTag?.contains("-x-bsf-") == isThirdParty)
+            let isThirdParty = providerID != "native-hls" && providerID != "stream"
+            #expect(option.extendedLanguageTag?.contains("-x-\(providerID)-") == isThirdParty)
             if isThirdParty {
                 #expect(option.displayName.localizedCaseInsensitiveContains("private"))
             } else {
@@ -1195,6 +1284,31 @@ private actor CapturingHTTPClient: HTTPClientProtocol {
             headerFields: ["Content-Type": "application/json"]
         ))
         return HTTPResponse(data: body, response: response)
+    }
+}
+
+private actor RequestRecordingHTTPClient: HTTPClientProtocol {
+    let body: Data
+    private var recordedRequests: [URLRequest] = []
+
+    init(body: Data) {
+        self.body = body
+    }
+
+    func data(for request: URLRequest) async throws -> HTTPResponse {
+        recordedRequests.append(request)
+        let url = try #require(request.url)
+        let response = try #require(HTTPURLResponse(
+            url: url,
+            statusCode: 200,
+            httpVersion: "HTTP/2",
+            headerFields: ["Content-Type": "application/json"]
+        ))
+        return HTTPResponse(data: body, response: response)
+    }
+
+    func requests() -> [URLRequest] {
+        recordedRequests
     }
 }
 

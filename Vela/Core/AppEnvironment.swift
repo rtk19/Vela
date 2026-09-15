@@ -150,8 +150,10 @@ final class AppEnvironment: ObservableObject {
         let provider = StreamingCommunityProvider(domain: savedDomain)
         registry = ProviderRegistry(providers: [provider], selectedProviderID: provider.id)
         subtitleRegistry = SubtitleProviderRegistry(providers: [
+            SubDLSubtitleProvider(),
             WizdomSubtitleProvider(),
             KtuvitSubtitleProvider(),
+            StremioSubtitleProvider(),
         ])
         library = LibraryStore()
     }

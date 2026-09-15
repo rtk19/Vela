@@ -263,6 +263,207 @@ actor SubtitleProviderRegistry {
     }
 }
 
+struct SubDLSubtitleProvider: SubtitleProvider {
+    let id = "subdl"
+    let displayName = "SubDL"
+
+    private let client: any HTTPClientProtocol
+    private let baseURL: URL
+    private let apiKey: String
+    private let preferredLanguageCodes: @Sendable () -> [String]
+
+    init(
+        client: any HTTPClientProtocol = HTTPClient(),
+        baseURL: URL = URL(string: "https://api.subdl.com/")!,
+        apiKey: String? = Bundle.main.object(forInfoDictionaryKey: "SubDLAPIKey") as? String,
+        preferredLanguageCodes: @escaping @Sendable () -> [String] = {
+            let defaults = UserDefaults.standard
+            return [
+                defaults.string(forKey: "player.subtitleLanguage.primary"),
+                defaults.string(forKey: "player.subtitleLanguage.secondary"),
+            ].compactMap { $0 }
+        }
+    ) {
+        self.client = client
+        self.baseURL = baseURL
+        self.apiKey = apiKey?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        self.preferredLanguageCodes = preferredLanguageCodes
+    }
+
+    func subtitles(for lookup: SubtitleLookupRequest) async throws -> [SubtitleSource] {
+        guard !apiKey.isEmpty else {
+            SubtitleDiagnostics.logger.error("SubDL lookup skipped: missing API key")
+            return []
+        }
+        if lookup.kind == .series,
+           (lookup.seasonNumber == nil || lookup.episodeNumber == nil) {
+            SubtitleDiagnostics.logger.error("SubDL lookup skipped: missing season or episode number")
+            return []
+        }
+
+        var components = URLComponents(
+            url: baseURL.appending(path: "api/v2/subtitles/search"),
+            resolvingAgainstBaseURL: false
+        )
+        var queryItems = [
+            URLQueryItem(name: "imdb_id", value: lookup.imdbID),
+            URLQueryItem(name: "type", value: lookup.kind == .movie ? "movie" : "tv"),
+            URLQueryItem(name: "unpack", value: "1"),
+            URLQueryItem(name: "subs_per_page", value: "30"),
+        ]
+        if let season = lookup.seasonNumber, let episode = lookup.episodeNumber {
+            queryItems.append(URLQueryItem(name: "season", value: String(season)))
+            queryItems.append(URLQueryItem(name: "episode", value: String(episode)))
+        }
+        let languages = Self.normalizedLanguageCodes(preferredLanguageCodes())
+        if !languages.isEmpty {
+            queryItems.append(URLQueryItem(name: "languages", value: languages.joined(separator: ",")))
+        }
+        components?.queryItems = queryItems
+        guard let url = components?.url else { throw AppError.invalidURL }
+
+        var request = authenticatedRequest(url: url)
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        let response = try await SubtitleResourceRetry.load(request: request, client: client)
+        let payload: Response
+        do {
+            payload = try JSONDecoder().decode(Response.self, from: response.data)
+        } catch {
+            throw AppError.decoding("SubDL subtitle response")
+        }
+        guard payload.status != false else {
+            SubtitleDiagnostics.logger.error("SubDL returned an unsuccessful response")
+            return []
+        }
+
+        var seenIDs = Set<String>()
+        return payload.subtitles.flatMap { subtitle in
+            subtitle.unpackFiles.compactMap { file -> SubtitleSource? in
+                guard Self.matches(file: file, lookup: lookup),
+                      let url = resolvedDownloadURL(file.url) else { return nil }
+                let stableID = "\(id):\(file.fileNID)"
+                guard seenIDs.insert(stableID).inserted else { return nil }
+                let language = Self.normalizedLanguageCode(file.language ?? subtitle.language ?? subtitle.lang)
+                let releaseName = file.releaseName ?? subtitle.releaseName
+                let baseLabel = releaseName?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let fallbackLabel = file.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                let label = (baseLabel.flatMap { $0.isEmpty ? nil : $0 } ?? fallbackLabel)
+                    + ((file.hi ?? subtitle.hi) == true ? " (SDH)" : "")
+                return SubtitleSource(
+                    id: stableID,
+                    providerID: id,
+                    providerName: displayName,
+                    label: label,
+                    languageCode: language,
+                    url: url,
+                    headers: ["Authorization": "Bearer \(apiKey)"]
+                )
+            }
+        }
+    }
+
+    private func authenticatedRequest(url: URL) -> URLRequest {
+        var request = URLRequest(url: url)
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.setValue(HTTPClient.desktopUserAgent, forHTTPHeaderField: "User-Agent")
+        return request
+    }
+
+    private func resolvedDownloadURL(_ value: String) -> URL? {
+        guard let unresolved = URL(string: value, relativeTo: baseURL)?.absoluteURL else { return nil }
+        // SubDL still returns legacy api_key query parameters. Downloads also
+        // support the Authorization header, so keep credentials out of URLs.
+        guard var components = URLComponents(url: unresolved, resolvingAgainstBaseURL: false) else {
+            return unresolved
+        }
+        components.queryItems = components.queryItems?.filter { $0.name != "api_key" }
+        return components.url
+    }
+
+    private static func matches(file: UnpackedFile, lookup: SubtitleLookupRequest) -> Bool {
+        guard lookup.kind == .series else { return true }
+        guard let season = lookup.seasonNumber, let episode = lookup.episodeNumber else { return false }
+        let fileSeason = file.season ?? season
+        let fileEpisode = file.episode ?? episode
+        return (fileSeason == 0 || fileSeason == season) && (fileEpisode == 0 || fileEpisode == episode)
+    }
+
+    private static func normalizedLanguageCodes(_ values: [String]) -> [String] {
+        var seen = Set<String>()
+        return values.compactMap { value in
+            guard let code = normalizedLanguageCode(value), !code.isEmpty,
+                  seen.insert(code).inserted else { return nil }
+            return code
+        }
+    }
+
+    private static func normalizedLanguageCode(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let base = value.lowercased()
+            .split(whereSeparator: { $0 == "-" || $0 == "_" })
+            .first.map(String.init) ?? ""
+        switch base {
+        case "heb", "iw": return "he"
+        case "eng": return "en"
+        default: return base.isEmpty ? nil : base
+        }
+    }
+
+    private struct Response: Decodable, Sendable {
+        let status: Bool?
+        let subtitles: [Subtitle]
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            status = try container.decodeIfPresent(Bool.self, forKey: .status)
+            subtitles = try container.decodeIfPresent([Subtitle].self, forKey: .subtitles) ?? []
+        }
+
+        private enum CodingKeys: String, CodingKey { case status, subtitles }
+    }
+
+    private struct Subtitle: Decodable, Sendable {
+        let releaseName: String?
+        let lang: String?
+        let language: String?
+        let hi: Bool?
+        let unpackFiles: [UnpackedFile]
+
+        enum CodingKeys: String, CodingKey {
+            case releaseName = "release_name"
+            case lang, language, hi
+            case unpackFiles = "unpack_files"
+        }
+
+        init(from decoder: any Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            releaseName = try container.decodeIfPresent(String.self, forKey: .releaseName)
+            lang = try container.decodeIfPresent(String.self, forKey: .lang)
+            language = try container.decodeIfPresent(String.self, forKey: .language)
+            hi = try container.decodeIfPresent(Bool.self, forKey: .hi)
+            unpackFiles = try container.decodeIfPresent([UnpackedFile].self, forKey: .unpackFiles) ?? []
+        }
+    }
+
+    private struct UnpackedFile: Decodable, Sendable {
+        let fileNID: String
+        let name: String
+        let releaseName: String?
+        let season: Int?
+        let episode: Int?
+        let language: String?
+        let hi: Bool?
+        let url: String
+
+        enum CodingKeys: String, CodingKey {
+            case fileNID = "file_n_id"
+            case name
+            case releaseName = "release_name"
+            case season, episode, language, hi, url
+        }
+    }
+}
+
 struct WizdomSubtitleProvider: SubtitleProvider {
     let id = "wizdom"
     let displayName = "Wizdom"
@@ -450,19 +651,25 @@ struct KtuvitSubtitleProvider: SubtitleProvider {
             let Films: [Film]
             struct Film: Decodable {
                 let ID: String
+                let EngName: String?
                 let IMDB_Link: String?
                 let ImdbID: String?
             }
         }
         let envelope = try JSONDecoder().decode(Envelope.self, from: response.data)
         let search = try JSONDecoder().decode(Search.self, from: Data(envelope.d.utf8))
-        // Ktuvit's ImdbID field can truncate eight-digit IDs. Prefer the full link,
-        // never a prefix match or title-only match against similarly named series.
+        // Ktuvit's ImdbID field can truncate eight-digit IDs. Prefer the full link.
+        // Some catalogs also expose that same truncated ID, so accept it only when
+        // Ktuvit's English title is an exact normalized match. This avoids treating
+        // a bare IMDb prefix or a similarly named series as the requested title.
+        let normalizedLookupTitle = Self.normalizedTitle(title)
         guard let film = search.Films.first(where: {
             let linkedID = $0.IMDB_Link.flatMap { link in
                 link.range(of: #"tt[0-9]+"#, options: .regularExpression).map { String(link[$0]) }
             }
-            return (linkedID ?? $0.ImdbID) == lookup.imdbID
+            if linkedID == lookup.imdbID { return true }
+            return $0.ImdbID == lookup.imdbID
+                && $0.EngName.map(Self.normalizedTitle) == normalizedLookupTitle
         }) else { return [] }
         var components = URLComponents(url: site, resolvingAgainstBaseURL: false)!
         if lookup.kind == .series {
@@ -520,6 +727,13 @@ struct KtuvitSubtitleProvider: SubtitleProvider {
         case "eng": "en"
         default: code.lowercased()
         }
+    }
+
+    private static func normalizedTitle(_ title: String) -> String {
+        title.folding(options: [.caseInsensitive, .diacriticInsensitive], locale: .current)
+            .components(separatedBy: CharacterSet.alphanumerics.inverted)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
     }
 }
 
@@ -1621,10 +1835,14 @@ enum HLSSubtitleInjector {
                 directory.appending(path: "external-subtitles-\($0).m3u8")
             }
             let displayNames = uniqueDisplayNames(for: renditions)
-            let languageTags = renditions.indices.map { index in
-                renditionLanguageTag(
-                    for: renditions[index].subtitle,
-                    index: index
+            var providerOccurrences: [String: Int] = [:]
+            let languageTags = renditions.map { rendition in
+                let providerKey = rendition.subtitle.providerID.lowercased()
+                let occurrence = providerOccurrences[providerKey, default: 0] + 1
+                providerOccurrences[providerKey] = occurrence
+                return renditionLanguageTag(
+                    for: rendition.subtitle,
+                    occurrence: occurrence
                 )
             }
             let manifestRenditions = renditions.indices.map { index in
@@ -1701,7 +1919,7 @@ enum HLSSubtitleInjector {
                     name: rendition.displayName,
                     language: rendition.languageTag ?? renditionLanguageTag(
                         for: rendition.subtitle,
-                        index: index
+                        occurrence: index + 1
                     ),
                     uri: rendition.playlistURL.absoluteString
                 )
@@ -1725,7 +1943,7 @@ enum HLSSubtitleInjector {
                     name: rendition.displayName,
                     language: rendition.languageTag ?? renditionLanguageTag(
                         for: rendition.subtitle,
-                        index: index
+                        occurrence: index + 1
                     ),
                     uri: rendition.playlistURL.absoluteString
                 )
@@ -1784,7 +2002,14 @@ enum HLSSubtitleInjector {
             \(text)
             """
         }
-        return (["WEBVTT"] + blocks).joined(separator: "\n\n") + "\n"
+        // AVPlayer's HLS item can use a non-zero MPEG transport timeline while
+        // its controls present elapsed time from zero. Studio queries cues using
+        // that absolute item time, so explicitly map WebVTT's local zero to
+        // MPEGTS zero as well. The timestamp map must be part of the WebVTT
+        // header; a blank line before it makes AVPlayer ignore it.
+        let header = "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0"
+        guard !blocks.isEmpty else { return header + "\n" }
+        return header + "\n\n" + blocks.joined(separator: "\n\n") + "\n"
     }
 
     static func displayName(for subtitle: SubtitleSource) -> String {
@@ -1806,7 +2031,7 @@ enum HLSSubtitleInjector {
 
     private static func renditionLanguageTag(
         for subtitle: SubtitleSource,
-        index: Int
+        occurrence: Int
     ) -> String {
         let suppliedBase = subtitle.languageCode?
             .lowercased()
@@ -1818,12 +2043,17 @@ enum HLSSubtitleInjector {
         switch suppliedBase {
         case "heb", "iw": base = "he"
         case "eng": base = "en"
-        default: base = suppliedBase.allSatisfy(\.isLetter) ? suppliedBase : "und"
+        default: base = suppliedBase.allSatisfy { $0.isLetter } ? suppliedBase : "und"
         }
         // Only third-party releases and their Studio versions get the visible
         // private-use distinction. Built-in tracks retain normal language labels.
         guard subtitle.providerID != "native-hls", subtitle.providerID != "stream" else { return base }
-        return "\(base)-x-bsf-\(index + 1)"
+        let provider = subtitle.providerID
+            .lowercased()
+            .filter { $0.isLetter || $0.isNumber }
+            .prefix(8)
+        let providerTag = provider.isEmpty ? "external" : String(provider)
+        return "\(base)-x-\(providerTag)-\(occurrence)"
     }
 
     private static func subtitleMediaTag(

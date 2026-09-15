@@ -24,6 +24,9 @@ struct PlayerSourceSwitchTests {
         await session.player.seek(to: CMTime(seconds: 1, preferredTimescale: 600), toleranceBefore: .zero, toleranceAfter: .zero)
         try await Task.sleep(for: .milliseconds(100))
         if playing { session.player.playImmediately(atRate: 1.5) }
+        session.beginSourceSwitch()
+        #expect(session.player.currentItem == nil)
+        #expect(session.isBuffering)
         let candidate = PlaybackCandidate(id: "replacement", preference: .init(providerID: "test", serverName: "HD", audioLanguage: "en"), providerName: "Test", subtitleKind: .selectable, resolve: { source })
         #expect(await session.switchSource(.init(candidate: candidate, source: source, qualities: []), externalSubtitles: []))
         try await waitReady(session.player)
@@ -49,6 +52,9 @@ struct PlayerSourceSwitchTests {
         try await waitReady(session.player)
         session.player.pause()
         let originalItem = session.player.currentItem
+        session.beginSourceSwitch()
+        #expect(session.player.currentItem == nil)
+        #expect(session.isBuffering)
         let bad = PlaybackSource(url: video.deletingLastPathComponent().appending(path: "missing-\(UUID()).mp4"), headers: [:], subtitles: [], preferredPeakBitRate: nil)
         let candidate = PlaybackCandidate(id: "bad", preference: .init(providerID: "test", serverName: "bad", audioLanguage: "en"), providerName: "Test", subtitleKind: .selectable, resolve: { bad })
         #expect(!(await session.switchSource(.init(candidate: candidate, source: bad, qualities: []), externalSubtitles: [])))

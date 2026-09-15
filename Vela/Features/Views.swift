@@ -3377,6 +3377,7 @@ struct SettingsView: View {
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
     @AppStorage("player.animeAudioLanguage") private var animeAudioLanguage = "en"
+    @AppStorage("player.animeBackupAudioLanguage") private var animeBackupAudioLanguage = "ja"
     @AppStorage("player.subtitlesEnabledByDefault") private var subtitlesEnabledByDefault = true
     @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
     @AppStorage("player.subtitleSync.autoSelectLatest") private var autoSelectLatestSubtitleSync = true
@@ -3434,13 +3435,21 @@ struct SettingsView: View {
                     Picker("Anime audio", selection: $animeAudioLanguage) {
                         Text("English").tag("en")
                         Text("Japanese").tag("ja")
+                        Text("Hebrew").tag("he")
+                    }
+                    .tint(environment.theme.accent)
+                    Picker("Backup anime audio", selection: $animeBackupAudioLanguage) {
+                        Text("None").tag("")
+                        Text("English").tag("en")
+                        Text("Japanese").tag("ja")
+                        Text("Hebrew").tag("he")
                     }
                     .tint(environment.theme.accent)
                     Toggle("Subtitles on by default", isOn: $subtitlesEnabledByDefault)
                     languagePicker("Default subtitles", selection: $primarySubtitleLanguage)
                     languagePicker("Backup subtitles", selection: $secondarySubtitleLanguage, allowsNone: true)
                     languagePicker("Default audio", selection: $audioLanguage)
-                    Text("Anime uses the preferred English or Japanese stream when a title has no saved source. Subtitle visibility also applies only until you choose on or off for that title.")
+                    Text("Anime uses the preferred language, then the backup language, when a title has no saved source. Subtitle visibility also applies only until you choose on or off for that title.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                     Text("For multi-audio streams, if the selected audio track is unavailable, English is used automatically.")
@@ -4381,6 +4390,7 @@ struct PlayerScreen: View {
     @AppStorage("player.subtitleLanguage.secondary") private var secondarySubtitleLanguage = ""
     @AppStorage("player.audioLanguage") private var audioLanguage = "en"
     @AppStorage("player.animeAudioLanguage") private var animeAudioLanguage = "en"
+    @AppStorage("player.animeBackupAudioLanguage") private var animeBackupAudioLanguage = "ja"
     @AppStorage("player.subtitlesEnabledByDefault") private var subtitlesEnabledByDefault = true
     @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
     @AppStorage("player.subtitleSync.autoSelectLatest") private var autoSelectLatestSubtitleSync = true
@@ -4396,7 +4406,8 @@ struct PlayerScreen: View {
     }
 
     var body: some View {
-        NativePlayerController(
+        ZStack {
+            NativePlayerController(
             player: session.player,
             isZoomedToFill: library.isPlayerZoomedToFill(for: model.request),
             isBuffering: session.isBuffering || model.isLoading,
@@ -4406,6 +4417,7 @@ struct PlayerScreen: View {
             streams: model.streams,
             selectedSourceID: model.selectedSourceID,
             automaticSource: model.rememberedSource == nil,
+            isSearchingForSources: model.isSearching,
             onSourceChanged: { id, quality in
                 guard !model.isSwitching else { return }
                 Task {
@@ -4413,10 +4425,13 @@ struct PlayerScreen: View {
                         model.rememberCurrentSource(library: library)
                         session.setQuality(quality)
                     } else {
-                        await model.selectSource(id, quality: quality, library: library) { stream, choice in
-                            await session.switchSource(stream, externalSubtitles: model.thirdPartySubtitles,
+                        saveProgress()
+                        session.beginSourceSwitch()
+                        let switched = await model.selectSource(id, quality: quality, library: library) { stream, choice in
+                            await session.switchSource(stream, externalSubtitles: model.allSubtitles,
                                 quality: choice, useQualityChoice: id != nil)
                         }
+                        if !switched { session.cancelSourceSwitch(resumePrevious: true) }
                     }
                 }
             },
@@ -4431,7 +4446,8 @@ struct PlayerScreen: View {
                     Task {
                         await model.load(environment: environment,
                             enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
-                            audioLanguage: animeAudioLanguage, qualityHeight: defaultQualityHeight)
+                            audioLanguage: animeAudioLanguage, backupAudioLanguage: animeBackupAudioLanguage,
+                            qualityHeight: defaultQualityHeight)
                     }
                 } else { session.retryPlayback() }
             },
@@ -4445,14 +4461,33 @@ struct PlayerScreen: View {
                 saveProgress(markNearEndFinished: true)
                 dismiss()
             }
-        )
+            )
+
+            VStack {
+                Spacer()
+                if let subtitle = session.activeSubtitleText {
+                    Text(subtitle)
+                        .font(.title3.weight(.semibold))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 7)
+                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
+                        .shadow(color: .black.opacity(0.8), radius: 3)
+                        .padding(.horizontal, 30)
+                        .padding(.bottom, 72)
+                        .allowsHitTesting(false)
+                }
+            }
+        }
         .background(.black)
         .ignoresSafeArea()
         .task {
             library.markPlaybackStarted(request: model.request)
             await model.load(environment: environment,
                 enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
-                audioLanguage: animeAudioLanguage, qualityHeight: defaultQualityHeight)
+                audioLanguage: animeAudioLanguage, backupAudioLanguage: animeBackupAudioLanguage,
+                qualityHeight: defaultQualityHeight)
         }
         .task(id: model.sourceRevision) {
             guard let source = model.source else { return }
@@ -4468,7 +4503,7 @@ struct PlayerScreen: View {
                 primarySubtitleLanguage: primarySubtitleLanguage,
                 secondarySubtitleLanguage: secondarySubtitleLanguage,
                 audioLanguage: audioLanguage,
-                externalSubtitles: (source.subtitles + model.thirdPartySubtitles),
+                externalSubtitles: model.allSubtitles,
                 subtitleSyncVersions: library.subtitleSyncVersions(for: model.request),
                 automaticallySelectLatestSubtitleSync: autoSelectLatestSubtitleSync,
                 subtitlesEnabled: library.subtitleVisibilityPreference(for: model.request)
@@ -4506,7 +4541,7 @@ struct PlayerScreen: View {
             session.onSourceRefreshNeeded = {
                 saveProgress()
                 return await model.recover { stream in
-                    await session.switchSource(stream, externalSubtitles: model.thirdPartySubtitles)
+                    await session.switchSource(stream, externalSubtitles: model.allSubtitles)
                 }
             }
             AppOrientationController.shared.beginPlayback(using: playerOrientation)
@@ -4589,7 +4624,8 @@ struct PlayerScreen: View {
         Task {
             await model.play(request, environment: environment,
                 enabledSubtitleProviderIDs: enabledSubtitleProviderIDs,
-                audioLanguage: animeAudioLanguage, qualityHeight: defaultQualityHeight)
+                audioLanguage: animeAudioLanguage, backupAudioLanguage: animeBackupAudioLanguage,
+                qualityHeight: defaultQualityHeight)
             finishedContentID = nil
         }
     }
@@ -4603,7 +4639,7 @@ struct PlayerScreen: View {
     }
 
     private var enabledSubtitleProviderIDs: Set<String> {
-        thirdPartySubtitlesEnabled ? ["wizdom", "ktuvit"] : []
+        thirdPartySubtitlesEnabled ? ["subdl", "wizdom", "ktuvit", "external-stream-subtitles"] : []
     }
 
     private var playerOrientation: PlayerOrientationPreference {

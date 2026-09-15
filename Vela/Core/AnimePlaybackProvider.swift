@@ -1,5 +1,87 @@
 import Foundation
 
+/// Native client for AnimeIL's public stream API. The endpoint follows the
+/// Stremio resource shape, but Vela consumes it directly as a playback source.
+struct AnimeILPlaybackProvider: PlaybackProvider {
+    let client: any HTTPClientProtocol
+    let baseURL: URL
+    let id = "animeil"
+
+    init(
+        client: any HTTPClientProtocol = HTTPClient(),
+        baseURL: URL = URL(string: "https://addon.animeil.qzz.io")!
+    ) {
+        self.client = client
+        self.baseURL = baseURL
+    }
+
+    func candidates(for context: PlaybackLookupContext) async throws -> [PlaybackCandidate] {
+        guard context.request.media.genres.contains(where: { $0.id == "16" || $0.name.lowercased() == "animation" }),
+              let imdbID = context.request.media.imdbID?.trimmingCharacters(in: .whitespacesAndNewlines),
+              imdbID.range(of: #"^tt\d{7,9}$"#, options: .regularExpression) != nil else { return [] }
+
+        let mediaType: String
+        let contentID: String
+        switch context.request.media.kind {
+        case .movie:
+            mediaType = "movie"
+            contentID = imdbID
+        case .series:
+            guard let episode = context.request.episode, episode.seasonNumber >= 0, episode.number > 0 else { return [] }
+            mediaType = "series"
+            contentID = "\(imdbID):\(episode.seasonNumber):\(episode.number)"
+        }
+
+        guard let endpoint = URL(string: "stream/\(mediaType)/\(contentID).json", relativeTo: baseURL)?.absoluteURL else {
+            throw AppError.invalidURL
+        }
+        var request = URLRequest.providerRequest(url: endpoint, referer: baseURL, acceptsJSON: true)
+        request.timeoutInterval = 12
+        request.cachePolicy = .reloadRevalidatingCacheData
+        let response = try await client.data(for: request)
+        let payload: StreamPayload
+        do { payload = try JSONDecoder().decode(StreamPayload.self, from: response.data) }
+        catch { throw AppError.decoding(error.localizedDescription) }
+
+        return payload.streams.enumerated().compactMap { index, stream in
+            guard let url = stream.url, ["https", "http"].contains(url.scheme?.lowercased() ?? "") else { return nil }
+            let serverName = stream.name?.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? "AnimeIL"
+            let headers = stream.behaviorHints?.proxyHeaders?.request ?? [:]
+            return PlaybackCandidate(
+                id: "\(id):\(index):\(url.absoluteString)",
+                preference: .init(providerID: id, serverName: serverName, audioLanguage: "he"),
+                providerName: "AnimeIL",
+                subtitleKind: .unknown,
+                resolve: {
+                    PlaybackSource(url: url, headers: headers, subtitles: [], preferredPeakBitRate: nil)
+                }
+            )
+        }
+    }
+
+    private struct StreamPayload: Decodable, Sendable {
+        let streams: [Stream]
+    }
+
+    private struct Stream: Decodable, Sendable {
+        let name: String?
+        let url: URL?
+        let behaviorHints: BehaviorHints?
+    }
+
+    private struct BehaviorHints: Decodable, Sendable {
+        let proxyHeaders: ProxyHeaders?
+    }
+
+    private struct ProxyHeaders: Decodable, Sendable {
+        let request: [String: String]?
+    }
+}
+
+private extension String {
+    var nonEmpty: String? { isEmpty ? nil : self }
+}
+
 /// Small read-only HTML tree for the provider pages; never evaluates page scripts.
 final class AnimeHTML {
     let tag: String
