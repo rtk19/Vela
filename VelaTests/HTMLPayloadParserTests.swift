@@ -1052,6 +1052,7 @@ struct HTMLPayloadParserTests {
             url: try #require(URL(string: "https://subtitles.example/subtitle.srt"))
         )
         let cue = SubtitleCue(startTime: 1, endTime: 2, text: "Subtitle")
+        let lateCue = SubtitleCue(startTime: 61, endTime: 62, text: "Late subtitle")
         let versionID = UUID()
         let asset = try await HLSSubtitleInjector.prepare(
             source: PlaybackSource(
@@ -1061,10 +1062,10 @@ struct HTMLPayloadParserTests {
                 preferredPeakBitRate: nil
             ),
             renditions: [
-                HLSSubtitleRendition(subtitle: subtitle, cues: [cue]),
+                HLSSubtitleRendition(subtitle: subtitle, cues: [cue, lateCue]),
                 HLSSubtitleRendition(
                     subtitle: subtitle,
-                    cues: [cue],
+                    cues: [cue, lateCue],
                     timingOffset: 0.3,
                     syncVersionID: versionID,
                     displayNameOverride: "Saved Sync +0.3s"
@@ -1075,10 +1076,12 @@ struct HTMLPayloadParserTests {
         defer { try? FileManager.default.removeItem(at: asset.workingDirectory) }
 
         let master = try String(contentsOf: asset.masterPlaylistURL)
-        let original = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-0.vtt"))
-        let synced = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-1.vtt"))
+        let original = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-0-0.vtt"))
+        let originalSecondSegment = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-0-1.vtt"))
+        let synced = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-1-0.vtt"))
         #expect(original.contains("00:00:01.000 --> 00:00:02.000"))
         #expect(synced.contains("00:00:01.300 --> 00:00:02.300"))
+        #expect(originalSecondSegment.contains("00:01:01.000 --> 00:01:02.000"))
         #expect(asset.orderedDisplayNames.last == "Saved Sync +0.3s")
         #expect(asset.orderedLanguageTags == ["en-x-ktuvit-1", "en-x-ktuvit-2"])
         #expect(asset.languageTags.count == 2)

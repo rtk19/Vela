@@ -1863,23 +1863,28 @@ enum HLSSubtitleInjector {
             )
             try Data(master.utf8).write(to: masterURL, options: .atomic)
             for (index, rendition) in renditions.enumerated() {
-                let webVTTURL = directory.appending(path: "external-subtitles-\(index).vtt")
                 let adjustedCues = rendition.cues.map {
                     $0.shifted(by: rendition.timingOffset + timingOffset)
                 }
-                let subtitlePlaylist = subtitleMediaPlaylist(
+                let segments = segmentedWebVTT(
                     cues: adjustedCues,
-                    webVTTURL: webVTTURL
+                    renditionIndex: index,
+                    directory: directory
                 )
-                let webVTT = webVTT(
-                    cues: adjustedCues,
-                    languageCode: rendition.subtitle.languageCode
+                let subtitlePlaylist = subtitleMediaPlaylist(
+                    segments: segments.map { ($0.url, $0.duration) }
                 )
                 try Data(subtitlePlaylist.utf8).write(
                     to: subtitlePlaylistURLs[index],
                     options: .atomic
                 )
-                try Data(webVTT.utf8).write(to: webVTTURL, options: .atomic)
+                for segment in segments {
+                    let content = webVTT(
+                        cues: segment.cues,
+                        languageCode: rendition.subtitle.languageCode
+                    )
+                    try Data(content.utf8).write(to: segment.url, options: .atomic)
+                }
             }
             return InjectedHLSSubtitleAsset(
                 masterPlaylistURL: masterURL,
@@ -1978,17 +1983,54 @@ enum HLSSubtitleInjector {
 
     static func subtitleMediaPlaylist(cues: [SubtitleCue], webVTTURL: URL) -> String {
         let duration = max(1, cues.map(\.endTime).max() ?? 1)
+        return subtitleMediaPlaylist(segments: [(webVTTURL, duration)])
+    }
+
+    private static func subtitleMediaPlaylist(segments: [(url: URL, duration: Double)]) -> String {
+        let targetDuration = max(1, Int(ceil(segments.map { $0.duration }.max() ?? 1)))
+        let entries = segments.map { segment in
+            "#EXTINF:\(String(format: "%.3f", segment.duration)),\n\(segment.url.absoluteString)"
+        }.joined(separator: "\n")
         return """
         #EXTM3U
         #EXT-X-VERSION:3
-        #EXT-X-TARGETDURATION:\(Int(ceil(duration)))
+        #EXT-X-TARGETDURATION:\(targetDuration)
         #EXT-X-MEDIA-SEQUENCE:0
         #EXT-X-PLAYLIST-TYPE:VOD
-        #EXTINF:\(String(format: "%.3f", duration)),
-        \(webVTTURL.absoluteString)
+        \(entries)
         #EXT-X-ENDLIST
 
         """
+    }
+
+    private struct WebVTTSegment {
+        let url: URL
+        let duration: Double
+        let cues: [SubtitleCue]
+    }
+
+    private static func segmentedWebVTT(
+        cues: [SubtitleCue],
+        renditionIndex: Int,
+        directory: URL
+    ) -> [WebVTTSegment] {
+        // Small enough for reliable seeking/switching, without producing the
+        // thousands of files created by broadcast-sized six-second segments.
+        let segmentDuration = 60.0
+        let totalDuration = max(1, cues.map(\.endTime).max() ?? 1)
+        let segmentCount = max(1, Int(ceil(totalDuration / segmentDuration)))
+        return (0..<segmentCount).map { segmentIndex in
+            let start = Double(segmentIndex) * segmentDuration
+            let duration = min(segmentDuration, totalDuration - start)
+            let end = start + duration
+            return WebVTTSegment(
+                url: directory.appending(
+                    path: "external-subtitles-\(renditionIndex)-\(segmentIndex).vtt"
+                ),
+                duration: duration,
+                cues: cues.filter { $0.endTime > start && $0.startTime < end }
+            )
+        }
     }
 
     static func webVTT(cues: [SubtitleCue], languageCode: String?) -> String {

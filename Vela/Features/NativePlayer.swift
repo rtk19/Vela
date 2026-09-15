@@ -249,7 +249,6 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var canOpenSubtitleStudio = false
     @Published private(set) var subtitleStudioTracks: [SubtitleStudioTrack] = []
     @Published private(set) var subtitleStudioPosition: Double = 0
-    @Published private(set) var activeSubtitleText: String?
     @Published private(set) var isSubtitleStudioSeeking = false
     @Published private(set) var playbackRate: Double = 1
     @Published private(set) var isBuffering = false
@@ -259,7 +258,6 @@ final class PlayerSession: ObservableObject {
     var onSourceRefreshNeeded: (() async -> Bool)?
     var onSubtitleVisibilityChanged: ((Bool) -> Void)?
     nonisolated(unsafe) private var timeObserver: Any?
-    nonisolated(unsafe) private var subtitleOverlayTimeObserver: Any?
     nonisolated(unsafe) private var studioTimeObserver: Any?
     nonisolated(unsafe) private var endObserver: NSObjectProtocol?
     nonisolated(unsafe) private var mediaSelectionObserver: NSObjectProtocol?
@@ -292,9 +290,6 @@ final class PlayerSession: ObservableObject {
     private var subtitleRenditions: [HLSSubtitleRendition] = []
     private var subtitleRenditionsByDisplayName: [String: HLSSubtitleRendition] = [:]
     private var subtitleRenditionsBySelectionID: [String: HLSSubtitleRendition] = [:]
-    private var activeSubtitleRendition: HLSSubtitleRendition?
-    private weak var subtitleOutputItem: AVPlayerItem?
-    private var subtitleLegibleOutput: AVPlayerItemLegibleOutput?
     private var subtitlePlaybackSource: PlaybackSource?
     private var subtitleSyncVersions: [SubtitleSyncVersion] = []
     private var studioPreviousSubtitleDisplayName: String?
@@ -368,14 +363,6 @@ final class PlayerSession: ObservableObject {
                 self.publishNowPlayingInfo()
             }
         }
-        subtitleOverlayTimeObserver = player.addPeriodicTimeObserver(
-            forInterval: CMTime(seconds: 0.1, preferredTimescale: 10),
-            queue: .main
-        ) { [weak self] time in
-            Task { @MainActor [weak self] in
-                self?.updateActiveSubtitle(at: time.seconds)
-            }
-        }
         observeAudioSessionEvents()
     }
 
@@ -388,7 +375,6 @@ final class PlayerSession: ObservableObject {
         sourceRefreshTask?.cancel()
         sourceExpirationTask?.cancel()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
-        if let subtitleOverlayTimeObserver { player.removeTimeObserver(subtitleOverlayTimeObserver) }
         if let studioTimeObserver { player.removeTimeObserver(studioTimeObserver) }
         if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
         if let mediaSelectionObserver { NotificationCenter.default.removeObserver(mediaSelectionObserver) }
@@ -509,9 +495,6 @@ final class PlayerSession: ObservableObject {
         currentExternalSubtitles = []
         subtitleSyncVersions = []
         subtitleStudioTracks = []
-        activeSubtitleRendition = nil
-        activeSubtitleText = nil
-        removeSubtitleLegibleOutput()
         isSubtitleStudioSeeking = false
         currentSourceExpiresAt = nil
         sourceRefreshRequestedForURL = nil
@@ -1850,59 +1833,10 @@ final class PlayerSession: ObservableObject {
                   self.player.currentItem === item else { return }
             let selected = item.currentMediaSelection.selectedMediaOption(in: group)
             if let selected {
-                let identity = await self.subtitleSelectionID(selected)
-                let isInjected = await self.isInjectedSubtitleOption(selected)
-                self.canAdjustSubtitleTiming = isInjected
-                if isInjected, let rendition = self.subtitleRenditionsBySelectionID[identity]
-                    ?? self.subtitleRenditionsByDisplayName[identity] {
-                    self.activeSubtitleRendition = rendition
-                    self.installSubtitleLegibleOutput(on: item)
-                    self.updateActiveSubtitle(at: self.player.currentTime().seconds)
-                } else {
-                    self.activeSubtitleRendition = nil
-                    self.activeSubtitleText = nil
-                    self.removeSubtitleLegibleOutput()
-                }
+                self.canAdjustSubtitleTiming = await self.isInjectedSubtitleOption(selected)
             } else {
                 self.canAdjustSubtitleTiming = false
-                self.activeSubtitleRendition = nil
-                self.activeSubtitleText = nil
-                self.removeSubtitleLegibleOutput()
             }
-        }
-    }
-
-    private func installSubtitleLegibleOutput(on item: AVPlayerItem) {
-        guard subtitleOutputItem !== item else { return }
-        removeSubtitleLegibleOutput()
-        let output = AVPlayerItemLegibleOutput()
-        output.suppressesPlayerRendering = true
-        item.add(output)
-        subtitleOutputItem = item
-        subtitleLegibleOutput = output
-    }
-
-    private func removeSubtitleLegibleOutput() {
-        if let subtitleOutputItem, let subtitleLegibleOutput {
-            subtitleOutputItem.remove(subtitleLegibleOutput)
-        }
-        subtitleOutputItem = nil
-        subtitleLegibleOutput = nil
-    }
-
-    private func updateActiveSubtitle(at playerTime: Double) {
-        guard playerTime.isFinite, let rendition = activeSubtitleRendition else {
-            activeSubtitleText = nil
-            return
-        }
-        let sourceTime = playerTime - rendition.timingOffset - appliedSubtitleTimingOffset
-        activeSubtitleText = rendition.cues.first {
-            $0.startTime <= sourceTime && sourceTime < $0.endTime
-        }.map {
-            SubtitleDirectionFormatter.displayText(
-                $0.text,
-                languageCode: rendition.subtitle.languageCode
-            )
         }
     }
 
@@ -2162,9 +2096,6 @@ final class PlayerSession: ObservableObject {
         subtitleRenditions = []
         subtitleRenditionsByDisplayName = [:]
         subtitleRenditionsBySelectionID = [:]
-        activeSubtitleRendition = nil
-        activeSubtitleText = nil
-        removeSubtitleLegibleOutput()
         subtitleStudioTracks = []
         subtitlePlaybackSource = nil
         canAdjustSubtitleTiming = false

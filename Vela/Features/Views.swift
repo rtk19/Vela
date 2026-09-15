@@ -2775,8 +2775,11 @@ struct DetailsView: View {
             let initialItem = model.item
             let preferredSeasonNumber = library.latestProgress(for: initialItem)?.episode?.seasonNumber
 
-            // Present the first regular season immediately, with Specials listed last.
-            selectedSeasonNumber = model.orderedSeasons.first?.number
+            // Resume the season selected by Continue Watching when it is already
+            // available; otherwise present the first regular season immediately.
+            selectedSeasonNumber = preferredSeasonNumber.flatMap { preferredNumber in
+                model.item.seasons.first(where: { $0.number == preferredNumber })?.number
+            } ?? model.orderedSeasons.first?.number
 
             let artworkTask = Task { @MainActor in
                 let artwork = await sourceLookup.resolveArtwork(
@@ -2820,10 +2823,15 @@ struct DetailsView: View {
                 }
             }
             guard !Task.isCancelled else { return }
+            let preferredSeasonIsAvailable = preferredSeasonNumber.map { preferredNumber in
+                model.item.seasons.contains { $0.number == preferredNumber }
+            } ?? false
             let selectionIsStillAvailable = selectedSeasonNumber.map { selectedNumber in
                 model.item.seasons.contains { $0.number == selectedNumber }
             } ?? false
-            if !selectionIsStillAvailable {
+            if preferredSeasonIsAvailable {
+                selectedSeasonNumber = preferredSeasonNumber
+            } else if !selectionIsStillAvailable {
                 selectedSeasonNumber = model.orderedSeasons.first?.number
             }
         }
@@ -4406,8 +4414,7 @@ struct PlayerScreen: View {
     }
 
     var body: some View {
-        ZStack {
-            NativePlayerController(
+        NativePlayerController(
             player: session.player,
             isZoomedToFill: library.isPlayerZoomedToFill(for: model.request),
             isBuffering: session.isBuffering || model.isLoading,
@@ -4461,25 +4468,7 @@ struct PlayerScreen: View {
                 saveProgress(markNearEndFinished: true)
                 dismiss()
             }
-            )
-
-            VStack {
-                Spacer()
-                if let subtitle = session.activeSubtitleText {
-                    Text(subtitle)
-                        .font(.title3.weight(.semibold))
-                        .multilineTextAlignment(.center)
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 14)
-                        .padding(.vertical, 7)
-                        .background(.black.opacity(0.72), in: RoundedRectangle(cornerRadius: 7))
-                        .shadow(color: .black.opacity(0.8), radius: 3)
-                        .padding(.horizontal, 30)
-                        .padding(.bottom, 72)
-                        .allowsHitTesting(false)
-                }
-            }
-        }
+        )
         .background(.black)
         .ignoresSafeArea()
         .task {
