@@ -169,7 +169,7 @@ actor SubtitleProviderRegistry {
     ) async -> [SubtitleSource] {
         let enabled = providers.values.filter { enabledProviderIDs.contains($0.id) }
         let initialResults = await queryProviders(enabled, for: request)
-        guard initialResults.isEmpty, !enabled.isEmpty, let fallbackTMDbID else {
+        guard !enabled.isEmpty, let fallbackTMDbID else {
             SubtitleDiagnostics.logger.info("Subtitle lookup finished: totalResults=\(initialResults.count)")
             return initialResults
         }
@@ -179,14 +179,16 @@ actor SubtitleProviderRegistry {
                 forTMDbID: fallbackTMDbID,
                 kind: request.kind
             ) else {
-                SubtitleDiagnostics.logger.info("Subtitle lookup finished: fallback unavailable, totalResults=0")
-                return []
+                SubtitleDiagnostics.logger.info(
+                    "Subtitle lookup finished: fallback unavailable, totalResults=\(initialResults.count)"
+                )
+                return initialResults
             }
             guard resolvedIMDbID != request.imdbID else {
                 SubtitleDiagnostics.logger.info(
                     "Subtitle fallback matched original IMDb ID; retry skipped: imdb=\(resolvedIMDbID, privacy: .public)"
                 )
-                return []
+                return initialResults
             }
 
             SubtitleDiagnostics.logger.notice(
@@ -200,17 +202,21 @@ actor SubtitleProviderRegistry {
                 title: request.title
             )
             let fallbackResults = await queryProviders(enabled, for: correctedRequest)
+            var seenResources = Set<String>()
+            let mergedResults = (initialResults + fallbackResults).filter { subtitle in
+                seenResources.insert("\(subtitle.providerID):\(subtitle.url.absoluteString)").inserted
+            }
             SubtitleDiagnostics.logger.info(
-                "Subtitle lookup finished after IMDb fallback: totalResults=\(fallbackResults.count)"
+                "Subtitle lookup finished after IMDb fallback: totalResults=\(mergedResults.count)"
             )
-            return fallbackResults
+            return mergedResults
         } catch where error.isCancellation {
-            return []
+            return initialResults
         } catch {
             SubtitleDiagnostics.logger.error(
                 "Subtitle IMDb fallback failed: tmdb=\(fallbackTMDbID) error=\(String(describing: error), privacy: .public)"
             )
-            return []
+            return initialResults
         }
     }
 
@@ -1805,6 +1811,372 @@ struct HLSSubtitleManifestRendition: Sendable {
     }
 }
 
+struct HLSVideoTimelineAnchor: Sendable, Equatable {
+    let playerStart: Double
+    let mpegTimestamp: UInt64
+    let mechanism: String
+
+    static let zero = HLSVideoTimelineAnchor(
+        playerStart: 0,
+        mpegTimestamp: 0,
+        mechanism: "unavailable"
+    )
+}
+
+/// Resolves AVPlayer elapsed time zero onto the elementary-stream clock used
+/// by an HLS rendition. This is intentionally repeated for every rebuilt item:
+/// PTS/decode epochs are properties of a rendition, not of a title or episode.
+enum HLSVideoTimelineResolver {
+    private struct Resource {
+        let url: URL
+        let byteRange: String?
+    }
+
+    static func resolve(
+        playlist: String,
+        playlistURL: URL,
+        headers: [String: String],
+        selectedQualityHeight: Int?,
+        preferredPeakBitRate: Double?,
+        client: any HTTPClientProtocol
+    ) async -> HLSVideoTimelineAnchor {
+        do {
+            let media = try await mediaPlaylist(
+                playlist,
+                url: playlistURL,
+                headers: headers,
+                selectedQualityHeight: selectedQualityHeight,
+                preferredPeakBitRate: preferredPeakBitRate,
+                client: client
+            )
+            guard let segment = firstSegment(in: media.text, relativeTo: media.url) else {
+                return .zero
+            }
+            let segmentData = try await fetch(segment, headers: headers, client: client).data
+
+            if let ticks = webVTTTimestampMap(in: segmentData) {
+                return HLSVideoTimelineAnchor(playerStart: 0, mpegTimestamp: ticks, mechanism: "webvtt")
+            }
+            if let ticks = transportStreamPTS(in: segmentData) {
+                return HLSVideoTimelineAnchor(playerStart: 0, mpegTimestamp: ticks, mechanism: "mpeg-ts-pts")
+            }
+            if let map = initializationMap(in: media.text, relativeTo: media.url) {
+                let initializationData = try await fetch(map, headers: headers, client: client).data
+                if let ticks = fragmentedMP4Timestamp(
+                    initializationData: initializationData,
+                    mediaData: segmentData
+                ) {
+                    return HLSVideoTimelineAnchor(playerStart: 0, mpegTimestamp: ticks, mechanism: "fmp4-tfdt")
+                }
+            }
+            if let ticks = try await programDateTimeAnchor(
+                masterPlaylist: playlist,
+                masterURL: playlistURL,
+                videoPlaylist: media.text,
+                headers: headers,
+                client: client
+            ) {
+                return HLSVideoTimelineAnchor(playerStart: 0, mpegTimestamp: ticks, mechanism: "program-date-time/webvtt")
+            }
+        } catch where error.isCancellation {
+            return .zero
+        } catch {
+            SubtitleDiagnostics.logger.error(
+                "SUBSYNC source video anchor resolution failed: \(String(describing: error), privacy: .public)"
+            )
+        }
+        SubtitleDiagnostics.logger.error(
+            "SUBSYNC source video anchor unavailable; falling back to MPEGTS zero"
+        )
+        return .zero
+    }
+
+    private static func mediaPlaylist(
+        _ playlist: String,
+        url: URL,
+        headers: [String: String],
+        selectedQualityHeight: Int?,
+        preferredPeakBitRate: Double?,
+        client: any HTTPClientProtocol,
+        depth: Int = 0
+    ) async throws -> (text: String, url: URL) {
+        guard depth < 4 else { throw AppError.decoding("Nested HLS master playlist") }
+        guard playlist.contains("#EXT-X-STREAM-INF:") else { return (playlist, url) }
+        guard let variant = selectedVariant(
+            in: playlist,
+            relativeTo: url,
+            selectedQualityHeight: selectedQualityHeight,
+            preferredPeakBitRate: preferredPeakBitRate
+        ) else { throw AppError.decoding("HLS video rendition") }
+        let response = try await fetch(variant, headers: headers, client: client)
+        guard let text = String(data: response.data, encoding: .utf8) else {
+            throw AppError.decoding("HLS video playlist")
+        }
+        return try await mediaPlaylist(
+            text,
+            url: response.response.url ?? variant.url,
+            headers: headers,
+            selectedQualityHeight: selectedQualityHeight,
+            preferredPeakBitRate: preferredPeakBitRate,
+            client: client,
+            depth: depth + 1
+        )
+    }
+
+    private static func selectedVariant(
+        in playlist: String,
+        relativeTo baseURL: URL,
+        selectedQualityHeight: Int?,
+        preferredPeakBitRate: Double?
+    ) -> Resource? {
+        struct Variant {
+            let resource: Resource
+            let height: Int?
+            let bandwidth: Double
+        }
+        let lines = playlist.components(separatedBy: .newlines)
+        var variants: [Variant] = []
+        for index in lines.indices where lines[index].hasPrefix("#EXT-X-STREAM-INF:") {
+            guard let uri = lines[(index + 1)...].first(where: {
+                !$0.trimmingCharacters(in: .whitespaces).isEmpty && !$0.hasPrefix("#")
+            })?.trimmingCharacters(in: .whitespaces),
+                  let url = URL(string: uri, relativeTo: baseURL)?.absoluteURL else { continue }
+            let line = lines[index]
+            variants.append(Variant(
+                resource: Resource(url: url, byteRange: nil),
+                height: capture(#"RESOLUTION=\d+x(\d+)"#, in: line).flatMap(Int.init),
+                bandwidth: capture(#"(?:AVERAGE-)?BANDWIDTH=(\d+)"#, in: line).flatMap(Double.init) ?? 0
+            ))
+        }
+        if let selectedQualityHeight,
+           let exact = variants.filter({ $0.height == selectedQualityHeight }).max(by: { $0.bandwidth < $1.bandwidth }) {
+            return exact.resource
+        }
+        if let preferredPeakBitRate, preferredPeakBitRate > 0 {
+            return variants.min { abs($0.bandwidth - preferredPeakBitRate) < abs($1.bandwidth - preferredPeakBitRate) }?.resource
+        }
+        return variants.max(by: { $0.bandwidth < $1.bandwidth })?.resource
+    }
+
+    private static func firstSegment(in playlist: String, relativeTo baseURL: URL) -> Resource? {
+        let lines = playlist.components(separatedBy: .newlines)
+        var pendingRange: String?
+        var hasDuration = false
+        for rawLine in lines {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line.hasPrefix("#EXTINF:") { hasDuration = true }
+            else if line.hasPrefix("#EXT-X-BYTERANGE:") {
+                pendingRange = String(line.dropFirst("#EXT-X-BYTERANGE:".count))
+            } else if hasDuration, !line.isEmpty, !line.hasPrefix("#"),
+                      let url = URL(string: line, relativeTo: baseURL)?.absoluteURL {
+                return Resource(url: url, byteRange: pendingRange)
+            }
+        }
+        return nil
+    }
+
+    private static func initializationMap(in playlist: String, relativeTo baseURL: URL) -> Resource? {
+        guard let line = playlist.components(separatedBy: .newlines).first(where: {
+            $0.hasPrefix("#EXT-X-MAP:")
+        }), let uri = capture(#"URI=\"([^\"]+)\""#, in: line),
+              let url = URL(string: uri, relativeTo: baseURL)?.absoluteURL else { return nil }
+        return Resource(url: url, byteRange: capture(#"BYTERANGE=\"([^\"]+)\""#, in: line))
+    }
+
+    private static func fetch(
+        _ resource: Resource,
+        headers: [String: String],
+        client: any HTTPClientProtocol
+    ) async throws -> HTTPResponse {
+        var request = URLRequest(url: resource.url)
+        request.setValue("application/vnd.apple.mpegurl,video/mp2t,video/mp4,text/vtt,*/*;q=0.8", forHTTPHeaderField: "Accept")
+        for (name, value) in headers { request.setValue(value, forHTTPHeaderField: name) }
+        if let byteRange = resource.byteRange,
+           let range = httpRange(from: byteRange) {
+            request.setValue(range, forHTTPHeaderField: "Range")
+        }
+        return try await SubtitleResourceRetry.load(request: request, client: client)
+    }
+
+    private static func httpRange(from value: String) -> String? {
+        let parts = value.split(separator: "@", maxSplits: 1).compactMap { UInt64($0) }
+        guard let length = parts.first, length > 0 else { return nil }
+        let start = parts.count == 2 ? parts[1] : 0
+        return "bytes=\(start)-\(start + length - 1)"
+    }
+
+    static func webVTTTimestampMap(in data: Data) -> UInt64? {
+        guard let text = String(data: data, encoding: .utf8),
+              let ticks = capture(#"MPEGTS:(\d+)"#, in: text).flatMap(UInt64.init) else { return nil }
+        let localSeconds = capture(#"LOCAL:([^,\r\n]+)"#, in: text).flatMap(timestamp) ?? 0
+        return wrappedMPEGTimestamp(Double(ticks) - localSeconds * 90_000)
+    }
+
+    private static func programDateTimeAnchor(
+        masterPlaylist: String,
+        masterURL: URL,
+        videoPlaylist: String,
+        headers: [String: String],
+        client: any HTTPClientProtocol
+    ) async throws -> UInt64? {
+        guard let videoDate = firstProgramDateTime(in: videoPlaylist),
+              let mediaLine = masterPlaylist.components(separatedBy: .newlines).first(where: {
+                  $0.hasPrefix("#EXT-X-MEDIA:") && $0.contains("TYPE=SUBTITLES")
+              }),
+              let uri = capture(#"URI=\"([^\"]+)\""#, in: mediaLine),
+              let subtitlePlaylistURL = URL(string: uri, relativeTo: masterURL)?.absoluteURL else { return nil }
+        let playlistResponse = try await fetch(
+            Resource(url: subtitlePlaylistURL, byteRange: nil), headers: headers, client: client
+        )
+        guard let subtitlePlaylist = String(data: playlistResponse.data, encoding: .utf8),
+              let subtitleDate = firstProgramDateTime(in: subtitlePlaylist),
+              let subtitleSegment = firstSegment(
+                  in: subtitlePlaylist,
+                  relativeTo: playlistResponse.response.url ?? subtitlePlaylistURL
+              ) else { return nil }
+        let subtitleData = try await fetch(subtitleSegment, headers: headers, client: client).data
+        guard let subtitleAnchor = webVTTTimestampMap(in: subtitleData) else { return nil }
+        let delta = videoDate.timeIntervalSince(subtitleDate)
+        return wrappedMPEGTimestamp(Double(subtitleAnchor) + delta * 90_000)
+    }
+
+    private static func firstProgramDateTime(in playlist: String) -> Date? {
+        guard let line = playlist.components(separatedBy: .newlines).first(where: {
+            $0.hasPrefix("#EXT-X-PROGRAM-DATE-TIME:")
+        }) else { return nil }
+        let value = String(line.dropFirst("#EXT-X-PROGRAM-DATE-TIME:".count))
+        return ISO8601DateFormatter().date(from: value)
+    }
+
+    private static func timestamp(_ value: String) -> Double? {
+        let parts = value.replacingOccurrences(of: ",", with: ".").split(separator: ":")
+        guard parts.count == 3,
+              let hours = Double(parts[0]),
+              let minutes = Double(parts[1]),
+              let seconds = Double(parts[2]) else { return nil }
+        return hours * 3_600 + minutes * 60 + seconds
+    }
+
+    private static func wrappedMPEGTimestamp(_ value: Double) -> UInt64 {
+        let wrap = Double(UInt64(1) << 33)
+        let normalized = value.truncatingRemainder(dividingBy: wrap)
+        return UInt64((normalized < 0 ? normalized + wrap : normalized).rounded())
+    }
+
+    /// Extracts the earliest video PES PTS, preferring video stream IDs over
+    /// audio. PTS is a 33-bit clock and is deliberately kept wrapped here.
+    static func transportStreamPTS(in data: Data) -> UInt64? {
+        let bytes = [UInt8](data)
+        guard bytes.count >= 14 else { return nil }
+        var audioPTS: UInt64?
+        for index in 0...(bytes.count - 14) where
+            bytes[index] == 0 && bytes[index + 1] == 0 && bytes[index + 2] == 1 {
+            let streamID = bytes[index + 3]
+            guard (0xC0...0xEF).contains(streamID),
+                  bytes[index + 7] & 0x80 != 0 else { continue }
+            let p = index + 9
+            guard bytes[p] & 0x01 == 1,
+                  bytes[p + 2] & 0x01 == 1,
+                  bytes[p + 4] & 0x01 == 1 else { continue }
+            let value = (UInt64(bytes[p] & 0x0E) << 29)
+                | (UInt64(bytes[p + 1]) << 22)
+                | (UInt64(bytes[p + 2] & 0xFE) << 14)
+                | (UInt64(bytes[p + 3]) << 7)
+                | UInt64(bytes[p + 4] >> 1)
+            if (0xE0...0xEF).contains(streamID) { return value }
+            if audioPTS == nil { audioPTS = value }
+        }
+        return audioPTS
+    }
+
+    static func fragmentedMP4Timestamp(initializationData: Data, mediaData: Data) -> UInt64? {
+        let tracks = mp4TrackTimescales(in: initializationData)
+        for (trackID, decodeTime) in mp4DecodeTimes(in: mediaData) {
+            guard let timescale = tracks[trackID], timescale > 0 else { continue }
+            return UInt64((Double(decodeTime) * 90_000 / Double(timescale)).rounded()) & ((1 << 33) - 1)
+        }
+        return nil
+    }
+
+    private static func mp4TrackTimescales(in data: Data) -> [UInt32: UInt32] {
+        var result: [UInt32: UInt32] = [:]
+        for trak in boxes(named: "trak", in: data) {
+            guard let tkhd = boxes(named: "tkhd", in: trak).first,
+                  let mdhd = boxes(named: "mdhd", in: trak).first else { continue }
+            let tkhdVersion = tkhd.byte(at: 8) ?? 0
+            let trackOffset = tkhdVersion == 1 ? 28 : 20
+            let mdhdVersion = mdhd.byte(at: 8) ?? 0
+            let scaleOffset = mdhdVersion == 1 ? 28 : 20
+            if let trackID = tkhd.uint32BE(at: trackOffset),
+               let timescale = mdhd.uint32BE(at: scaleOffset) {
+                result[trackID] = timescale
+            }
+        }
+        return result
+    }
+
+    private static func mp4DecodeTimes(in data: Data) -> [(UInt32, UInt64)] {
+        boxes(named: "traf", in: data).compactMap { traf in
+            guard let tfhd = boxes(named: "tfhd", in: traf).first,
+                  let tfdt = boxes(named: "tfdt", in: traf).first,
+                  let trackID = tfhd.uint32BE(at: 12) else { return nil }
+            let version = tfdt.byte(at: 8) ?? 0
+            let decodeTime = version == 1
+                ? tfdt.uint64BE(at: 12)
+                : tfdt.uint32BE(at: 12).map(UInt64.init)
+            return decodeTime.map { (trackID, $0) }
+        }
+    }
+
+    private static func boxes(named target: String, in data: Data) -> [Data] {
+        var matches: [Data] = []
+        func walk(_ range: Range<Int>) {
+            var offset = range.lowerBound
+            while offset + 8 <= range.upperBound,
+                  let size32 = data.uint32BE(at: offset) {
+                let typeData = data[(offset + 4)..<(offset + 8)]
+                let type = String(data: typeData, encoding: .ascii) ?? ""
+                let header = size32 == 1 ? 16 : 8
+                let size = size32 == 1 ? Int(data.uint64BE(at: offset + 8) ?? 0) : Int(size32)
+                guard size >= header, offset + size <= range.upperBound else { break }
+                let box = data.subdata(in: offset..<(offset + size))
+                if type == target { matches.append(box) }
+                if ["moov", "trak", "mdia", "moof", "traf"].contains(type) {
+                    walk((offset + header)..<(offset + size))
+                }
+                offset += size
+            }
+        }
+        walk(0..<data.count)
+        return matches
+    }
+
+    private static func capture(_ pattern: String, in value: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern),
+              let match = regex.firstMatch(in: value, range: NSRange(value.startIndex..., in: value)),
+              match.numberOfRanges > 1,
+              let range = Range(match.range(at: 1), in: value) else { return nil }
+        return String(value[range])
+    }
+}
+
+private extension Data {
+    func byte(at offset: Int) -> UInt8? {
+        guard indices.contains(offset) else { return nil }
+        return self[offset]
+    }
+
+    func uint32BE(at offset: Int) -> UInt32? {
+        guard offset >= 0, offset + 4 <= count else { return nil }
+        return self[offset..<(offset + 4)].reduce(0) { ($0 << 8) | UInt32($1) }
+    }
+
+    func uint64BE(at offset: Int) -> UInt64? {
+        guard offset >= 0, offset + 8 <= count else { return nil }
+        return self[offset..<(offset + 8)].reduce(0) { ($0 << 8) | UInt64($1) }
+    }
+}
+
 enum HLSSubtitleInjector {
     private static let externalGroupID = "vela-external-subtitles"
 
@@ -1824,6 +2196,19 @@ enum HLSSubtitleInjector {
               playlist.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("#EXTM3U") else {
             throw AppError.decoding("HLS playlist")
         }
+
+        let sourceURL = response.response.url ?? source.url
+        let timelineAnchor = await HLSVideoTimelineResolver.resolve(
+            playlist: playlist,
+            playlistURL: sourceURL,
+            headers: source.headers,
+            selectedQualityHeight: selectedQualityHeight,
+            preferredPeakBitRate: source.preferredPeakBitRate,
+            client: client
+        )
+        SubtitleDiagnostics.logger.notice(
+            "SUBSYNC source video anchor: playerStart=\(timelineAnchor.playerStart, privacy: .public) mpegTS=\(timelineAnchor.mpegTimestamp, privacy: .public) seconds=\(Double(timelineAnchor.mpegTimestamp) / 90_000, privacy: .public) mechanism=\(timelineAnchor.mechanism, privacy: .public)"
+        )
 
         let fileManager = FileManager.default
         let directory = fileManager.temporaryDirectory
@@ -1853,7 +2238,6 @@ enum HLSSubtitleInjector {
                     languageTag: languageTags[index]
                 )
             }
-            let sourceURL = response.response.url ?? source.url
             let master = rewrittenMasterPlaylist(
                 playlist,
                 sourceURL: sourceURL,
@@ -1881,9 +2265,15 @@ enum HLSSubtitleInjector {
                 for segment in segments {
                     let content = webVTT(
                         cues: segment.cues,
-                        languageCode: rendition.subtitle.languageCode
+                        languageCode: rendition.subtitle.languageCode,
+                        mpegTimestamp: timelineAnchor.mpegTimestamp
                     )
                     try Data(content.utf8).write(to: segment.url, options: .atomic)
+                }
+                if let firstCue = adjustedCues.first {
+                    SubtitleDiagnostics.logger.notice(
+                        "SUBSYNC generated subtitle: provider=\(rendition.subtitle.providerID, privacy: .public) cueStart=\(firstCue.startTime, privacy: .public) mappedMPEGTS=\(timelineAnchor.mpegTimestamp, privacy: .public)"
+                    )
                 }
             }
             return InjectedHLSSubtitleAsset(
@@ -1915,6 +2305,14 @@ enum HLSSubtitleInjector {
         } ?? playlist
         let lines = qualityFilteredPlaylist.components(separatedBy: .newlines)
         let isMasterPlaylist = lines.contains { $0.hasPrefix("#EXT-X-STREAM-INF:") }
+        var providerOccurrences: [String: Int] = [:]
+        let effectiveLanguageTags = renditions.map { rendition in
+            if let languageTag = rendition.languageTag { return languageTag }
+            let provider = rendition.subtitle.providerID.lowercased()
+            let occurrence = providerOccurrences[provider, default: 0] + 1
+            providerOccurrences[provider] = occurrence
+            return renditionLanguageTag(for: rendition.subtitle, occurrence: occurrence)
+        }
 
         guard isMasterPlaylist else {
             let bandwidth = max(1, Int(preferredPeakBitRate ?? 10_000_000))
@@ -1922,10 +2320,7 @@ enum HLSSubtitleInjector {
                 subtitleMediaTag(
                     groupID: externalGroupID,
                     name: rendition.displayName,
-                    language: rendition.languageTag ?? renditionLanguageTag(
-                        for: rendition.subtitle,
-                        occurrence: index + 1
-                    ),
+                    language: effectiveLanguageTags[index],
                     uri: rendition.playlistURL.absoluteString
                 )
             }
@@ -1946,10 +2341,7 @@ enum HLSSubtitleInjector {
                 subtitleMediaTag(
                     groupID: groupID,
                     name: rendition.displayName,
-                    language: rendition.languageTag ?? renditionLanguageTag(
-                        for: rendition.subtitle,
-                        occurrence: index + 1
-                    ),
+                    language: effectiveLanguageTags[index],
                     uri: rendition.playlistURL.absoluteString
                 )
             }
@@ -2033,7 +2425,11 @@ enum HLSSubtitleInjector {
         }
     }
 
-    static func webVTT(cues: [SubtitleCue], languageCode: String?) -> String {
+    static func webVTT(
+        cues: [SubtitleCue],
+        languageCode: String?,
+        mpegTimestamp: UInt64 = 0
+    ) -> String {
         let blocks = cues.enumerated().map { index, cue in
             let text = SubtitleDirectionFormatter
                 .displayText(cue.text, languageCode: languageCode)
@@ -2044,12 +2440,11 @@ enum HLSSubtitleInjector {
             \(text)
             """
         }
-        // AVPlayer's HLS item can use a non-zero MPEG transport timeline while
-        // its controls present elapsed time from zero. Studio queries cues using
-        // that absolute item time, so explicitly map WebVTT's local zero to
-        // MPEGTS zero as well. The timestamp map must be part of the WebVTT
-        // header; a blank line before it makes AVPlayer ignore it.
-        let header = "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:0"
+        // The item clock presented by AVPlayer starts at zero even when the
+        // underlying PES/decode timeline does not. Every segment uses absolute
+        // cue times and the same source-derived map, including boundary-spanning
+        // cues duplicated into adjacent subtitle segments.
+        let header = "WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:00.000,MPEGTS:\(mpegTimestamp)"
         guard !blocks.isEmpty else { return header + "\n" }
         return header + "\n\n" + blocks.joined(separator: "\n\n") + "\n"
     }

@@ -1834,8 +1834,17 @@ final class PlayerSession: ObservableObject {
             let selected = item.currentMediaSelection.selectedMediaOption(in: group)
             if let selected {
                 self.canAdjustSubtitleTiming = await self.isInjectedSubtitleOption(selected)
+                let selectionID = await self.subtitleSelectionID(selected)
+                let rendition = self.subtitleRenditionsBySelectionID[selectionID]
+                    ?? self.subtitleRenditionsByDisplayName[selectionID]
+                SubtitleDiagnostics.logger.notice(
+                    "SUBSYNC selected: selectionID=\(selectionID, privacy: .public) provider=\(rendition?.subtitle.providerID ?? "native", privacy: .public)"
+                )
             } else {
                 self.canAdjustSubtitleTiming = false
+                SubtitleDiagnostics.logger.notice(
+                    "SUBSYNC selected: selectionID=off provider=none"
+                )
             }
         }
     }

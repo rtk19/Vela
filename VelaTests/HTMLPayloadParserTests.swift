@@ -542,6 +542,39 @@ struct HTMLPayloadParserTests {
         #expect(subtitles.first?.label == "Shrinking.S01E02")
     }
 
+    @Test("Merges subtitle results after correcting a truncated IMDb ID")
+    func mergesSubtitlesWithResolvedIMDbID() async throws {
+        let initial = SubtitleSource(
+            id: "ktuvit-search",
+            providerID: "ktuvit",
+            providerName: "Ktuvit",
+            label: "Paradise S2E1",
+            languageCode: "he",
+            url: URL(string: "https://broken.example/paradise.srt")!
+        )
+        let corrected = SubtitleSource(
+            id: "wizdom-download",
+            providerID: "wizdom",
+            providerName: "Wizdom",
+            label: "Paradise S2E1",
+            languageCode: "he",
+            url: URL(string: "https://working.example/paradise.srt")!
+        )
+        let provider = MappingSubtitleProvider(
+            resultsByIMDbID: ["tt2744420": [initial], "tt27444205": [corrected]]
+        )
+        let resolver = StubIMDbIDResolver(result: "tt27444205")
+        let registry = SubtitleProviderRegistry(providers: [provider], imdbIDResolver: resolver)
+
+        let results = await registry.subtitles(
+            for: SubtitleLookupRequest(kind: .series, imdbID: "tt2744420", seasonNumber: 2, episodeNumber: 1, title: "Paradise"),
+            fallbackTMDbID: 22_570,
+            enabledProviderIDs: [provider.id]
+        )
+
+        #expect(results.map(\.id) == [initial.id, corrected.id])
+    }
+
     @Test("Parses SRT and WebVTT cues including Hebrew text")
     func parsesThirdPartySubtitleFormats() throws {
         let srt = #"""
@@ -969,6 +1002,93 @@ struct HTMLPayloadParserTests {
         #expect(playlist.contains("#EXTINF:3.500,"))
     }
 
+    @Test("Maps absolute WebVTT cues onto a non-zero MPEG transport timeline")
+    func mapsExternalSubtitleToVideoPTS() async throws {
+        let masterURL = try #require(URL(string: "https://media.example/master.m3u8"))
+        let mediaURL = try #require(URL(string: "https://media.example/video/720.m3u8"))
+        let segmentURL = try #require(URL(string: "https://media.example/video/000.ts"))
+        let subtitleURL = try #require(URL(string: "https://subtitles.example/he.srt"))
+        let anchor: UInt64 = 1_234_567
+        var pes = [UInt8]([0, 0, 1, 0xE0, 0, 0, 0x80, 0x80, 5])
+        pes.append(UInt8(0x20 | ((anchor >> 29) & 0x0E) | 1))
+        pes.append(UInt8((anchor >> 22) & 0xFF))
+        pes.append(UInt8(((anchor >> 14) & 0xFE) | 1))
+        pes.append(UInt8((anchor >> 7) & 0xFF))
+        pes.append(UInt8(((anchor << 1) & 0xFE) | 1))
+        let client = RoutingHTTPClient(bodies: [
+            masterURL: Data(#"""
+            #EXTM3U
+            #EXT-X-STREAM-INF:BANDWIDTH=2000000,RESOLUTION=1280x720
+            video/720.m3u8
+            """#.utf8),
+            mediaURL: Data(#"""
+            #EXTM3U
+            #EXT-X-TARGETDURATION:60
+            #EXTINF:60.0,
+            000.ts
+            #EXT-X-ENDLIST
+            """#.utf8),
+            segmentURL: Data(pes),
+        ])
+        let subtitle = SubtitleSource(
+            providerID: "ktuvit", providerName: "Ktuvit", label: "Daryl Dixon S03E01",
+            languageCode: "he", url: subtitleURL
+        )
+        let cues = [
+            SubtitleCue(startTime: 1, endTime: 2, text: "ראשון"),
+            SubtitleCue(startTime: 59.5, endTime: 60.5, text: "חוצה גבול"),
+            SubtitleCue(startTime: 181, endTime: 182, text: "מאוחר"),
+        ]
+        let asset = try await HLSSubtitleInjector.prepare(
+            source: PlaybackSource(
+                url: masterURL, headers: [:], subtitles: [], preferredPeakBitRate: nil
+            ),
+            renditions: [HLSSubtitleRendition(subtitle: subtitle, cues: cues)],
+            selectedQualityHeight: 720,
+            client: client
+        )
+        defer { try? FileManager.default.removeItem(at: asset.workingDirectory) }
+
+        for index in 0...3 {
+            let vtt = try String(contentsOf: asset.workingDirectory.appending(
+                path: "external-subtitles-0-\(index).vtt"
+            ))
+            #expect(vtt.contains("MPEGTS:\(anchor)"))
+        }
+        let first = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-0-0.vtt"))
+        let second = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-0-1.vtt"))
+        let fourth = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-0-3.vtt"))
+        #expect(first.contains("00:00:01.000 --> 00:00:02.000"))
+        #expect(first.contains("00:00:59.500 --> 00:01:00.500"))
+        #expect(second.contains("00:00:59.500 --> 00:01:00.500"))
+        #expect(fourth.contains("00:03:01.000 --> 00:03:02.000"))
+        let playlist = try String(contentsOf: asset.workingDirectory.appending(path: "external-subtitles-0.m3u8"))
+        #expect(playlist.components(separatedBy: "#EXTINF:").count == 5)
+        #expect(playlist.contains("#EXTINF:60.000,"))
+        #expect(playlist.contains("#EXTINF:2.000,"))
+    }
+
+    @Test("Applies positive and negative saved subtitle offsets exactly once")
+    func appliesSavedOffsetsOnce() {
+        let cue = SubtitleCue(startTime: 10, endTime: 12, text: "Subtitle")
+        let positive = HLSSubtitleInjector.webVTT(
+            cues: [cue.shifted(by: 1.5)], languageCode: "en", mpegTimestamp: 900_000
+        )
+        let negative = HLSSubtitleInjector.webVTT(
+            cues: [cue.shifted(by: -1.5)], languageCode: "en", mpegTimestamp: 900_000
+        )
+        #expect(positive.contains("00:00:11.500 --> 00:00:13.500"))
+        #expect(negative.contains("00:00:08.500 --> 00:00:10.500"))
+        #expect(positive.contains("MPEGTS:900000"))
+        #expect(negative.contains("MPEGTS:900000"))
+    }
+
+    @Test("Normalizes an existing WebVTT timestamp map to local zero")
+    func normalizesExistingWebVTTTimestampMap() {
+        let data = Data("WEBVTT\nX-TIMESTAMP-MAP=LOCAL:00:00:02.000,MPEGTS:1080000\n".utf8)
+        #expect(HLSVideoTimelineResolver.webVTTTimestampMap(in: data) == 900_000)
+    }
+
     @Test("Shifts subtitle timing in tenths while keeping cues valid")
     func shiftsSubtitleCueTiming() {
         let cue = SubtitleCue(startTime: 1.25, endTime: 3.5, text: "Subtitle")
@@ -1389,5 +1509,15 @@ private struct ConditionalSubtitleProvider: SubtitleProvider {
             languageCode: "he",
             url: url
         )]
+    }
+}
+
+private struct MappingSubtitleProvider: SubtitleProvider {
+    let id = "mapping"
+    let displayName = "Mapping"
+    let resultsByIMDbID: [String: [SubtitleSource]]
+
+    func subtitles(for request: SubtitleLookupRequest) async throws -> [SubtitleSource] {
+        resultsByIMDbID[request.imdbID, default: []]
     }
 }
