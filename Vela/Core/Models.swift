@@ -322,6 +322,7 @@ extension SubtitleSource {
 
     var userFacingDisplayName: String {
         let language = SubtitleLanguage.displayName(languageCode)
+        let separator = "\u{00A0}•\u{00A0}"
 
         if providerID == "native-hls" || providerID == "stream" {
             let cleanedLabel = label
@@ -330,24 +331,25 @@ extension SubtitleSource {
                 .trimmingCharacters(in: CharacterSet(charactersIn: "-·"))
 
             if cleanedLabel.isEmpty {
-                return "\(language) • Built in"
+                return "\(language)\(separator)Built in"
             }
 
-            return "\(language) • Built in • \(cleanedLabel)"
+            return "\(language)\(separator)Built in\(separator)\(cleanedLabel)"
         }
 
-        return "\(language) • \(providerName) • \(label)"
+        return "\(language)\(separator)\(providerName)\(separator)\(label)"
     }
 
     func resyncDisplayName(offset: Double? = nil) -> String {
         let language = SubtitleLanguage.displayName(languageCode)
+        let separator = "\u{00A0}•\u{00A0}"
 
         if let offset {
             let timing = String(format: "%+.1fs", offset)
-            return "\(language) • Resynced (\(timing)) • \(label)"
+            return "\(language)\(separator)Resynced (\(timing))\(separator)\(label)"
         }
 
-        return "\(language) • Resynced • \(label)"
+        return "\(language)\(separator)Resynced\(separator)\(label)" /
     }
 
     /// A stable identity for user-created timing versions. Subtitle URLs often

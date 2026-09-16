@@ -1366,24 +1366,32 @@ final class PlayerSession: ObservableObject {
             // `play()` deliberately uses `defaultRate`, retaining AVPlayer's
             // automatic wait-for-buffer behavior.
             self.player.play()
-            // Starting playback is the final point at which AVPlayer may honor
-            // a manifest's forced/default flags. Keep startup changes isolated
-            // from preference persistence and reconcile once more afterward.
-            do {
-                try await Task.sleep(for: .milliseconds(250))
-            } catch {
-                return
+            // AVPlayer can re-apply a manifest's forced/default subtitle shortly after
+            // playback begins. Reassert Vela's preferred selection a few times while the
+            // item settles so late HLS reconciliation cannot leave a forced subtitle active.
+            for delay in [250, 500, 1000] {
+                do {
+                    try await Task.sleep(for: .milliseconds(delay))
+                } catch {
+                    return
+                }
+
+                guard !Task.isCancelled,
+                      self.mediaSelectionGeneration == mediaSelectionGeneration,
+                      self.player.currentItem === item,
+                      self.subtitleSelectionAuthority.allowsAutomaticSelection else {
+                    return
+                }
+
+                await self.applyPreferredLanguages(
+                    to: asset,
+                    primarySubtitleLanguage: self.primarySubtitleLanguage,
+                    secondarySubtitleLanguage: self.secondarySubtitleLanguage,
+                    audioLanguage: self.audioLanguage,
+                    preferredSubtitleDisplayName: preferredSubtitleDisplayName,
+                    preferredSubtitleSelectionID: preferredSubtitleSelectionID
+                )
             }
-            guard self.mediaSelectionGeneration == mediaSelectionGeneration,
-                  self.player.currentItem === item else { return }
-            await self.applyPreferredLanguages(
-                to: asset,
-                primarySubtitleLanguage: self.primarySubtitleLanguage,
-                secondarySubtitleLanguage: self.secondarySubtitleLanguage,
-                audioLanguage: self.audioLanguage,
-                preferredSubtitleDisplayName: preferredSubtitleDisplayName,
-                preferredSubtitleSelectionID: preferredSubtitleSelectionID
-            )
         }
     }
 
