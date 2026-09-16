@@ -974,21 +974,87 @@ enum SubtitleDirectionFormatter {
     }
 
     private static func correctedTrailingOpeningQuote(in text: String) -> String? {
-        let terminal = edgeToken(in: text, fromStart: false, matching: isTerminalPunctuation)
+        let terminal = edgeToken(
+            in: text,
+            fromStart: false,
+            matching: isTerminalPunctuation
+        )
+
         let body = String(text.dropLast(terminal.count))
-        guard let quote = body.last, isAmbiguousQuotationMark(quote),
+
+        guard let quote = body.last,
+              isAmbiguousQuotationMark(quote),
               body.first != quote,
               body.filter({ $0 == quote }).count == 2,
-              let closingIndex = body.firstIndex(of: quote) else { return nil }
+              let closingIndex = body.firstIndex(of: quote) else {
+            return nil
+        }
+
         let afterClosing = body.index(after: closingIndex)
-        // A quote attached to the preceding word and followed by whitespace
-        // closes that word. Its partner at the end is a displaced opener.
+
+        // The first quote closes the quoted phrase:
+        // it must be attached to the preceding word and followed by whitespace.
+        // The matching quote at the logical end is therefore a displaced opener.
         guard closingIndex > body.startIndex,
               !body[body.index(before: closingIndex)].isWhitespace,
-              body[afterClosing].isWhitespace else { return nil }
+              afterClosing < body.endIndex,
+              body[afterClosing].isWhitespace else {
+            return nil
+        }
+
+        let precedingText = String(body[..<closingIndex])
         let tail = String(body[afterClosing...].dropLast())
-        guard directionalCounts(in: String(body[..<closingIndex])).rightToLeft > 0,
-              directionalCounts(in: tail).rightToLeft > 0 else { return nil }
+
+        // Keep this repair deliberately conservative. Both sides of the quote pair
+        // must contain meaningful RTL text before we change any punctuation.
+        guard directionalCounts(in: precedingText).rightToLeft > 0,
+              directionalCounts(in: tail).rightToLeft > 0 else {
+            return nil
+        }
+
+        // Some legacy visual-order subtitles move not only the opening quote to
+        // the logical end, but also the sentence-ending punctuation to the visual
+        // beginning:
+        //
+        //   .quoted text" remainder"
+        //
+        // should logically become:
+        //
+        //   "quoted text" remainder.
+        //
+        // Only relocate that leading punctuation after the quote structure above
+        // has already proved this is a legacy rotated quotation. Leave leading
+        // ellipses alone because they are commonly intentional.
+        let displacedLeadingTerminal = edgeToken(
+            in: body,
+            fromStart: true,
+            matching: isTerminalPunctuation
+        )
+
+        let shouldRelocateLeadingTerminal =
+            terminal.isEmpty
+            && !displacedLeadingTerminal.isEmpty
+            && !isOnlyEllipsis(displacedLeadingTerminal)
+
+        if shouldRelocateLeadingTerminal {
+            let bodyWithoutLeadingTerminal = String(
+                body.dropFirst(displacedLeadingTerminal.count)
+            )
+
+            guard bodyWithoutLeadingTerminal.last == quote else {
+                return nil
+            }
+
+            let content = String(bodyWithoutLeadingTerminal.dropLast())
+
+            guard !content.isEmpty else {
+                return nil
+            }
+
+            return "\(quote)\(content)\(String(displacedLeadingTerminal.reversed()))"
+        }
+
+        // Existing behavior for every previously supported case.
         return "\(quote)\(body.dropLast())\(terminal)"
     }
 

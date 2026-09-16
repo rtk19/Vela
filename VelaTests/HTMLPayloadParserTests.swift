@@ -805,6 +805,32 @@ struct HTMLPayloadParserTests {
         #expect(SubtitleDirectionFormatter.normalizedCues(normalized, languageCode: "he") == normalized)
     }
 
+    @Test("Repairs displaced sentence punctuation around rotated RTL quotations")
+    func repairsDisplacedRTLQuotationPunctuation() {
+        let rightToLeftMark = "\u{200F}"
+
+        let input =
+            ".האם את בודדה הלילה\" זה השיר האהוב עליי\""
+
+        let expected =
+            "\"האם את בודדה הלילה\" זה השיר האהוב עליי."
+
+        let cues = [
+            SubtitleCue(
+                startTime: 0,
+                endTime: 1,
+                text: input
+            )
+        ]
+
+        let result = SubtitleDirectionFormatter.normalizedCues(
+            cues,
+            languageCode: "he"
+        )
+
+        #expect(result[0].text == "\(rightToLeftMark)\(expected)")
+    }
+
     @Test("Preserves already logical RTL delimiters and dialogue runs")
     func preservesLogicalRightToLeftBoundaries() {
         let rightToLeftMark = "\u{200F}"

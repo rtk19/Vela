@@ -349,7 +349,7 @@ extension SubtitleSource {
             return "\(language)\(separator)Resynced (\(timing))\(separator)\(label)"
         }
 
-        return "\(language)\(separator)Resynced\(separator)\(label)" /
+        return "\(language)\(separator)Resynced\(separator)\(label)"
     }
 
     /// A stable identity for user-created timing versions. Subtitle URLs often
