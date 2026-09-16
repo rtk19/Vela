@@ -400,7 +400,7 @@ struct SubtitleSyncVersion: Codable, Identifiable, Equatable, Sendable {
         subtitleProviderName = subtitle.providerName
         subtitleLabel = subtitle.label
         languageCode = subtitle.languageCode
-        offsetTenths = min(300, max(-300, Int((offset * 10).rounded())))
+        offsetTenths = min(3000, max(-3000, Int((offset * 10).rounded())))
         self.createdAt = createdAt
     }
 

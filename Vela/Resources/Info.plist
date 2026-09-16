@@ -18,6 +18,8 @@
 	<string>$(MARKETING_VERSION)</string>
 	<key>CFBundleVersion</key>
 	<string>$(CURRENT_PROJECT_VERSION)</string>
+	<key>ExternalStreamAddonManifestURL</key>
+	<string>https://pengu.uk/%7B%22auth_token%22%3A%22L6ZOBmmDD1mb4Eh3sOoZhxjZw2I-VAWnCq41WCZQPAI%22%7D/manifest.json</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>NSAppTransportSecurity</key>
@@ -25,12 +27,10 @@
 		<key>NSAllowsLocalNetworking</key>
 		<true/>
 	</dict>
-	<key>TMDBReadAccessToken</key>
-	<string>eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NmVhMDlkODViNTIzZTgzMmU2YzM3NjVlNDQyODgzNiIsIm5iZiI6MTc4NzgxNzk0Ny45NzUwMDAxLCJzdWIiOiI2YThmZWZkYjAwYjY5ZmMxMTkzY2U5ZTgiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.dYwBrAG1hXl1kCPAWGLbBl54zyicbxW9aMN9YoGxQdI</string>
 	<key>SubDLAPIKey</key>
 	<string>subdl_xNeTPx7Et1DZaJSRg3bMTE2RRDqWYmCX7clzXAjSlWs</string>
-	<key>ExternalStreamAddonManifestURL</key>
-	<string>https://pengu.uk/%7B%22auth_token%22%3A%22L6ZOBmmDD1mb4Eh3sOoZhxjZw2I-VAWnCq41WCZQPAI%22%7D/manifest.json</string>
+	<key>TMDBReadAccessToken</key>
+	<string>eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiI3NmVhMDlkODViNTIzZTgzMmU2YzM3NjVlNDQyODgzNiIsIm5iZiI6MTc4NzgxNzk0Ny45NzUwMDAxLCJzdWIiOiI2YThmZWZkYjAwYjY5ZmMxMTkzY2U5ZTgiLCJzY29wZXMiOlsiYXBpX3JlYWQiXSwidmVyc2lvbiI6MX0.dYwBrAG1hXl1kCPAWGLbBl54zyicbxW9aMN9YoGxQdI</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

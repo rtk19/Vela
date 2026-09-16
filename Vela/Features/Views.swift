@@ -4021,14 +4021,16 @@ private enum PlaybackLanguages {
 private struct SubtitleSyncStudioView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var library: LibraryStore
-    let session: PlayerSession
+    @ObservedObject var session: PlayerSession
     let request: PlaybackRequest
     let initialContext: SubtitleStudioContext
 
     @State private var selectedTrackID: String
     @State private var offsetTenths: Int
     @State private var selectedVersionID: UUID?
+    @State private var selectedCueIndex: Int?
     @State private var isSaving = false
+    @State private var isCueBrowserExpanded = false
 
     init(
         session: PlayerSession,
@@ -4103,6 +4105,8 @@ private struct SubtitleSyncStudioView: View {
                     }
                 }
 
+                cueSyncBrowser
+
                 HStack(spacing: 16) {
                     timingButton(systemImage: "minus", change: -1, accessibilityLabel: "Move subtitles earlier")
                     Text(offsetText)
@@ -4126,6 +4130,440 @@ private struct SubtitleSyncStudioView: View {
         .background(Color(uiColor: .secondarySystemBackground))
     }
 
+    private var cueSyncBrowser: some View {
+        Group {
+            if let track = selectedTrack, !track.cues.isEmpty {
+                VStack(spacing: 0) {
+                    Button {
+                        withAnimation(.easeInOut(duration: 0.2)) {
+                            isCueBrowserExpanded.toggle()
+                        }
+                    } label: {
+                        HStack(spacing: 12) {
+                            Image(systemName: "text.alignleft")
+                                .font(.body.weight(.semibold))
+                                .foregroundStyle(Color.accentColor)
+
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("Sync to Line")
+                                    .font(.headline)
+                                    .foregroundStyle(.primary)
+
+                                if isCueBrowserExpanded {
+                                    Text("Tap the line you hear at the current video position")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                } else if let index = activeCueIndex(in: track) {
+                                    Text(
+                                        SubtitleDirectionFormatter.displayText(
+                                            track.cues[index].text,
+                                            languageCode: track.source.languageCode
+                                        )
+                                    )
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                } else {
+                                    Text("Choose a subtitle line to sync")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                            }
+
+                            Spacer(minLength: 8)
+
+                            Image(
+                                systemName: isCueBrowserExpanded
+                                    ? "chevron.up"
+                                    : "chevron.down"
+                            )
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 14)
+                        .frame(minHeight: 54)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+
+                    if isCueBrowserExpanded {
+                        Divider()
+                            .opacity(0.5)
+
+                        cueBrowserContents(track: track)
+                            .padding(12)
+                            .transition(
+                                .opacity.combined(with: .move(edge: .top))
+                            )
+                    }
+                }
+                .background(
+                    Color.black.opacity(0.18),
+                    in: RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                )
+                .overlay {
+                    RoundedRectangle(
+                        cornerRadius: 14,
+                        style: .continuous
+                    )
+                    .stroke(.white.opacity(0.08), lineWidth: 1)
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func cueBrowserContents(
+        track: SubtitleStudioTrack
+    ) -> some View {
+        VStack(spacing: 10) {
+            HStack {
+                Text(
+                    "Video \(cueTimeText(session.subtitleStudioPosition))"
+                )
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+
+                Spacer()
+
+                HStack(spacing: 8) {
+                    cueNavigationButton(
+                        systemImage: "chevron.up",
+                        direction: -1,
+                        accessibilityLabel: "Previous subtitle line"
+                    )
+
+                    cueNavigationButton(
+                        systemImage: "chevron.down",
+                        direction: 1,
+                        accessibilityLabel: "Next subtitle line"
+                    )
+                }
+            }
+
+            ScrollViewReader { proxy in
+                ScrollView(.vertical) {
+                    LazyVStack(spacing: 6) {
+                        ForEach(
+                            Array(track.cues.enumerated()),
+                            id: \.offset
+                        ) { index, cue in
+
+                            let isActive = selectedCueIndex == index
+
+                            Button {
+                                selectCue(
+                                    at: index,
+                                    cue: cue
+                                )
+                            } label: {
+                                HStack(
+                                    alignment: .top,
+                                    spacing: 12
+                                ) {
+                                    Text(
+                                        cueTimeText(cue.startTime)
+                                    )
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(
+                                        isActive
+                                            ? Color.accentColor
+                                            : .secondary
+                                    )
+                                    .frame(
+                                        width: 52,
+                                        alignment: .leading
+                                    )
+
+                                    Text(
+                                        SubtitleDirectionFormatter.displayText(
+                                            cue.text,
+                                            languageCode: track.source.languageCode
+                                        )
+                                    )
+                                    .font(
+                                        isActive
+                                            ? .callout.weight(.semibold)
+                                            : .callout
+                                    )
+                                    .foregroundStyle(.primary)
+                                    .multilineTextAlignment(.leading)
+                                    .frame(
+                                        maxWidth: .infinity,
+                                        alignment: .leading
+                                    )
+
+                                    if isActive {
+                                        Image(
+                                            systemName: "waveform.circle.fill"
+                                        )
+                                        .foregroundStyle(
+                                            Color.accentColor
+                                        )
+                                    }
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 10)
+                                .background(
+                                    isActive
+                                        ? Color.accentColor.opacity(0.16)
+                                        : Color.clear,
+                                    in: RoundedRectangle(
+                                        cornerRadius: 10,
+                                        style: .continuous
+                                    )
+                                )
+                                .contentShape(
+                                    RoundedRectangle(
+                                        cornerRadius: 10,
+                                        style: .continuous
+                                    )
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .id(index)
+                        }
+                    }
+                    .padding(6)
+                }
+                .frame(height: 220)
+                .onAppear {
+                    updateActiveCue(in: track)
+
+                    if let selectedCueIndex {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(
+                                selectedCueIndex,
+                                anchor: .center
+                            )
+                        }
+                    }
+                }
+                .onChange(
+                    of: session.subtitleStudioPosition
+                ) { _, _ in
+                    let previousIndex = selectedCueIndex
+
+                    updateActiveCue(in: track)
+
+                    guard let selectedCueIndex,
+                          selectedCueIndex != previousIndex else {
+                        return
+                    }
+
+                    withAnimation(
+                        .easeInOut(duration: 0.22)
+                    ) {
+                        proxy.scrollTo(
+                            selectedCueIndex,
+                            anchor: .center
+                        )
+                    }
+                }
+                .onChange(of: offsetTenths) { _, _ in
+                    let previousIndex = selectedCueIndex
+
+                    updateActiveCue(in: track)
+
+                    guard let selectedCueIndex,
+                          selectedCueIndex != previousIndex else {
+                        return
+                    }
+
+                    withAnimation(
+                        .easeInOut(duration: 0.22)
+                    ) {
+                        proxy.scrollTo(
+                            selectedCueIndex,
+                            anchor: .center
+                        )
+                    }
+                }
+                .onChange(of: selectedTrackID) { _, _ in
+                    guard let track = selectedTrack else {
+                        selectedCueIndex = nil
+                        return
+                    }
+
+                    updateActiveCue(in: track)
+
+                    if let selectedCueIndex {
+                        DispatchQueue.main.async {
+                            proxy.scrollTo(
+                                selectedCueIndex,
+                                anchor: .center
+                            )
+                        }
+                    }
+                }
+            }
+
+            if let selectedCueIndex,
+               track.cues.indices.contains(selectedCueIndex) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(Color.accentColor)
+                        .frame(width: 6, height: 6)
+
+                    Text("Currently playing")
+                        .font(.caption)
+
+                    Spacer()
+
+                    Text(
+                        "\(selectedCueIndex + 1) / \(track.cues.count)"
+                    )
+                    .font(.caption.monospacedDigit())
+                }
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 2)
+            }
+        }
+    }
+
+    private func cueNavigationButton(
+        systemImage: String,
+        direction: Int,
+        accessibilityLabel: String
+    ) -> some View {
+        Button {
+            moveSelectedCue(by: direction)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.body.weight(.semibold))
+                .frame(width: 32, height: 28)
+        }
+        .buttonStyle(.bordered)
+        .disabled(!canMoveSelectedCue(by: direction))
+        .accessibilityLabel(accessibilityLabel)
+    }
+
+    private func canMoveSelectedCue(
+        by direction: Int
+    ) -> Bool {
+        guard let track = selectedTrack,
+              !track.cues.isEmpty else {
+            return false
+        }
+
+        let current =
+            activeCueIndex(in: track)
+            ?? nearestCueIndex(in: track)
+            ?? 0
+
+        return track.cues.indices.contains(
+            current + direction
+        )
+    }
+
+    private func moveSelectedCue(
+        by direction: Int
+    ) {
+        guard let track = selectedTrack,
+              !track.cues.isEmpty else {
+            return
+        }
+
+        let current =
+            activeCueIndex(in: track)
+            ?? nearestCueIndex(in: track)
+            ?? 0
+
+        let target = min(
+            max(current + direction, 0),
+            track.cues.count - 1
+        )
+
+        selectCue(
+            at: target,
+            cue: track.cues[target]
+        )
+    }
+
+    private func selectCue(
+        at index: Int,
+        cue: SubtitleCue
+    ) {
+        let offset =
+            session.subtitleStudioPosition
+            - cue.startTime
+
+        offsetTenths = min(
+            3000,
+            max(
+                -3000,
+                Int((offset * 10).rounded())
+            )
+        )
+
+        selectedVersionID = nil
+        selectedCueIndex = index
+    }
+
+    private func nearestCueIndex(
+        in track: SubtitleStudioTrack
+    ) -> Int? {
+        guard !track.cues.isEmpty else { return nil }
+
+        // Convert the current video time back into the subtitle file's timeline.
+        let subtitleTime =
+            session.subtitleStudioPosition
+            - Double(offsetTenths) / 10
+
+        return track.cues.indices.min { lhs, rhs in
+            abs(track.cues[lhs].startTime - subtitleTime)
+                < abs(track.cues[rhs].startTime - subtitleTime)
+        }
+    }
+
+    private func activeCueIndex(
+        in track: SubtitleStudioTrack
+    ) -> Int? {
+        let subtitleTime =
+            session.subtitleStudioPosition
+            - Double(offsetTenths) / 10
+
+        return track.cues.firstIndex { cue in
+            cue.startTime <= subtitleTime
+                && subtitleTime < cue.endTime
+        }
+    }
+
+    private func updateActiveCue(
+        in track: SubtitleStudioTrack
+    ) {
+        selectedCueIndex = activeCueIndex(in: track)
+    }
+
+    private func cueTimeText(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds >= 0 else {
+            return "0:00"
+        }
+
+        let total = Int(seconds.rounded(.down))
+        let hours = total / 3600
+        let minutes = (total % 3600) / 60
+        let secs = total % 60
+
+        if hours > 0 {
+            return String(
+                format: "%d:%02d:%02d",
+                hours,
+                minutes,
+                secs
+            )
+        }
+
+        return String(
+            format: "%d:%02d",
+            minutes,
+            secs
+        )
+    }
+
     private var subtitleTrackMenu: some View {
         Menu {
             ForEach(session.subtitleStudioTracks) { track in
@@ -4133,6 +4571,7 @@ private struct SubtitleSyncStudioView: View {
                     selectedTrackID = track.id
                     selectedVersionID = nil
                     offsetTenths = 0
+                    selectedCueIndex = nil
                 } label: {
                     if track.id == selectedTrackID {
                         Label(track.displayName, systemImage: "checkmark")
@@ -4219,7 +4658,7 @@ private struct SubtitleSyncStudioView: View {
         accessibilityLabel: String
     ) -> some View {
         Button {
-            offsetTenths = min(300, max(-300, offsetTenths + change))
+            offsetTenths = min(3000, max(-3000, offsetTenths + change))
             selectedVersionID = nil
         } label: {
             Image(systemName: systemImage)

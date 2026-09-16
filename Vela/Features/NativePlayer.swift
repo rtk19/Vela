@@ -830,16 +830,23 @@ final class PlayerSession: ObservableObject {
             "SUBSYNC studio: playerID=\(selectedLanguageTag ?? "none", privacy: .public) resolvedProvider=\(selectedTrack?.source.providerID ?? "none", privacy: .public) resolvedLabel=\(selectedTrack?.source.label ?? "none", privacy: .public) playerTime=\(self.subtitleStudioPosition, privacy: .public) offset=\(studioOffset, privacy: .public) cueStart=\(activeCue?.startTime ?? -1, privacy: .public) cueEnd=\(activeCue?.endTime ?? -1, privacy: .public)"
         )
         player.pause()
-        if let item = player.currentItem,
-           let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
-           player.currentItem === item {
-            item.select(nil, in: group)
-        }
+        await hideNativeSubtitlesForStudio()
+
         return SubtitleStudioContext(
             selectedTrackID: selectedTrackID,
             offset: selectedRendition?.timingOffset ?? 0,
             selectedVersionID: selectedRendition?.syncVersionID
         )
+    }
+
+    private func hideNativeSubtitlesForStudio() async {
+        guard let item = player.currentItem,
+              let group = try? await item.asset.loadMediaSelectionGroup(for: .legible),
+              player.currentItem === item else {
+            return
+        }
+
+        item.select(nil, in: group)
     }
 
     func cancelSubtitleStudio() async {
@@ -896,15 +903,21 @@ final class PlayerSession: ObservableObject {
         ) { [weak self] _ in
             Task { @MainActor [weak self] in
                 guard let self, self.subtitleStudioSeekToken == token else { return }
+
+                await self.hideNativeSubtitlesForStudio()
                 self.isSubtitleStudioSeeking = false
             }
         }
+
         subtitleStudioPosition = target
     }
 
     func toggleStudioPlayback() {
         if player.timeControlStatus == .paused {
-            player.play()
+            Task {
+                await hideNativeSubtitlesForStudio()
+                player.play()
+            }
         } else {
             player.pause()
         }

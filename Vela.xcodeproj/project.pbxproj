@@ -60,8 +60,8 @@
 		2361987E924D39BB64E83C03 /* StremioAddonProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StremioAddonProviderTests.swift; sourceTree = "<group>"; };
 		2835E04E7476E1DD1E9D6416 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		3B429ACDC0C702D23FDC4C3A /* HTMLPayloadParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParserTests.swift; sourceTree = "<group>"; };
-		44EE7D6F5A1E4D9D829CFC8B /* PlaybackSeekTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSeekTests.swift; sourceTree = "<group>"; };
 		4266A879F83FCBDD41F8A33F /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
+		44EE7D6F5A1E4D9D829CFC8B /* PlaybackSeekTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSeekTests.swift; sourceTree = "<group>"; };
 		4D73B945A62B4078F3230F2B /* PlaybackProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackProgressTests.swift; sourceTree = "<group>"; };
 		55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerSourceSwitchTests.swift; sourceTree = "<group>"; };
 		5B915DCCC596F2477C60BED0 /* Vela.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = Vela.entitlements; sourceTree = "<group>"; };
@@ -332,7 +332,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.6.0;
+				MARKETING_VERSION = 2.6.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -522,7 +522,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.6.0;
+				MARKETING_VERSION = 2.6.1;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
