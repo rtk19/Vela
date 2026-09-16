@@ -349,7 +349,7 @@ struct SubDLSubtitleProvider: SubtitleProvider {
                       let url = resolvedDownloadURL(file.url) else { return nil }
                 let stableID = "\(id):\(file.fileNID)"
                 guard seenIDs.insert(stableID).inserted else { return nil }
-                let language = Self.normalizedLanguageCode(file.language ?? subtitle.language ?? subtitle.lang)
+                let language = SubtitleLanguage.canonicalCode(file.language ?? subtitle.language ?? subtitle.lang)
                 let releaseName = file.releaseName ?? subtitle.releaseName
                 let baseLabel = releaseName?.trimmingCharacters(in: .whitespacesAndNewlines)
                 let fallbackLabel = file.name.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -397,21 +397,9 @@ struct SubDLSubtitleProvider: SubtitleProvider {
     private static func normalizedLanguageCodes(_ values: [String]) -> [String] {
         var seen = Set<String>()
         return values.compactMap { value in
-            guard let code = normalizedLanguageCode(value), !code.isEmpty,
+            guard let code = SubtitleLanguage.canonicalCode(value), !code.isEmpty,
                   seen.insert(code).inserted else { return nil }
             return code
-        }
-    }
-
-    private static func normalizedLanguageCode(_ value: String?) -> String? {
-        guard let value else { return nil }
-        let base = value.lowercased()
-            .split(whereSeparator: { $0 == "-" || $0 == "_" })
-            .first.map(String.init) ?? ""
-        switch base {
-        case "heb", "iw": return "he"
-        case "eng": return "en"
-        default: return base.isEmpty ? nil : base
         }
     }
 
@@ -527,7 +515,7 @@ struct WizdomSubtitleProvider: SubtitleProvider {
                 providerID: id,
                 providerName: displayName,
                 label: subtitle.displayName,
-                languageCode: Self.normalizedLanguageCode(subtitle.lang),
+                languageCode: SubtitleLanguage.canonicalCode(subtitle.lang),
                 url: url
             )
         }
@@ -552,13 +540,6 @@ struct WizdomSubtitleProvider: SubtitleProvider {
         }
     }
 
-    private static func normalizedLanguageCode(_ code: String) -> String {
-        switch code.lowercased() {
-        case "heb", "iw": "he"
-        case "eng": "en"
-        default: code.lowercased()
-        }
-    }
 }
 
 struct KtuvitSubtitleProvider: SubtitleProvider {
@@ -630,7 +611,7 @@ struct KtuvitSubtitleProvider: SubtitleProvider {
                 providerID: id,
                 providerName: displayName,
                 label: subtitle.displayName,
-                languageCode: Self.normalizedLanguageCode(subtitle.lang),
+                languageCode: SubtitleLanguage.canonicalCode(subtitle.lang),
                 url: url
             )
         }
@@ -724,14 +705,6 @@ struct KtuvitSubtitleProvider: SubtitleProvider {
         var displayName: String {
             let withoutPrefix = id.replacingOccurrences(of: #"^\[KTUVIT\]"#, with: "", options: .regularExpression)
             return withoutPrefix.trimmingCharacters(in: CharacterSet(charactersIn: " .:"))
-        }
-    }
-
-    private static func normalizedLanguageCode(_ code: String) -> String {
-        switch code.lowercased() {
-        case "heb", "iw": "he"
-        case "eng": "en"
-        default: code.lowercased()
         }
     }
 
@@ -1295,7 +1268,8 @@ enum SubtitleDirectionFormatter {
 
     private static func isRightToLeft(languageCode: String?) -> Bool {
         guard let languageCode, !languageCode.isEmpty else { return false }
-        return Locale.Language(identifier: languageCode).characterDirection == .rightToLeft
+        return Locale.Language(identifier: SubtitleLanguage.canonicalCode(languageCode) ?? languageCode)
+            .characterDirection == .rightToLeft
     }
 
     private static func directionalCounts(in text: String) -> DirectionalCounts {
@@ -1393,8 +1367,7 @@ enum SubtitleParser {
     }
 
     private static func isHebrew(_ languageCode: String?) -> Bool {
-        let base = languageCode?.lowercased().split(whereSeparator: { $0 == "-" || $0 == "_" }).first
-        return base == "he" || base == "heb" || base == "iw"
+        SubtitleLanguage.canonicalCode(languageCode) == "he"
     }
 
     private static func repairHebrewLine(_ line: String, minimumLetters: Int = 3) -> String {
@@ -1693,7 +1666,7 @@ enum HLSNativeSubtitleLoader {
                   let uri = attribute("URI", in: line),
                   let playlistURL = URL(string: uri, relativeTo: baseURL)?.absoluteURL else { return nil }
             let groupID = attribute("GROUP-ID", in: line) ?? "subtitles"
-            let language = normalizedLanguageCode(attribute("LANGUAGE", in: line))
+            let language = SubtitleLanguage.canonicalCode(attribute("LANGUAGE", in: line))
             let name = attribute("NAME", in: line)
                 ?? language.flatMap { Locale(identifier: "en_US").localizedString(forLanguageCode: $0) }
                 ?? "Subtitles"
@@ -1756,15 +1729,6 @@ enum HLSNativeSubtitleLoader {
         if value > wrap / 2 { return value - wrap }
         if value < -wrap / 2 { return value + wrap }
         return value
-    }
-
-    private static func normalizedLanguageCode(_ value: String?) -> String? {
-        guard let value, !value.isEmpty else { return nil }
-        switch value.lowercased() {
-        case "heb", "iw": return "he"
-        case "eng": return "en"
-        default: return value.lowercased()
-        }
     }
 
     private static func attribute(_ name: String, in line: String) -> String? {
@@ -2297,13 +2261,10 @@ enum HLSSubtitleInjector {
         preferredPeakBitRate: Double? = nil,
         selectedQualityHeight: Int? = nil
     ) -> String {
-        let qualityFilteredPlaylist = selectedQualityHeight.map {
-            HLSMasterPlaylistParser.playlist(
-                playlist,
-                filteredToHeight: $0
-            )
-        } ?? playlist
-        let lines = qualityFilteredPlaylist.components(separatedBy: .newlines)
+        // Keep every variant in the master playlist. Manual quality is an
+        // AVPlayerItem preference, not a different playback source; retaining
+        // the full master also makes returning to Automatic restore ABR in-place.
+        let lines = playlist.components(separatedBy: .newlines)
         let isMasterPlaylist = lines.contains { $0.hasPrefix("#EXT-X-STREAM-INF:") }
         var providerOccurrences: [String: Int] = [:]
         let effectiveLanguageTags = renditions.map { rendition in
@@ -2450,10 +2411,7 @@ enum HLSSubtitleInjector {
     }
 
     static func displayName(for subtitle: SubtitleSource) -> String {
-        let code = subtitle.languageCode ?? "und"
-        let language = Locale(identifier: "en_US").localizedString(forLanguageCode: code)
-            ?? code.uppercased()
-        return "\(language) - \(subtitle.providerName) - \(subtitle.label)"
+        subtitle.userFacingDisplayName
     }
 
     private static func uniqueDisplayNames(for renditions: [HLSSubtitleRendition]) -> [String] {
@@ -2470,27 +2428,7 @@ enum HLSSubtitleInjector {
         for subtitle: SubtitleSource,
         occurrence: Int
     ) -> String {
-        let suppliedBase = subtitle.languageCode?
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .split(separator: "-")
-            .first
-            .map(String.init) ?? "und"
-        let base: String
-        switch suppliedBase {
-        case "heb", "iw": base = "he"
-        case "eng": base = "en"
-        default: base = suppliedBase.allSatisfy { $0.isLetter } ? suppliedBase : "und"
-        }
-        // Only third-party releases and their Studio versions get the visible
-        // private-use distinction. Built-in tracks retain normal language labels.
-        guard subtitle.providerID != "native-hls", subtitle.providerID != "stream" else { return base }
-        let provider = subtitle.providerID
-            .lowercased()
-            .filter { $0.isLetter || $0.isNumber }
-            .prefix(8)
-        let providerTag = provider.isEmpty ? "external" : String(provider)
-        return "\(base)-x-\(providerTag)-\(occurrence)"
+        subtitle.canonicalLanguageCode ?? "und"
     }
 
     private static func subtitleMediaTag(
@@ -2499,8 +2437,12 @@ enum HLSSubtitleInjector {
         language: String,
         uri: String
     ) -> String {
+        // AVPlayer replaces NAME with a localized LANGUAGE label in its native
+        // picker. External renditions therefore keep canonical language in the
+        // shared source model and omit LANGUAGE so the exact NAME is visible.
+        // Selection still uses the rendition-backed canonical source language.
         "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"\(escapedAttribute(groupID))\"," +
-            "NAME=\"\(escapedAttribute(name))\",LANGUAGE=\"\(escapedAttribute(language))\"," +
+            "NAME=\"\(escapedAttribute(name))\"," +
             "AUTOSELECT=NO,DEFAULT=NO,FORCED=NO,URI=\"\(uri)\""
     }
 

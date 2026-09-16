@@ -42,6 +42,18 @@ struct PlaybackDiscoveryTests {
         #expect(StreamSelectionPolicy().best(in: [first, second])?.id == "low")
     }
 
+    @Test("Source recovery retries the selected source before provider fallback")
+    func selectedSourceRecoveryComesFirst() async throws {
+        let selected = try await Self.prepare(Self.candidate("selected"))
+        let preferredFallback = try await Self.prepare(Self.candidate("fallback"))
+        let order = SourceRecoveryOrder.ordered(
+            selectedSourceID: selected.id,
+            streams: [preferredFallback, selected],
+            policy: StreamSelectionPolicy(preference: preferredFallback.candidate.preference)
+        )
+        #expect(order.map(\.id) == ["selected", "fallback"])
+    }
+
     @MainActor @Test("Late sources are appended without changing the delivered initial selection")
     func lateSources() async throws {
         let discovery = PlaybackDiscovery(settleDelay: .milliseconds(10), initialDeadline: .milliseconds(100),

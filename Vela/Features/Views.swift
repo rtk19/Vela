@@ -4196,8 +4196,9 @@ private struct SubtitleSyncStudioView: View {
     }
 
     private var versionsForSelectedTrack: [SubtitleSyncVersion] {
-        library.subtitleSyncVersions(for: request)
-            .filter { $0.subtitleKey == selectedTrackID }
+        guard let source = selectedTrack?.source else { return [] }
+        return library.subtitleSyncVersions(for: request)
+            .filter { source.matchesSyncKey($0.subtitleKey) }
     }
 
     private var selectedVersionName: String {

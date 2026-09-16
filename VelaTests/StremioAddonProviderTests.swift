@@ -55,7 +55,7 @@ struct StremioAddonProviderTests {
         #expect(client.requestedPaths == ["/config/stream/series/tt0944947:2:3.json"])
     }
 
-    @Test("External subtitles have stable private-use tags and provider labels")
+    @Test("External subtitles have stable identities, canonical languages, and provider labels")
     func subtitles() async throws {
         let body = #"""
         {"subtitles":[
@@ -73,9 +73,11 @@ struct StremioAddonProviderTests {
         #expect(client.requestedPaths == ["/config/subtitles/series/tt0944947:1:2.json"])
         #expect(subtitles.count == 2)
         #expect(subtitles.first?.providerName == "MovieBox")
-        #expect(subtitles.first?.languageCode == "en-x-external-moviebox")
+        #expect(subtitles.first?.languageCode == "en")
+        #expect(subtitles.first?.userFacingDisplayName == "English - MovieBox - English")
         #expect(subtitles.last?.providerName == "External")
-        #expect(subtitles.last?.languageCode == "de-x-external-external")
+        #expect(subtitles.last?.languageCode == "de")
+        #expect(subtitles.last?.userFacingDisplayName == "German - External - German")
         #expect(subtitles.allSatisfy { !$0.id.contains("Policy=") && !$0.id.contains("token=") })
     }
 

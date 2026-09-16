@@ -223,10 +223,9 @@ struct StremioSubtitleProvider: SubtitleProvider {
             } ?? url.deletingQuery().absoluteString
             let stableID = "\(id):\(provider.lowercased()):\(entryIdentity)"
             guard seen.insert(stableID).inserted else { return nil }
-            let privateTag = "\(language)-x-external-\(Self.slug(provider))"
             return SubtitleSource(id: stableID, providerID: id, providerName: provider,
-                                  label: Locale.current.localizedString(forLanguageCode: language) ?? language.uppercased(),
-                                  languageCode: privateTag, url: url)
+                                  label: SubtitleLanguage.displayName(language),
+                                  languageCode: language, url: url)
         }
     }
 
@@ -239,17 +238,7 @@ struct StremioSubtitleProvider: SubtitleProvider {
     }
 
     private static func language(for raw: String?) -> String {
-        let value = raw?.lowercased() ?? "und"
-        let map = ["eng": "en", "deu": "de", "ger": "de", "fra": "fr", "fre": "fr", "spa": "es",
-                   "ita": "it", "por": "pt", "rus": "ru", "ara": "ar", "heb": "he", "jpn": "ja",
-                   "kor": "ko", "zho": "zh", "chi": "zh", "ell": "el", "gre": "el", "ind": "id",
-                   "ben": "bn", "fil": "fil", "pan": "pa"]
-        return map[value] ?? (value.count == 2 ? value : "und")
-    }
-
-    private static func slug(_ value: String) -> String {
-        value.lowercased().replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        SubtitleLanguage.canonicalCode(raw) ?? "und"
     }
 }
 

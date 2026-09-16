@@ -578,8 +578,14 @@ final class PlayerViewModel: ObservableObject {
         let canRefresh = expirationRefresh
             ? source.map { refreshedURLs.insert($0.url).inserted } ?? false
             : refreshedSources.insert(selectedSourceID).inserted
+        let recoveryOrder = SourceRecoveryOrder.ordered(
+            selectedSourceID: selectedSourceID,
+            streams: streams,
+            policy: policy,
+            excluding: failedSources
+        )
         if canRefresh,
-           let current = streams.first(where: { $0.id == selectedSourceID }),
+           let current = recoveryOrder.first(where: { $0.id == selectedSourceID }),
            let fresh = try? await PlaybackDiscovery.prepare(current.candidate), operation == token,
            await apply(fresh) { source = fresh.source; return true }
         failedSources.insert(selectedSourceID)
@@ -617,5 +623,25 @@ final class PlayerViewModel: ObservableObject {
         isLoading = false
         isSwitching = false
         isSearching = false
+    }
+}
+
+enum SourceRecoveryOrder {
+    static func ordered(
+        selectedSourceID: String,
+        streams: [PlayableStream],
+        policy: StreamSelectionPolicy,
+        excluding failed: Set<String> = []
+    ) -> [PlayableStream] {
+        var remaining = streams.filter { !failed.contains($0.id) }
+        var result: [PlayableStream] = []
+        if let index = remaining.firstIndex(where: { $0.id == selectedSourceID }) {
+            result.append(remaining.remove(at: index))
+        }
+        while let next = policy.best(in: remaining) {
+            result.append(next)
+            remaining.removeAll { $0.id == next.id }
+        }
+        return result
     }
 }

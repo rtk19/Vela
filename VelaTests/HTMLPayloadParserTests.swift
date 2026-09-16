@@ -291,22 +291,71 @@ struct HTMLPayloadParserTests {
         #expect(HLSMasterPlaylistParser.qualities(from: filtered).map(\.height) == [720])
     }
 
-    @Test("Escalates a stagnant stream from play retry to bounded source recovery")
+    @Test("Subtitle injection preserves the full HLS master for AVPlayer ABR")
+    func subtitleInjectionPreservesAllVariants() throws {
+        let playlist = #"""
+        #EXTM3U
+        #EXT-X-STREAM-INF:BANDWIDTH=900000,RESOLUTION=854x480
+        480/index.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=2800000,RESOLUTION=1280x720
+        720/index.m3u8
+        #EXT-X-STREAM-INF:BANDWIDTH=6200000,RESOLUTION=1920x1080
+        1080/index.m3u8
+        """#
+        let sourceURL = try #require(URL(string: "https://media.example/master.m3u8"))
+        let rewritten = HLSSubtitleInjector.rewrittenMasterPlaylist(
+            playlist, sourceURL: sourceURL, renditions: [], selectedQualityHeight: 720
+        )
+        #expect(rewritten.contains("480/index.m3u8"))
+        #expect(rewritten.contains("720/index.m3u8"))
+        #expect(rewritten.contains("1080/index.m3u8"))
+    }
+
+    @Test("Ordinary buffering keeps waiting while prolonged stagnation recovers")
     func playbackRecoveryPolicy() {
         #expect(PlaybackRecoveryPolicy.action(
-            stagnantChecks: 0,
+            trigger: .stagnantBuffer(checks: 1, seekGraceActive: false),
             sourceRefreshAttempts: 0
         ) == .keepWaiting)
         #expect(PlaybackRecoveryPolicy.action(
-            stagnantChecks: 1,
+            trigger: .stagnantBuffer(
+                checks: PlaybackRecoveryPolicy.stagnantChecksBeforeRecovery - 1,
+                seekGraceActive: false
+            ),
             sourceRefreshAttempts: 0
-        ) == .retryPlay)
+        ) == .keepWaiting)
         #expect(PlaybackRecoveryPolicy.action(
-            stagnantChecks: 2,
+            trigger: .stagnantBuffer(
+                checks: PlaybackRecoveryPolicy.stagnantChecksBeforeRecovery,
+                seekGraceActive: false
+            ),
+            sourceRefreshAttempts: 0
+        ) == .refreshSource)
+    }
+
+    @Test("Seeking suppresses stagnant-buffer recovery during its grace period")
+    func seekRecoveryGrace() {
+        #expect(PlaybackRecoveryPolicy.action(
+            trigger: .stagnantBuffer(checks: 100, seekGraceActive: true),
+            sourceRefreshAttempts: 0
+        ) == .keepWaiting)
+    }
+
+    @Test("Fatal errors recover immediately and recovery remains bounded")
+    func fatalPlaybackRecoveryIsBounded() {
+        #expect(PlaybackRecoveryPolicy.action(
+            trigger: .fatalPlaybackError,
             sourceRefreshAttempts: 0
         ) == .refreshSource)
         #expect(PlaybackRecoveryPolicy.action(
-            stagnantChecks: 2,
+            trigger: .fatalPlaybackError,
+            sourceRefreshAttempts: PlaybackRecoveryPolicy.maximumSourceRefreshes
+        ) == .fail)
+        #expect(PlaybackRecoveryPolicy.action(
+            trigger: .stagnantBuffer(
+                checks: PlaybackRecoveryPolicy.stagnantChecksBeforeRecovery,
+                seekGraceActive: false
+            ),
             sourceRefreshAttempts: PlaybackRecoveryPolicy.maximumSourceRefreshes
         ) == .fail)
     }
@@ -409,6 +458,108 @@ struct HTMLPayloadParserTests {
         #expect(SubtitleSource.firstAlphabetically(matching: "he-IL", in: subtitles)?.id == "a-1")
         #expect(SubtitleSource.firstAlphabetically(matching: "eng", in: subtitles)?.id == "a-en")
         #expect(SubtitleSource.firstAlphabetically(matching: "it", in: subtitles) == nil)
+    }
+
+    @Test("Normalizes subtitle aliases and private-use variants", arguments: [
+        ("he", "he", "Hebrew"), ("heb", "he", "Hebrew"),
+        ("iw", "he", "Hebrew"), ("he-IL", "he", "Hebrew"),
+        ("he-x-something", "he", "Hebrew"), ("eng", "en", "English"),
+        ("en-US", "en", "English"), ("spa", "es", "Spanish"),
+    ])
+    func normalizesSubtitleLanguages(input: String, canonical: String, visible: String) {
+        #expect(SubtitleLanguage.canonicalCode(input) == canonical)
+        #expect(SubtitleLanguage.displayName(input) == visible)
+    }
+
+    @Test("Formats every external provider through one presentation contract")
+    func externalSubtitlePresentation() throws {
+        let url = try #require(URL(string: "https://subtitles.example/release.srt"))
+        let cases = [
+            ("subdl", "SubDL", "Release A", "eng", "English - SubDL - Release A"),
+            ("wizdom", "Wizdom", "Release B", "he-x-old", "Hebrew - Wizdom - Release B"),
+            ("ktuvit", "Ktuvit", "Release C", "iw", "Hebrew - Ktuvit - Release C"),
+            ("subdl", "SubDL", "Release D", "spa", "Spanish - SubDL - Release D"),
+        ]
+        for (providerID, providerName, label, language, expected) in cases {
+            let source = SubtitleSource(
+                id: "\(providerID)-\(label)", providerID: providerID,
+                providerName: providerName, label: label, languageCode: language, url: url
+            )
+            #expect(source.userFacingDisplayName == expected)
+            #expect(!source.userFacingDisplayName.contains("-x-"))
+        }
+    }
+
+    @Test("Preferred language matching uses canonical source language")
+    func preferredLanguageUsesCanonicalIdentity() {
+        #expect(SubtitlePreferenceSelection.firstIndex(
+            candidateLanguageCodes: ["en", "he-x-vela-wizdom-release-a"],
+            primary: "he"
+        ) == 1)
+        #expect(SubtitlePreferenceSelection.firstIndex(
+            candidateLanguageCodes: ["en", "iw"], primary: "he"
+        ) == 1)
+        #expect(SubtitlePreferenceSelection.firstIndex(
+            candidateLanguageCodes: ["fr", "eng"], primary: "he", secondary: "en"
+        ) == 1)
+    }
+
+    @Test("Manual subtitle selection blocks later automatic replacement")
+    func manualSubtitleSelectionAuthority() {
+        var authority = SubtitleSelectionAuthority()
+        #expect(authority.allowsAutomaticSelection)
+        authority.recordExplicitUserSelection()
+        #expect(!authority.allowsAutomaticSelection)
+        authority.beginPlayerItem()
+        #expect(authority.allowsAutomaticSelection)
+    }
+
+    @Test("A failing subtitle provider does not discard successful provider results")
+    func providerFailureIsolation() async throws {
+        let source = SubtitleSource(
+            id: "working:one", providerID: "working", providerName: "Working",
+            label: "Release", languageCode: "he",
+            url: try #require(URL(string: "https://example.com/sub.srt"))
+        )
+        let registry = SubtitleProviderRegistry(
+            providers: [
+                MappingSubtitleProvider(resultsByIMDbID: ["tt1234567": [source]]),
+                FailingSubtitleProvider(),
+            ]
+        )
+        let results = await registry.subtitles(
+            for: SubtitleLookupRequest(kind: .movie, imdbID: "tt1234567", seasonNumber: nil, episodeNumber: nil),
+            enabledProviderIDs: ["mapping", "failing"]
+        )
+        #expect(results == [source])
+    }
+
+    @Test("Resync presentation preserves the original persistent identity")
+    func resyncPresentationAndIdentity() throws {
+        let source = SubtitleSource(
+            id: "wizdom:stable-release", providerID: "wizdom", providerName: "Wizdom",
+            label: "Release A", languageCode: "he",
+            url: try #require(URL(string: "https://example.com/sub.srt?token=one"))
+        )
+        let later = SubtitleSource(
+            id: source.id, providerID: source.providerID, providerName: source.providerName,
+            label: source.label, languageCode: "he-IL",
+            url: try #require(URL(string: "https://example.com/sub.srt?token=two"))
+        )
+        #expect(source.resyncDisplayName() == "Hebrew - Resync - Release A")
+        #expect(source.syncKey == later.syncKey)
+    }
+
+    @Test("Legacy subtitle sync JSON still decodes")
+    func legacySubtitleSyncVersionDecoding() throws {
+        let id = UUID()
+        let json = #"{"id":"\#(id.uuidString)","subtitleKey":"wizdom|wizdom:release|he|release a","subtitleProviderName":"Wizdom","subtitleLabel":"Release A","languageCode":"he","offsetTenths":6,"createdAt":0}"#
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .secondsSince1970
+        let version = try decoder.decode(SubtitleSyncVersion.self, from: Data(json.utf8))
+        #expect(version.id == id)
+        #expect(version.offset == 0.6)
+        #expect(version.subtitleProviderName == "Wizdom")
     }
 
     @Test("Builds Ktuvit's movie and episode routes and maps Hebrew subtitles")
@@ -958,8 +1109,9 @@ struct HTMLPayloadParserTests {
         #expect(rewritten.contains(#"TYPE=SUBTITLES,GROUP-ID="native-subs",NAME="Hebrew - Ktuvit - Release 1080p""#))
         #expect(rewritten.contains(#"NAME="Hebrew - Wizdom - Another Release""#))
         #expect(rewritten.components(separatedBy: "TYPE=SUBTITLES").count == 5)
-        #expect(rewritten.contains(#"NAME="Hebrew - Ktuvit - Release 1080p",LANGUAGE="he-x-ktuvit-1""#))
-        #expect(rewritten.contains(#"NAME="Hebrew - Wizdom - Another Release",LANGUAGE="he-x-wizdom-1""#))
+        #expect(rewritten.contains(#"NAME="Hebrew - Ktuvit - Release 1080p",AUTOSELECT=NO"#))
+        #expect(rewritten.contains(#"NAME="Hebrew - Wizdom - Another Release",AUTOSELECT=NO"#))
+        #expect(!rewritten.contains("LANGUAGE=\"he-x-"))
         #expect(rewritten.contains(#"SUBTITLES="native-subs""#))
         #expect(rewritten.contains("https://media.example/catalog/subs/en.m3u8"))
         #expect(rewritten.contains("https://media.example/catalog/subs/he.m3u8"))
@@ -1203,13 +1355,13 @@ struct HTMLPayloadParserTests {
         #expect(synced.contains("00:00:01.300 --> 00:00:02.300"))
         #expect(originalSecondSegment.contains("00:01:01.000 --> 00:01:02.000"))
         #expect(asset.orderedDisplayNames.last == "Saved Sync +0.3s")
-        #expect(asset.orderedLanguageTags == ["en-x-ktuvit-1", "en-x-ktuvit-2"])
-        #expect(asset.languageTags.count == 2)
-        #expect(master.contains(#"NAME="Saved Sync +0.3s",LANGUAGE="en-x-ktuvit-2""#))
+        #expect(asset.orderedLanguageTags == ["en", "en"])
+        #expect(asset.languageTags == ["en"])
+        #expect(master.contains(#"NAME="Saved Sync +0.3s",AUTOSELECT=NO"#))
     }
 
-    @Test("Subtitle Studio resolves AVPlayer private-use tags to the exact rendition")
-    func resolvesSubtitleSelectionByLanguageTag() throws {
+    @Test("Subtitle Studio resolves same-language renditions by their unique visible title")
+    func resolvesSubtitleSelectionByTitle() throws {
         let first = SubtitleSource(
             id: "ktuvit-first", providerID: "ktuvit", providerName: "Ktuvit",
             label: "First release", languageCode: "he",
@@ -1227,16 +1379,17 @@ struct HTMLPayloadParserTests {
 
         let lookup = SubtitleSelectionLookup.make(
             displayNames: ["Hebrew - Ktuvit - First release", "Hebrew - Ktuvit - Second release"],
-            languageTags: ["he-x-ktuvit-1", "he-x-ktuvit-2"],
+            languageTags: ["he", "he"],
             renditions: renditions
         )
 
-        #expect(lookup["he-x-ktuvit-1"]?.subtitle.id == first.id)
-        #expect(lookup["he-x-ktuvit-2"]?.subtitle.id == second.id)
+        #expect(lookup["Hebrew - Ktuvit - First release"]?.subtitle.id == first.id)
+        #expect(lookup["Hebrew - Ktuvit - Second release"]?.subtitle.id == second.id)
+        #expect(lookup["he"] == nil)
     }
 
     @MainActor
-    @Test("AVPlayer uses private-use labels only for third-party subtitle versions", arguments: ["subdl", "ktuvit", "wizdom", "native-hls", "stream"])
+    @Test("AVPlayer exposes rendition titles without private-use language text", arguments: ["subdl", "ktuvit", "wizdom", "native-hls", "stream"])
     func nativeSubtitleSelectionNames(providerID: String) async throws {
         let subtitle = SubtitleSource(id: "he", providerID: providerID, providerName: providerID,
                                       label: "Release", languageCode: "he", url: URL(string: "https://example.com/sub.srt")!)
@@ -1266,19 +1419,14 @@ struct HTMLPayloadParserTests {
         #expect(group.options.count == 2)
         var titles: [String] = []
         for option in group.options {
-            let isThirdParty = providerID != "native-hls" && providerID != "stream"
-            #expect(option.extendedLanguageTag?.contains("-x-\(providerID)-") == isThirdParty)
-            if isThirdParty {
-                #expect(option.displayName.localizedCaseInsensitiveContains("private"))
-            } else {
-                #expect(option.extendedLanguageTag == "he")
-                #expect(!option.displayName.localizedCaseInsensitiveContains("private"))
-            }
+            #expect(option.extendedLanguageTag == nil)
+            #expect(!option.displayName.localizedCaseInsensitiveContains("private"))
             for metadata in option.commonMetadata where metadata.commonKey == .commonKeyTitle {
                 if let title = try await metadata.load(.stringValue) { titles.append(title) }
             }
         }
         #expect(Set(titles) == Set(asset.orderedDisplayNames))
+        #expect(Set(group.options.map(\.displayName)) == Set(asset.orderedDisplayNames))
         server.clear()
     }
 
@@ -1519,5 +1667,14 @@ private struct MappingSubtitleProvider: SubtitleProvider {
 
     func subtitles(for request: SubtitleLookupRequest) async throws -> [SubtitleSource] {
         resultsByIMDbID[request.imdbID, default: []]
+    }
+}
+
+private struct FailingSubtitleProvider: SubtitleProvider {
+    let id = "failing"
+    let displayName = "Failing"
+
+    func subtitles(for request: SubtitleLookupRequest) async throws -> [SubtitleSource] {
+        throw AppError.providerUnavailable("Expected test failure")
     }
 }

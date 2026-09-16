@@ -234,24 +234,136 @@ struct SubtitleSource: Identifiable, Hashable, Sendable {
     }
 }
 
+enum SubtitleLanguage {
+    private static let aliases: [String: String] = [
+        "heb": "he", "iw": "he",
+        "eng": "en",
+        "deu": "de", "ger": "de",
+        "fra": "fr", "fre": "fr",
+        "spa": "es",
+        "ita": "it",
+        "por": "pt",
+        "rus": "ru",
+        "ara": "ar",
+        "jpn": "ja",
+        "kor": "ko",
+        "zho": "zh", "chi": "zh",
+        "ell": "el", "gre": "el",
+        "ind": "id",
+        "ben": "bn",
+        "pan": "pa",
+    ]
+
+    static func canonicalCode(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let base = value
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+            .replacingOccurrences(of: "_", with: "-")
+            .split(separator: "-")
+            .first
+            .map(String.init) ?? ""
+        guard !base.isEmpty, base != "und" else { return nil }
+        let canonical = aliases[base] ?? base
+        guard canonical.allSatisfy(\.isLetter), (2...3).contains(canonical.count) else { return nil }
+        return canonical
+    }
+
+    static func displayName(_ value: String?, locale: Locale = Locale(identifier: "en_US")) -> String {
+        guard let code = canonicalCode(value) else { return "Unknown" }
+        return locale.localizedString(forLanguageCode: code) ?? code.uppercased()
+    }
+
+    static func identifiers(for value: String, locale: Locale = .current) -> Set<String> {
+        guard let code = canonicalCode(value) else { return [] }
+        var values = Set([code])
+        if let alpha3 = Locale.LanguageCode(code).identifier(.alpha3) {
+            values.insert(alpha3.lowercased())
+        }
+        for locale in [locale, Locale(identifier: "en_US")] {
+            if let name = locale.localizedString(forLanguageCode: code) {
+                values.insert(name.lowercased())
+            }
+        }
+        if code == "he" { values.formUnion(["iw", "heb"]) }
+        if code == "en" { values.insert("eng") }
+        return values
+    }
+}
+
+enum SubtitlePreferenceSelection {
+    static func firstIndex(
+        candidateLanguageCodes: [String?],
+        primary: String,
+        secondary: String = ""
+    ) -> Int? {
+        let candidates = candidateLanguageCodes.map(SubtitleLanguage.canonicalCode)
+        for preference in [primary, secondary] {
+            guard let preferred = SubtitleLanguage.canonicalCode(preference) else { continue }
+            if let index = candidates.firstIndex(where: { $0 == preferred }) { return index }
+        }
+        return nil
+    }
+}
+
+struct SubtitleSelectionAuthority {
+    private(set) var userHasSelected = false
+
+    var allowsAutomaticSelection: Bool { !userHasSelected }
+
+    mutating func beginPlayerItem() { userHasSelected = false }
+    mutating func recordExplicitUserSelection() { userHasSelected = true }
+}
+
 extension SubtitleSource {
+    var canonicalLanguageCode: String? {
+        SubtitleLanguage.canonicalCode(languageCode)
+    }
+
+    var userFacingDisplayName: String {
+        guard providerID != "native-hls", providerID != "stream" else { return label }
+        return "\(SubtitleLanguage.displayName(languageCode)) - \(providerName) - \(label)"
+    }
+
+    func resyncDisplayName(offset: Double? = nil) -> String {
+        let timing = offset.map { " (\(String(format: "%+.1fs", $0)))" } ?? ""
+        return "\(SubtitleLanguage.displayName(languageCode)) - Resync - \(label)\(timing)"
+    }
+
     /// A stable identity for user-created timing versions. Subtitle URLs often
     /// contain short-lived tokens, so they must not participate in persistence.
     var syncKey: String {
         let stableProviderID = id.contains("://") ? "" : id
-        return [providerID, stableProviderID, languageCode ?? "und", label]
+        return [providerID, stableProviderID, canonicalLanguageCode ?? "und", label]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             .joined(separator: "|")
+    }
+
+    func matchesSyncKey(_ key: String) -> Bool {
+        if key == syncKey { return true }
+        // Stremio subtitles historically persisted their presentation-only
+        // private-use language tag. Accept that key without putting it back in
+        // the shared source contract.
+        guard providerID == "external-stream-subtitles",
+              let language = canonicalLanguageCode else { return false }
+        let providerSlug = providerName.lowercased()
+            .replacingOccurrences(of: #"[^a-z0-9]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        let legacyLanguage = "\(language)-x-external-\(providerSlug)"
+        let stableProviderID = id.contains("://") ? "" : id
+        let legacyKey = [providerID, stableProviderID, legacyLanguage, label]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .joined(separator: "|")
+        return key == legacyKey
     }
 
     static func firstAlphabetically(
         matching languageCode: String,
         in subtitles: [SubtitleSource]
     ) -> SubtitleSource? {
-        let language = canonicalLanguageCode(languageCode)
-        guard !language.isEmpty else { return nil }
+        guard let language = SubtitleLanguage.canonicalCode(languageCode) else { return nil }
         return subtitles
-            .filter { canonicalLanguageCode($0.languageCode ?? "") == language }
+            .filter { $0.canonicalLanguageCode == language }
             .sorted(by: alphabeticalOrder)
             .first
     }
@@ -264,18 +376,6 @@ extension SubtitleSource {
         return left.id < right.id
     }
 
-    private static func canonicalLanguageCode(_ code: String) -> String {
-        let base = code
-            .lowercased()
-            .split(whereSeparator: { $0 == "-" || $0 == "_" })
-            .first
-            .map(String.init) ?? ""
-        switch base {
-        case "heb", "iw": return "he"
-        case "eng": return "en"
-        default: return base
-        }
-    }
 }
 
 struct SubtitleSyncVersion: Codable, Identifiable, Equatable, Sendable {

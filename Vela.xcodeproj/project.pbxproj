@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		1472CE33F4F8C621E976745E /* PlayerSourceSwitchTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */; };
+		15C3A55C51E7493694323D03 /* PlaybackSeekTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 44EE7D6F5A1E4D9D829CFC8B /* PlaybackSeekTests.swift */; };
 		194E84373A3313788D7814D8 /* UserDataBackup.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BDE955356AA93FC1945591F /* UserDataBackup.swift */; };
 		1C890DC7CEF559EEB339C409 /* TMDBClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B5CE7E669118A0E5B774F5E /* TMDBClient.swift */; };
 		25F410B617628369508247B1 /* TMDBCatalogMatcherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */; };
@@ -59,6 +60,7 @@
 		2361987E924D39BB64E83C03 /* StremioAddonProviderTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StremioAddonProviderTests.swift; sourceTree = "<group>"; };
 		2835E04E7476E1DD1E9D6416 /* AppEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppEnvironment.swift; sourceTree = "<group>"; };
 		3B429ACDC0C702D23FDC4C3A /* HTMLPayloadParserTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLPayloadParserTests.swift; sourceTree = "<group>"; };
+		44EE7D6F5A1E4D9D829CFC8B /* PlaybackSeekTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackSeekTests.swift; sourceTree = "<group>"; };
 		4266A879F83FCBDD41F8A33F /* Provider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Provider.swift; sourceTree = "<group>"; };
 		4D73B945A62B4078F3230F2B /* PlaybackProgressTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlaybackProgressTests.swift; sourceTree = "<group>"; };
 		55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PlayerSourceSwitchTests.swift; sourceTree = "<group>"; };
@@ -94,6 +96,7 @@
 				3B429ACDC0C702D23FDC4C3A /* HTMLPayloadParserTests.swift */,
 				112B4BF98D8F1598D647E6B0 /* PlaybackDiscoveryTests.swift */,
 				4D73B945A62B4078F3230F2B /* PlaybackProgressTests.swift */,
+				44EE7D6F5A1E4D9D829CFC8B /* PlaybackSeekTests.swift */,
 				55506E805C529E255E1C5FDB /* PlayerSourceSwitchTests.swift */,
 				2361987E924D39BB64E83C03 /* StremioAddonProviderTests.swift */,
 				74542771E6401702CEACC2AB /* TMDBCatalogMatcherTests.swift */,
@@ -296,6 +299,7 @@
 				6E15AD5DE7CC3147442D2BEC /* HTMLPayloadParserTests.swift in Sources */,
 				5357C6AC995464E109DA454E /* PlaybackDiscoveryTests.swift in Sources */,
 				FEB9A4FE40E886D3E4CEA690 /* PlaybackProgressTests.swift in Sources */,
+				15C3A55C51E7493694323D03 /* PlaybackSeekTests.swift in Sources */,
 				1472CE33F4F8C621E976745E /* PlayerSourceSwitchTests.swift in Sources */,
 				C01C3860FCBD106BB2A63C3D /* StremioAddonProviderTests.swift in Sources */,
 				25F410B617628369508247B1 /* TMDBCatalogMatcherTests.swift in Sources */,
@@ -328,7 +332,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.5.2;
+				MARKETING_VERSION = 2.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";
@@ -518,7 +522,7 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
-				MARKETING_VERSION = 2.5.2;
+				MARKETING_VERSION = 2.6.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.refael.BetterStreamflix;
 				SDKROOT = iphoneos;
 				TARGETED_DEVICE_FAMILY = "1,2";

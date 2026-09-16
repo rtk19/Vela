@@ -230,8 +230,11 @@ enum SubtitleSelectionLookup {
         renditions: [HLSSubtitleRendition]
     ) -> [String: HLSSubtitleRendition] {
         var result = Dictionary(uniqueKeysWithValues: zip(displayNames, renditions))
+        let tagCounts = Dictionary(grouping: languageTags.map { $0.lowercased() }, by: { $0 })
+            .mapValues(\.count)
         for (languageTag, rendition) in zip(languageTags, renditions) {
-            result[languageTag.lowercased()] = rendition
+            let normalizedTag = languageTag.lowercased()
+            if tagCounts[normalizedTag] == 1 { result[normalizedTag] = rendition }
         }
         return result
     }
@@ -254,6 +257,8 @@ final class PlayerSession: ObservableObject {
     @Published private(set) var isBuffering = false
     @Published private(set) var playbackErrorMessage: String?
 
+    private(set) var playbackState: PlaybackSessionState = .idle
+
     var onEnded: (() -> Void)?
     var onSourceRefreshNeeded: (() async -> Bool)?
     var onSubtitleVisibilityChanged: ((Bool) -> Void)?
@@ -264,6 +269,7 @@ final class PlayerSession: ObservableObject {
     nonisolated(unsafe) private var playbackStalledObserver: NSObjectProtocol?
     nonisolated(unsafe) private var playbackErrorLogObserver: NSObjectProtocol?
     nonisolated(unsafe) private var failedToPlayToEndObserver: NSObjectProtocol?
+    nonisolated(unsafe) private var timeJumpedObserver: NSObjectProtocol?
     nonisolated(unsafe) private var audioInterruptionObserver: NSObjectProtocol?
     nonisolated(unsafe) private var audioRouteChangeObserver: NSObjectProtocol?
     nonisolated(unsafe) private var rateObservation: NSKeyValueObservation?
@@ -300,6 +306,7 @@ final class PlayerSession: ObservableObject {
     private var secondarySubtitleLanguage = ""
     private var audioLanguage = "en"
     private var subtitleVisibilityBaseline: Bool?
+    private var subtitleSelectionAuthority = SubtitleSelectionAuthority()
     private var isApplyingPreferredLanguages = false
     private var isStabilizingMediaSelection = false
     private var playbackWasRequested = false
@@ -314,6 +321,8 @@ final class PlayerSession: ObservableObject {
     private var recoveryBaselinePosition = 0.0
     private var lastObservedBufferEnd = 0.0
     private var stagnantBufferChecks = 0
+    private var seekRecoveryGraceUntil: Date?
+    private var playbackSeekState = PlaybackSeekState()
     private var wasPlayingBeforeInterruption = false
     private var qualityPreferenceInitialized = false
     private var preferredQualityHeight: Int?
@@ -381,6 +390,7 @@ final class PlayerSession: ObservableObject {
         if let playbackStalledObserver { NotificationCenter.default.removeObserver(playbackStalledObserver) }
         if let playbackErrorLogObserver { NotificationCenter.default.removeObserver(playbackErrorLogObserver) }
         if let failedToPlayToEndObserver { NotificationCenter.default.removeObserver(failedToPlayToEndObserver) }
+        if let timeJumpedObserver { NotificationCenter.default.removeObserver(timeJumpedObserver) }
         if let audioInterruptionObserver { NotificationCenter.default.removeObserver(audioInterruptionObserver) }
         if let audioRouteChangeObserver { NotificationCenter.default.removeObserver(audioRouteChangeObserver) }
     }
@@ -412,6 +422,7 @@ final class PlayerSession: ObservableObject {
         nextReplacementShouldPlay = nil
         recoveryWatchdogTask?.cancel()
         qualitySwitchTask?.cancel()
+        playbackState = .preparing
         isBuffering = shouldPlay
         playbackErrorMessage = nil
         await audioSessionController.activateForPlayback()
@@ -504,6 +515,9 @@ final class PlayerSession: ObservableObject {
         player.pause()
         removeStudioTimeObserver()
         isBuffering = false
+        playbackState = .idle
+        seekRecoveryGraceUntil = nil
+        playbackSeekState.reset()
         removeInjectedSubtitleAsset()
         clearNowPlaying()
         removeRemoteCommands()
@@ -550,8 +564,8 @@ final class PlayerSession: ObservableObject {
         requestSourceRefresh()
     }
 
-    /// Disconnect the active item as soon as the user chooses another source.
-    /// Retain it privately only so a failed replacement can be restored.
+    /// Snapshot the active item while it keeps playing. The replacement is
+    /// prepared independently and is swapped in only after validation succeeds.
     func beginSourceSwitch() {
         guard let item = player.currentItem, pendingSourceSwitchItem == nil else { return }
         let time = player.currentTime().seconds
@@ -560,9 +574,6 @@ final class PlayerSession: ObservableObject {
         pendingSourceSwitchRate = player.rate > 0 ? player.rate : player.defaultRate
         pendingSourceSwitchItem = item
         isSourceSwitching = true
-        player.pause()
-        player.replaceCurrentItem(with: nil)
-        isBuffering = true
     }
 
     func cancelSourceSwitch(resumePrevious: Bool) {
@@ -645,12 +656,27 @@ final class PlayerSession: ObservableObject {
             cancelSourceSwitch(resumePrevious: true)
             return false
         }
-        let time = player.currentTime().seconds
-        let resumeAt = pendingSourceSwitchTime ?? (time.isFinite ? time : position)
-        let shouldPlay = nextReplacementShouldPlay ?? pendingSourceSwitchShouldPlay
-            ?? (playbackWasRequested || player.timeControlStatus != .paused)
+        let liveTime = oldItem.currentTime().seconds
+        let isAutomaticRecovery = nextReplacementShouldPlay != nil
+        let resumeAt = isAutomaticRecovery
+            ? (pendingSourceSwitchTime ?? (liveTime.isFinite ? liveTime : position))
+            : (oldItemIsStillCurrent && liveTime.isFinite
+                ? liveTime
+                : (pendingSourceSwitchTime ?? position))
+        let shouldPlay = nextReplacementShouldPlay
+            ?? (oldItemIsStillCurrent
+                ? Optional(player.rate > 0 || player.timeControlStatus != .paused)
+                : pendingSourceSwitchShouldPlay)
+            ?? playbackWasRequested
         nextReplacementShouldPlay = nil
-        let rate = pendingSourceSwitchRate ?? (player.rate > 0 ? player.rate : player.defaultRate)
+        let rate: Float
+        if isAutomaticRecovery {
+            rate = pendingSourceSwitchRate ?? player.defaultRate
+        } else if oldItemIsStillCurrent {
+            rate = player.rate > 0 ? player.rate : player.defaultRate
+        } else {
+            rate = pendingSourceSwitchRate ?? player.defaultRate
+        }
         pendingSourceSwitchTime = nil
         pendingSourceSwitchShouldPlay = nil
         pendingSourceSwitchRate = nil
@@ -703,41 +729,9 @@ final class PlayerSession: ObservableObject {
         preferredQualityHeight = quality?.height
         qualityPreferenceInitialized = true
         selectedQuality = quality
-        guard let source = currentPlaybackSource,
-              player.currentItem != nil else { return }
-
+        guard let item = player.currentItem else { return }
         qualitySwitchTask?.cancel()
-        let requestedQuality = quality
-        let externalSubtitles = currentExternalSubtitles
-        let resumeAt = player.currentTime().seconds.isFinite
-            ? player.currentTime().seconds
-            : position
-        let shouldPlay = playbackWasRequested || player.timeControlStatus != .paused
-        let rate = player.rate > 0 ? player.rate : player.defaultRate
-        isBuffering = true
-
-        qualitySwitchTask = Task { @MainActor [weak self] in
-            guard let self else { return }
-            let preferredSubtitleDisplayName = await self.selectedSubtitleDisplayName()
-            let preferredSubtitleSelectionID = await self.selectedSubtitleSelectionID()
-            let asset = await self.assetByInjectingSubtitles(
-                externalSubtitles,
-                into: source,
-                selectedQuality: requestedQuality
-            )
-            guard !Task.isCancelled,
-                  self.selectedQuality == requestedQuality else { return }
-            self.replaceCurrentItem(
-                with: asset,
-                resumeAt: resumeAt,
-                shouldPlay: shouldPlay,
-                playbackRate: rate,
-                preferredSubtitleDisplayName: preferredSubtitleDisplayName,
-                preferredSubtitleSelectionID: preferredSubtitleSelectionID
-            )
-            self.qualitySwitchTask = nil
-            if !shouldPlay { self.isBuffering = false }
-        }
+        applyQuality(to: item)
     }
 
     func adjustSubtitleTiming(by delta: Double) {
@@ -787,7 +781,8 @@ final class PlayerSession: ObservableObject {
                     shouldPlay: wasPlaying,
                     playbackRate: playbackRate,
                     preferredSubtitleDisplayName: selectedSubtitleName,
-                    preferredSubtitleSelectionID: selectedSubtitleSelectionID
+                    preferredSubtitleSelectionID: selectedSubtitleSelectionID,
+                    seekTolerance: .zero
                 )
             } catch where error.isCancellation { }
             catch {
@@ -879,7 +874,8 @@ final class PlayerSession: ObservableObject {
             resumeAt: resumeAt,
             shouldPlay: studioWasPlaying,
             playbackRate: player.defaultRate,
-            preferredSubtitleSelectionID: selectionID(forSyncVersionID: versionID)
+            preferredSubtitleSelectionID: selectionID(forSyncVersionID: versionID),
+            seekTolerance: .zero
         )
         isSubtitleStudioSeeking = false
         removeStudioTimeObserver()
@@ -892,6 +888,7 @@ final class PlayerSession: ObservableObject {
         let token = UUID()
         subtitleStudioSeekToken = token
         isSubtitleStudioSeeking = true
+        player.currentItem?.cancelPendingSeeks()
         player.seek(
             to: CMTime(seconds: target, preferredTimescale: 600),
             toleranceBefore: .zero,
@@ -1019,7 +1016,7 @@ final class PlayerSession: ObservableObject {
     ) -> [HLSSubtitleRendition] {
         baseRenditions.flatMap { rendition in
             let saved = subtitleSyncVersions
-                .filter { $0.subtitleKey == rendition.subtitle.syncKey }
+                .filter { rendition.subtitle.matchesSyncKey($0.subtitleKey) }
                 .sorted { $0.createdAt < $1.createdAt }
                 .enumerated()
                 .map { index, version in
@@ -1039,12 +1036,7 @@ final class PlayerSession: ObservableObject {
     }
 
     private func syncedDisplayName(for subtitle: SubtitleSource, versionNumber: Int) -> String {
-        let language = subtitle.languageCode.flatMap {
-            Locale.current.localizedString(forLanguageCode: $0)
-        } ?? subtitle.label
-        let version = "\(language) (Resynced \(versionNumber))"
-        guard subtitle.providerID != "native-hls" else { return version }
-        return "\(version) - \(subtitle.providerName) - \(subtitle.label)"
+        subtitle.resyncDisplayName()
     }
 
     private func selectionID(forSyncVersionID id: UUID) -> String? {
@@ -1128,11 +1120,13 @@ final class PlayerSession: ObservableObject {
         shouldPlay: Bool,
         playbackRate: Float,
         preferredSubtitleDisplayName: String? = nil,
-        preferredSubtitleSelectionID: String? = nil
+        preferredSubtitleSelectionID: String? = nil,
+        seekTolerance: CMTime = PlaybackSeekPolicy.normalTolerance
     ) {
         mediaOptionsTask?.cancel()
         let mediaSelectionGeneration = UUID()
         self.mediaSelectionGeneration = mediaSelectionGeneration
+        subtitleSelectionAuthority.beginPlayerItem()
         isStabilizingMediaSelection = true
         playbackWasRequested = shouldPlay
         shouldResumeAfterBuffering = false
@@ -1167,6 +1161,9 @@ final class PlayerSession: ObservableObject {
                 guard let self, let item else { return }
                 self.refreshSubtitleTimingAvailability(for: item)
                 self.recordSubtitleVisibilityChange(for: item)
+                if !self.isStabilizingMediaSelection {
+                    self.subtitleSelectionAuthority.recordExplicitUserSelection()
+                }
             }
         }
         player.replaceCurrentItem(with: item)
@@ -1216,8 +1213,8 @@ final class PlayerSession: ObservableObject {
             if resumeAt > 0 {
                 seekFinished = await item.seek(
                     to: CMTime(seconds: resumeAt, preferredTimescale: 600),
-                    toleranceBefore: .zero,
-                    toleranceAfter: .zero
+                    toleranceBefore: seekTolerance,
+                    toleranceAfter: seekTolerance
                 )
             }
             // Seeking can cause another HLS rendition reconciliation. Selection
@@ -1367,16 +1364,32 @@ final class PlayerSession: ObservableObject {
                 self.handleItemFailure()
             }
         }
+        if let timeJumpedObserver {
+            NotificationCenter.default.removeObserver(timeJumpedObserver)
+        }
+        timeJumpedObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemTimeJumped,
+            object: item,
+            queue: .main
+        ) { [weak self, weak item] _ in
+            MainActor.assumeIsolated {
+                guard let self, let item, self.player.currentItem === item else { return }
+                self.beginSeekRecoveryGrace()
+                self.refreshPlaybackState()
+            }
+        }
     }
 
     private func refreshPlaybackState() {
         if isSourceSwitching {
+            playbackState = .preparing
             isBuffering = true
             publishNowPlayingInfo()
             return
         }
         switch player.timeControlStatus {
         case .playing:
+            playbackState = .playing
             playbackWasRequested = true
             shouldResumeAfterBuffering = false
             needsSourceRefreshAfterBackground = false
@@ -1385,6 +1398,7 @@ final class PlayerSession: ObservableObject {
             recoveryWatchdogTask?.cancel()
             recoveryWatchdogTask = nil
         case .waitingToPlayAtSpecifiedRate:
+            playbackState = isSeekRecoveryGraceActive ? .seeking : .buffering
             playbackWasRequested = true
             if needsSourceRefreshAfterBackground {
                 requestSourceRefresh()
@@ -1394,6 +1408,7 @@ final class PlayerSession: ObservableObject {
             scheduleRecoveryWatchdogIfNeeded()
         case .paused:
             if isPreparingPlayback {
+                playbackState = .preparing
                 playbackWasRequested = true
                 isBuffering = true
                 publishNowPlayingInfo()
@@ -1402,6 +1417,7 @@ final class PlayerSession: ObservableObject {
             playbackWasRequested = false
             shouldResumeAfterBuffering = false
             isBuffering = false
+            playbackState = .paused
             recoveryWatchdogTask?.cancel()
             recoveryWatchdogTask = nil
             if player.currentItem?.status == .failed || sourceIsExpiredOrExpiringSoon {
@@ -1424,6 +1440,7 @@ final class PlayerSession: ObservableObject {
         guard !isPreparingPlayback else { return }
         playbackWasRequested = true
         shouldResumeAfterBuffering = true
+        playbackState = isSeekRecoveryGraceActive ? .seeking : .buffering
         isBuffering = true
         publishNowPlayingInfo()
         // A stall can leave AVPlayer in .paused rather than .waiting. Calling
@@ -1485,7 +1502,17 @@ final class PlayerSession: ObservableObject {
             return
         }
         sourceRefreshRequestedForURL = currentSourceURL
-        nextReplacementShouldPlay = playbackWasRequested || shouldResumeAfterBuffering
+        playbackState = .recovering
+        let currentTime = player.currentTime().seconds
+        let recovery = playbackSeekState.recoverySnapshot(
+            currentPosition: currentTime.isFinite ? currentTime : position,
+            fallbackShouldPlay: playbackWasRequested || shouldResumeAfterBuffering,
+            fallbackRate: player.rate > 0 ? player.rate : player.defaultRate
+        )
+        pendingSourceSwitchTime = recovery.position
+        pendingSourceSwitchShouldPlay = recovery.shouldPlay
+        pendingSourceSwitchRate = recovery.rate
+        nextReplacementShouldPlay = recovery.shouldPlay
         automaticSourceRefreshAttempts += 1
         recoveryBaselinePosition = position
         recoveryWatchdogTask?.cancel()
@@ -1513,12 +1540,37 @@ final class PlayerSession: ObservableObject {
         requestSourceRefresh()
     }
 
+    private var isSeekRecoveryGraceActive: Bool {
+        guard let seekRecoveryGraceUntil else { return false }
+        return Date() < seekRecoveryGraceUntil
+    }
+
+    private func beginSeekRecoveryGrace() {
+        playbackState = .seeking
+        seekRecoveryGraceUntil = Date().addingTimeInterval(PlaybackRecoveryPolicy.seekGracePeriod)
+        stagnantBufferChecks = 0
+        recoveryWatchdogTask?.cancel()
+        recoveryWatchdogTask = nil
+    }
+
+    private func finishSeek() {
+        refreshPlaybackState()
+        if playbackWasRequested,
+           player.timeControlStatus != .playing {
+            scheduleRecoveryWatchdogIfNeeded()
+        }
+    }
+
     private func scheduleRecoveryWatchdogIfNeeded() {
         guard recoveryWatchdogTask == nil,
               playbackWasRequested,
               player.currentItem != nil else { return }
         lastObservedBufferEnd = bufferedEndTime()
         stagnantBufferChecks = 0
+        // AVPlayer has no terminal event for a server that stays connected but
+        // stops delivering media. This deliberately long watchdog is only a
+        // last-resort detector for that case; ordinary buffering remains under
+        // AVPlayer's automatic wait-and-resume control.
         recoveryWatchdogTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 do {
@@ -1540,11 +1592,12 @@ final class PlayerSession: ObservableObject {
 
                 self.stagnantBufferChecks += 1
                 switch PlaybackRecoveryPolicy.action(
-                    stagnantChecks: self.stagnantBufferChecks,
+                    trigger: .stagnantBuffer(
+                        checks: self.stagnantBufferChecks,
+                        seekGraceActive: self.isSeekRecoveryGraceActive
+                    ),
                     sourceRefreshAttempts: self.automaticSourceRefreshAttempts
                 ) {
-                case .retryPlay:
-                    self.player.play()
                 case .refreshSource:
                     self.recoveryWatchdogTask = nil
                     self.requestSourceRefresh()
@@ -1578,6 +1631,7 @@ final class PlayerSession: ObservableObject {
         isPreparingPlayback = false
         playbackWasRequested = false
         isBuffering = false
+        playbackState = .failed
         player.pause()
         playbackErrorMessage = "The video stream stopped responding. Check your connection and try again."
         publishNowPlayingInfo()
@@ -1704,19 +1758,26 @@ final class PlayerSession: ObservableObject {
                     nativeOptions.append(option)
                 }
             }
-            embeddedSubtitle = embeddedSubtitle ?? preferredOption(
-                in: nativeOptions,
-                languageCodes: [primarySubtitleLanguage]
-            ) ?? preferredOption(
-                in: injectedOptions,
-                languageCodes: [primarySubtitleLanguage]
-            ) ?? preferredOption(
-                in: nativeOptions,
-                languageCodes: [secondarySubtitleLanguage]
-            ) ?? preferredOption(
-                in: injectedOptions,
-                languageCodes: [secondarySubtitleLanguage]
-            )
+            if embeddedSubtitle == nil {
+                embeddedSubtitle = await preferredOption(
+                    in: nativeOptions, languageCodes: [primarySubtitleLanguage]
+                )
+            }
+            if embeddedSubtitle == nil {
+                embeddedSubtitle = await preferredOption(
+                    in: injectedOptions, languageCodes: [primarySubtitleLanguage]
+                )
+            }
+            if embeddedSubtitle == nil {
+                embeddedSubtitle = await preferredOption(
+                    in: nativeOptions, languageCodes: [secondarySubtitleLanguage]
+                )
+            }
+            if embeddedSubtitle == nil {
+                embeddedSubtitle = await preferredOption(
+                    in: injectedOptions, languageCodes: [secondarySubtitleLanguage]
+                )
+            }
         }
         if preferredSubtitleSelectionID == "__subtitles_off__" { embeddedSubtitle = nil }
         if let subtitleGroup {
@@ -1734,7 +1795,7 @@ final class PlayerSession: ObservableObject {
             refreshSubtitleTimingAvailability(for: item)
         }
         if let audioGroup {
-            let audio = preferredOption(in: audioGroup.options, languageCodes: [audioLanguage, "en"])
+            let audio = await preferredOption(in: audioGroup.options, languageCodes: [audioLanguage, "en"])
             if let audio { player.currentItem?.select(audio, in: audioGroup) }
         }
     }
@@ -1760,7 +1821,8 @@ final class PlayerSession: ObservableObject {
         // The initial task owns the readiness/selection/playback sequence. If
         // readiness arrives while it is active, that task will apply the final
         // selection itself and must not be cancelled by this observation.
-        guard mediaOptionsTask == nil else { return }
+        guard mediaOptionsTask == nil,
+              subtitleSelectionAuthority.allowsAutomaticSelection else { return }
         mediaOptionsTask?.cancel()
         mediaOptionsTask = Task { [weak self, weak item] in
             guard let self, let item, self.player.currentItem === item else { return }
@@ -1850,36 +1912,31 @@ final class PlayerSession: ObservableObject {
     }
 
     private func subtitleSelectionID(_ option: AVMediaSelectionOption) async -> String {
-        if let languageTag = option.extendedLanguageTag?.lowercased(),
-           injectedSubtitleLanguageTags.contains(languageTag) {
-            return languageTag
-        }
         if let title = await subtitleTitle(option) { return title }
         return option.displayName
     }
 
     private func isInjectedSubtitleOption(_ option: AVMediaSelectionOption) async -> Bool {
-        if let languageTag = option.extendedLanguageTag?.lowercased(),
-           injectedSubtitleLanguageTags.contains(languageTag) {
-            return true
-        }
         return injectedSubtitleNames.contains(await subtitleSelectionID(option))
     }
 
     private func preferredOption(
         in options: [AVMediaSelectionOption],
         languageCodes: [String]
-    ) -> AVMediaSelectionOption? {
+    ) async -> AVMediaSelectionOption? {
         var matchingForcedOption: AVMediaSelectionOption?
         for code in languageCodes where !code.isEmpty {
-            let identifiers = languageIdentifiers(for: code)
-            let matches = options.filter { option in
+            guard let preferredLanguage = SubtitleLanguage.canonicalCode(code) else { continue }
+            var matches: [AVMediaSelectionOption] = []
+            for option in options {
+                let selectionID = await subtitleSelectionID(option)
+                let renditionLanguage = (subtitleRenditionsBySelectionID[selectionID]
+                    ?? subtitleRenditionsByDisplayName[selectionID])?.subtitle.canonicalLanguageCode
                 let tags = [option.extendedLanguageTag, option.locale?.identifier]
-                    .compactMap { $0.map(normalizedLanguageValue) }
-                let displayName = normalizedLanguageValue(option.displayName)
-                return tags.contains { tag in
-                    identifiers.contains(tag) || identifiers.contains(where: { tag.hasPrefix("\($0)-") })
-                } || identifiers.contains(where: { displayName.contains($0) })
+                    .compactMap { SubtitleLanguage.canonicalCode($0) }
+                if renditionLanguage == preferredLanguage || tags.contains(preferredLanguage) {
+                    matches.append(option)
+                }
             }
             if let regular = matches.first(where: {
                 !$0.hasMediaCharacteristic(.containsOnlyForcedSubtitles)
@@ -1889,32 +1946,6 @@ final class PlayerSession: ObservableObject {
             matchingForcedOption = matchingForcedOption ?? matches.first
         }
         return matchingForcedOption
-    }
-
-    private func languageIdentifiers(for code: String) -> Set<String> {
-        var values = Set([normalizedLanguageValue(code)])
-        if let alpha3 = Locale.LanguageCode(code).identifier(.alpha3) {
-            values.insert(normalizedLanguageValue(alpha3))
-        }
-        for locale in [Locale.current, Locale(identifier: "en_US")] {
-            if let name = locale.localizedString(forLanguageCode: code) {
-                values.insert(normalizedLanguageValue(name))
-            }
-        }
-        if code == "he" {
-            values.formUnion(["iw", "heb"])
-        } else if code == "en" {
-            values.insert("eng")
-        }
-        return values
-    }
-
-    private func normalizedLanguageValue(_ value: String) -> String {
-        value
-            .lowercased()
-            .replacingOccurrences(of: "_", with: "-")
-            .replacingOccurrences(of: "(forced)", with: "")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func configureNowPlaying(for request: PlaybackRequest) {
@@ -2076,12 +2107,47 @@ final class PlayerSession: ObservableObject {
 
     private func seekFromRemoteCommand(to position: TimeInterval) {
         guard player.currentItem != nil, position.isFinite else { return }
+        seekForPlayback(to: position)
+    }
+
+    /// Performs an ordinary playback seek. AVPlayer remains responsible for
+    /// fetching HLS segments; this only serializes user intent so stale seek
+    /// completions cannot restore an older position or play/pause state.
+    func seekForPlayback(to position: TimeInterval) {
+        guard let item = player.currentItem, position.isFinite else { return }
+        let shouldPlay = player.rate > 0 || player.timeControlStatus != .paused
+        let rate = player.rate > 0 ? player.rate : player.defaultRate
+        let request = playbackSeekState.begin(
+            target: max(0, position),
+            shouldPlay: shouldPlay,
+            rate: rate
+        )
+        if sourceRefreshTask != nil || nextReplacementShouldPlay != nil {
+            pendingSourceSwitchTime = request.target
+            pendingSourceSwitchShouldPlay = request.shouldPlay
+            pendingSourceSwitchRate = request.rate
+            nextReplacementShouldPlay = request.shouldPlay
+        }
+        playbackWasRequested = shouldPlay
+        shouldResumeAfterBuffering = shouldPlay
+        beginSeekRecoveryGrace()
+        item.cancelPendingSeeks()
         player.seek(
-            to: CMTime(seconds: max(0, position), preferredTimescale: 600),
-            toleranceBefore: .zero,
-            toleranceAfter: .zero
-        ) { [weak self] _ in
-            Task { @MainActor [weak self] in self?.publishNowPlayingInfo() }
+            to: CMTime(seconds: request.target, preferredTimescale: 600),
+            toleranceBefore: PlaybackSeekPolicy.normalTolerance,
+            toleranceAfter: PlaybackSeekPolicy.normalTolerance
+        ) { [weak self] finished in
+            Task { @MainActor [weak self] in
+                guard let self,
+                      let completed = self.playbackSeekState.complete(request.id, finished: finished) else { return }
+                if completed.shouldPlay {
+                    self.player.playImmediately(atRate: completed.rate)
+                } else {
+                    self.player.pause()
+                }
+                self.finishSeek()
+                self.publishNowPlayingInfo()
+            }
         }
     }
 
@@ -2112,26 +2178,113 @@ final class PlayerSession: ObservableObject {
     }
 }
 
+enum PlaybackSessionState: Equatable, Sendable {
+    case idle
+    case preparing
+    case playing
+    case paused
+    case seeking
+    case buffering
+    case recovering
+    case failed
+}
+
+enum PlaybackSeekPolicy {
+    // Normal HLS playback benefits from keyframe/segment-aligned seeks. Subtitle
+    // Studio continues to use zero tolerance in its separate seek path.
+    static let normalTolerance = CMTime(seconds: 0.5, preferredTimescale: 600)
+}
+
+struct PlaybackSeekRequest: Equatable, Sendable {
+    let id: UInt64
+    let target: TimeInterval
+    let shouldPlay: Bool
+    let rate: Float
+}
+
+struct PlaybackSeekRecoverySnapshot: Equatable, Sendable {
+    let position: TimeInterval
+    let shouldPlay: Bool
+    let rate: Float
+}
+
+struct PlaybackSeekState: Sendable {
+    private(set) var latestRequest: PlaybackSeekRequest?
+    private var nextID: UInt64 = 0
+
+    mutating func begin(target: TimeInterval, shouldPlay: Bool, rate: Float) -> PlaybackSeekRequest {
+        nextID &+= 1
+        let request = PlaybackSeekRequest(
+            id: nextID,
+            target: target,
+            shouldPlay: shouldPlay,
+            rate: rate.isFinite && rate > 0 ? rate : 1
+        )
+        latestRequest = request
+        return request
+    }
+
+    mutating func complete(_ id: UInt64, finished: Bool) -> PlaybackSeekRequest? {
+        guard finished, latestRequest?.id == id else { return nil }
+        let completed = latestRequest
+        latestRequest = nil
+        return completed
+    }
+
+    func recoverySnapshot(
+        currentPosition: TimeInterval,
+        fallbackShouldPlay: Bool,
+        fallbackRate: Float
+    ) -> PlaybackSeekRecoverySnapshot {
+        if let latestRequest {
+            return .init(
+                position: latestRequest.target,
+                shouldPlay: latestRequest.shouldPlay,
+                rate: latestRequest.rate
+            )
+        }
+        return .init(
+            position: max(0, currentPosition),
+            shouldPlay: fallbackShouldPlay,
+            rate: fallbackRate.isFinite && fallbackRate > 0 ? fallbackRate : 1
+        )
+    }
+
+    mutating func reset() {
+        latestRequest = nil
+    }
+}
+
+enum PlaybackRecoveryTrigger: Equatable, Sendable {
+    case stagnantBuffer(checks: Int, seekGraceActive: Bool)
+    case fatalPlaybackError
+}
+
 enum PlaybackRecoveryAction: Equatable, Sendable {
     case keepWaiting
-    case retryPlay
     case refreshSource
     case fail
 }
 
 enum PlaybackRecoveryPolicy {
-    static let watchdogInterval: Duration = .seconds(8)
+    static let watchdogInterval: Duration = .seconds(10)
     static let minimumBufferGrowth = 0.5
+    static let seekGracePeriod: TimeInterval = 15
+    static let stagnantChecksBeforeRecovery = 6
     static let maximumSourceRefreshes = 3
 
     static func action(
-        stagnantChecks: Int,
+        trigger: PlaybackRecoveryTrigger,
         sourceRefreshAttempts: Int
     ) -> PlaybackRecoveryAction {
-        if sourceRefreshAttempts >= maximumSourceRefreshes { return .fail }
-        if stagnantChecks >= 2 { return .refreshSource }
-        if stagnantChecks == 1 { return .retryPlay }
-        return .keepWaiting
+        switch trigger {
+        case .fatalPlaybackError:
+            return sourceRefreshAttempts >= maximumSourceRefreshes ? .fail : .refreshSource
+        case let .stagnantBuffer(checks, seekGraceActive):
+            guard !seekGraceActive,
+                  checks >= stagnantChecksBeforeRecovery else { return .keepWaiting }
+            return sourceRefreshAttempts >= maximumSourceRefreshes ? .fail : .refreshSource
+        }
     }
 }
 
