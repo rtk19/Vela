@@ -753,7 +753,7 @@ final class PlayerSession: ObservableObject {
                 let injectedAsset = try await HLSSubtitleInjector.prepare(
                     source: source,
                     renditions: renditions,
-                    timingOffset: appliedSubtitleTimingOffset,
+                    timingOffset: updatedOffset,
                     selectedQualityHeight: selectedQuality?.height,
                     primarySubtitleLanguage: primarySubtitleLanguage,
                     secondarySubtitleLanguage: secondarySubtitleLanguage,

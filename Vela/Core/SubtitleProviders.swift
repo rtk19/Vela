@@ -2319,7 +2319,7 @@ enum HLSSubtitleInjector {
                         relativeTo: sourceURL
                     ),
                     language: SubtitleLanguage.canonicalCode(
-                        attribute("LANGUAGE", in: line)
+                        mediaAttribute("LANGUAGE", in: line)
                     ),
                     isBuiltIn: true,
                     originalOrder: index
@@ -2387,7 +2387,6 @@ enum HLSSubtitleInjector {
                     return leftGroup < rightGroup
                 }
 
-                // Inside Primary / Secondary, Built-in comes first.
                 if leftGroup <= 1,
                    left.isBuiltIn != right.isBuiltIn {
                     return left.isBuiltIn
@@ -2409,10 +2408,10 @@ enum HLSSubtitleInjector {
                 }
 
                 let leftName =
-                    attribute("NAME", in: left.line) ?? left.line
+                    mediaAttribute("NAME", in: left.line) ?? left.line
 
                 let rightName =
-                    attribute("NAME", in: right.line) ?? right.line
+                    mediaAttribute("NAME", in: right.line) ?? right.line
 
                 let nameComparison =
                     leftName.localizedCaseInsensitiveCompare(
@@ -2425,131 +2424,7 @@ enum HLSSubtitleInjector {
 
                 return left.originalOrder < right.originalOrder
             }
-            .map(\.line)
-        let primaryLanguage =
-            SubtitleLanguage.canonicalCode(primarySubtitleLanguage)
-
-        let secondaryLanguage =
-            SubtitleLanguage.canonicalCode(secondarySubtitleLanguage)
-
-        let builtInEntries = lines
-            .filter(isSubtitleMediaTag)
-            .enumerated()
-            .map { index, line in
-                (
-                    line: absolutizingURIAttributes(
-                        in: line,
-                        relativeTo: sourceURL
-                    ),
-                    language: SubtitleLanguage.canonicalCode(
-                        attribute("LANGUAGE", in: line)
-                    ),
-                    isBuiltIn: true,
-                    originalOrder: index
-                )
-            }
-
-        let generatedEntries = groups
-            .flatMap { groupID in
-                renditions.enumerated().map { index, rendition in
-                    (
-                        line: subtitleMediaTag(
-                            groupID: groupID,
-                            name: rendition.displayName,
-                            language: effectiveLanguageTags[index],
-                            uri: rendition.playlistURL.absoluteString
-                        ),
-                        language: rendition.subtitle.canonicalLanguageCode,
-                        isBuiltIn: false
-                    )
-                }
-            }
-            .enumerated()
-            .map { index, entry in
-                (
-                    line: entry.line,
-                    language: entry.language,
-                    isBuiltIn: entry.isBuiltIn,
-                    originalOrder: builtInEntries.count + index
-                )
-            }
-
-        let allSubtitleEntries =
-            builtInEntries + generatedEntries
-
-        let sortedSubtitleMediaTags = allSubtitleEntries
-            .sorted { left, right in
-                func group(
-                    language: String?,
-                    isBuiltIn: Bool
-                ) -> Int {
-                    if let primaryLanguage,
-                       language == primaryLanguage {
-                        return 0
-                    }
-
-                    if let secondaryLanguage,
-                       language == secondaryLanguage {
-                        return 1
-                    }
-
-                    return isBuiltIn ? 2 : 3
-                }
-
-                let leftGroup = group(
-                    language: left.language,
-                    isBuiltIn: left.isBuiltIn
-                )
-
-                let rightGroup = group(
-                    language: right.language,
-                    isBuiltIn: right.isBuiltIn
-                )
-
-                if leftGroup != rightGroup {
-                    return leftGroup < rightGroup
-                }
-
-                // Inside Primary / Secondary, Built-in comes first.
-                if leftGroup <= 1,
-                   left.isBuiltIn != right.isBuiltIn {
-                    return left.isBuiltIn
-                }
-
-                let leftLanguage =
-                    SubtitleLanguage.displayName(left.language)
-
-                let rightLanguage =
-                    SubtitleLanguage.displayName(right.language)
-
-                let languageComparison =
-                    leftLanguage.localizedCaseInsensitiveCompare(
-                        rightLanguage
-                    )
-
-                if languageComparison != .orderedSame {
-                    return languageComparison == .orderedAscending
-                }
-
-                let leftName =
-                    attribute("NAME", in: left.line) ?? left.line
-
-                let rightName =
-                    attribute("NAME", in: right.line) ?? right.line
-
-                let nameComparison =
-                    leftName.localizedCaseInsensitiveCompare(
-                        rightName
-                    )
-
-                if nameComparison != .orderedSame {
-                    return nameComparison == .orderedAscending
-                }
-
-                return left.originalOrder < right.originalOrder
-            }
-            .map(\.line)
-
+            .map { $0.line }
         var output: [String] = []
         var insertedMediaTags = false
         for originalLine in lines {
@@ -2680,6 +2555,20 @@ enum HLSSubtitleInjector {
         "#EXT-X-MEDIA:TYPE=SUBTITLES,GROUP-ID=\"\(escapedAttribute(groupID))\"," +
             "NAME=\"\(escapedAttribute(name))\"," +
             "AUTOSELECT=NO,DEFAULT=NO,FORCED=NO,URI=\"\(uri)\""
+    }
+
+    private static func mediaAttribute(
+        _ name: String,
+        in line: String
+    ) -> String? {
+        capture(
+            "(?:^|[:,])\(name)=\"([^\"]*)\"",
+            in: line
+        )
+        ?? capture(
+            "(?:^|[:,])\(name)=([^,]*)",
+            in: line
+        )
     }
 
     private static func subtitleGroupID(in line: String) -> String? {
