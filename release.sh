@@ -50,7 +50,24 @@ if [[ "$pbx_version_count" -lt 1 || "$yaml_version_count" -ne 1 ]]; then
     exit 1
 fi
 
-git diff --check
+print "Checking whitespace..."
+
+if ! git diff --check; then
+    print "Whitespace issues found. Cleaning automatically..."
+
+    while IFS= read -r -d '' file; do
+        [[ -f "$file" ]] || continue
+
+        case "$file" in
+            *.swift|*.h|*.m|*.mm|*.yml|*.yaml|*.json|*.sh|*.pbxproj)
+                perl -pi -e 's/[ \t]+$//' "$file"
+                ;;
+        esac
+    done < <(git diff --name-only --diff-filter=ACMR -z)
+
+    print "Whitespace cleaned. Checking again..."
+    git diff --check
+fi
 
 if git diff --quiet && git diff --cached --quiet; then
     print -u2 "Error: there are no changes to release."

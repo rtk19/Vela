@@ -4881,6 +4881,44 @@ private struct SubtitleStudioPlaybackControls: View {
     }
 }
 
+private enum SourceSwitchStatus: Equatable {
+    case switching(String)
+    case succeeded(String)
+    case failed
+
+    var title: String {
+        switch self {
+        case .switching:
+            return "Switching source…"
+        case .succeeded:
+            return "Source switched"
+        case .failed:
+            return "Couldn't switch source"
+        }
+    }
+
+    var subtitle: String {
+        switch self {
+        case .switching(let source),
+             .succeeded(let source):
+            return source
+        case .failed:
+            return "Continuing previous source"
+        }
+    }
+
+    var systemImage: String {
+        switch self {
+        case .switching:
+            return "arrow.trianglehead.2.clockwise.rotate.90"
+        case .succeeded:
+            return "checkmark.circle.fill"
+        case .failed:
+            return "exclamationmark.triangle.fill"
+        }
+    }
+}
+
 struct PlayerScreen: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
@@ -4903,6 +4941,9 @@ struct PlayerScreen: View {
     @State private var nextRequest: PlaybackRequest?
     @State private var finishedContentID: String?
     @State private var subtitleStudioContext: SubtitleStudioContext?
+    @State private var sourceSwitchStatus: SourceSwitchStatus?
+    @State private var sourceSwitchTask: Task<Void, Never>?
+    @State private var sourceSwitchRequestID = UUID()
 
     init(request: PlaybackRequest, nextRequest: PlaybackRequest?) {
         _model = StateObject(wrappedValue: PlayerViewModel(request: request))
@@ -4922,19 +4963,180 @@ struct PlayerScreen: View {
             automaticSource: model.rememberedSource == nil,
             isSearchingForSources: model.isSearching,
             onSourceChanged: { id, quality in
-                guard !model.isSwitching else { return }
-                Task {
-                    if id != nil, id == model.selectedSourceID {
-                        model.rememberCurrentSource(library: library)
-                        session.setQuality(quality)
+                // The newest user choice always wins.
+                //
+                // Invalidate the old ViewModel operation and the old PlayerSession
+                // preparation before cancelling its Task. Crucially,
+                // supersedeSourceSwitch() keeps the currently-playing source snapshot.
+                model.supersedeSourceSelection()
+                session.supersedeSourceSwitch()
+
+                sourceSwitchTask?.cancel()
+
+                let requestID = UUID()
+                sourceSwitchRequestID = requestID
+
+                // Selecting the source that is already playing is just an
+                // in-place quality change. If another switch was pending,
+                // cancel it completely and stay on the current source.
+                if let id,
+                   id == model.selectedSourceID {
+
+                    session.cancelSourceSwitch(
+                        resumePrevious: true
+                    )
+
+                    model.rememberCurrentSource(
+                        library: library
+                    )
+
+                    session.setQuality(quality)
+
+                    withAnimation {
+                        sourceSwitchStatus = nil
+                    }
+
+                    sourceSwitchTask = nil
+                    return
+                }
+
+                let requestedSourceName: String
+
+                if let id,
+                   let stream = model.streams.first(
+                        where: { $0.id == id }
+                   ) {
+
+                    let sourceName =
+                        stream.candidate.providerName
+
+                    let qualityName =
+                        quality?.title
+                        ?? stream.candidate.displayMetadata?.quality
+
+                    if let qualityName {
+                        requestedSourceName =
+                            "\(sourceName) • \(qualityName)"
                     } else {
-                        saveProgress()
-                        session.beginSourceSwitch()
-                        let switched = await model.selectSource(id, quality: quality, library: library) { stream, choice in
-                            await session.switchSource(stream, externalSubtitles: model.allSubtitles,
-                                quality: choice, useQualityChoice: id != nil)
+                        requestedSourceName =
+                            sourceName
+                    }
+                } else {
+                    requestedSourceName =
+                        "Choosing best available source"
+                }
+
+                withAnimation {
+                    sourceSwitchStatus =
+                        .switching(requestedSourceName)
+                }
+
+                saveProgress()
+
+                // This only snapshots the current item the first time.
+                // If another switch is already pending, the original snapshot survives.
+                session.beginSourceSwitch()
+
+                sourceSwitchTask = Task {
+                    let switched = await model.selectSource(
+                        id,
+                        quality: quality,
+                        library: library
+                    ) { stream, choice in
+
+                        guard !Task.isCancelled,
+                              sourceSwitchRequestID == requestID else {
+                            return false
                         }
-                        if !switched { session.cancelSourceSwitch(resumePrevious: true) }
+
+                        return await session.switchSource(
+                            stream,
+                            externalSubtitles:
+                                model.allSubtitles,
+                            quality: choice,
+                            useQualityChoice: id != nil
+                        )
+                    }
+
+                    // Anything belonging to an older tap stops here.
+                    guard !Task.isCancelled,
+                          sourceSwitchRequestID == requestID else {
+                        return
+                    }
+
+                    if switched {
+                        let actualSourceName: String
+
+                        if let selectedSourceID =
+                                model.selectedSourceID,
+                           let stream = model.streams.first(
+                                where: {
+                                    $0.id == selectedSourceID
+                                }
+                           ) {
+
+                            let sourceName =
+                                stream.candidate.providerName
+
+                            let qualityName =
+                                session.selectedQuality?.title
+                                ?? stream.candidate
+                                    .displayMetadata?.quality
+
+                            if let qualityName {
+                                actualSourceName =
+                                    "\(sourceName) • \(qualityName)"
+                            } else {
+                                actualSourceName =
+                                    sourceName
+                            }
+                        } else {
+                            actualSourceName =
+                                requestedSourceName
+                        }
+
+                        withAnimation {
+                            sourceSwitchStatus =
+                                .succeeded(actualSourceName)
+                        }
+
+                        try? await Task.sleep(
+                            for: .seconds(1.4)
+                        )
+
+                        guard !Task.isCancelled,
+                              sourceSwitchRequestID == requestID else {
+                            return
+                        }
+
+                        withAnimation {
+                            sourceSwitchStatus = nil
+                        }
+                    } else {
+                        session.cancelSourceSwitch(
+                            resumePrevious: true
+                        )
+
+                        withAnimation {
+                            sourceSwitchStatus = .failed
+                        }
+
+                        try? await Task.sleep(
+                            for: .seconds(2)
+                        )
+
+                        guard !Task.isCancelled,
+                              sourceSwitchRequestID == requestID else {
+                            return
+                        }
+
+                        withAnimation {
+                            sourceSwitchStatus = nil
+                        }
+                    }
+
+                    if sourceSwitchRequestID == requestID {
+                        sourceSwitchTask = nil
                     }
                 }
             },
@@ -4964,6 +5166,21 @@ struct PlayerScreen: View {
                 saveProgress(markNearEndFinished: true)
                 dismiss()
             }
+        )
+        .overlay(alignment: .top) {
+            if let sourceSwitchStatus {
+                sourceSwitchOverlay(sourceSwitchStatus)
+                    .padding(.top, 54)
+                    .transition(
+                        .move(edge: .top)
+                            .combined(with: .opacity)
+                    )
+                    .zIndex(100)
+            }
+        }
+        .animation(
+            .easeInOut(duration: 0.22),
+            value: sourceSwitchStatus
         )
         .background(.black)
         .ignoresSafeArea()
@@ -5034,8 +5251,16 @@ struct PlayerScreen: View {
         .onDisappear {
             session.onSubtitleVisibilityChanged = nil
             session.onSourceRefreshNeeded = nil
+
+            sourceSwitchTask?.cancel()
+            sourceSwitchTask = nil
+
             model.cancel()
-            saveProgress(markNearEndFinished: true)
+
+            saveProgress(
+                markNearEndFinished: true
+            )
+
             session.stop()
             AppOrientationController.shared.endPlayback()
         }
@@ -5050,6 +5275,56 @@ struct PlayerScreen: View {
         }
         .errorAlert(Binding(get: { model.source == nil ? nil : model.errorMessage },
             set: { model.errorMessage = $0 }))
+    }
+
+    private func sourceSwitchOverlay(
+        _ status: SourceSwitchStatus
+    ) -> some View {
+        HStack(spacing: 12) {
+            if case .switching = status {
+                ProgressView()
+                    .progressViewStyle(.circular)
+                    .tint(.white)
+            } else {
+                Image(systemName: status.systemImage)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(
+                        status == .failed
+                            ? Color.orange
+                            : Color.green
+                    )
+            }
+
+            VStack(alignment: .leading, spacing: 2) {
+                Text(status.title)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.white)
+
+                Text(status.subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.white.opacity(0.72))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .background(
+            .ultraThinMaterial,
+            in: Capsule()
+        )
+        .overlay {
+            Capsule()
+                .stroke(
+                    Color.white.opacity(0.12),
+                    lineWidth: 1
+                )
+        }
+        .shadow(
+            color: .black.opacity(0.35),
+            radius: 12,
+            y: 5
+        )
     }
 
     private func saveProgress(markNearEndFinished: Bool = false) {

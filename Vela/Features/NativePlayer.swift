@@ -577,6 +577,17 @@ final class PlayerSession: ObservableObject {
         isSourceSwitching = true
     }
 
+    func supersedeSourceSwitch() {
+        guard isSourceSwitching
+                || pendingSourceSwitchItem != nil else {
+            return
+        }
+
+        // Invalidate any replacement currently being prepared,
+        // while deliberately keeping the original playback snapshot.
+        sourceSwitchGeneration = UUID()
+    }
+
     func cancelSourceSwitch(resumePrevious: Bool) {
         let shouldResume = resumePrevious && pendingSourceSwitchShouldPlay == true
         let rate = pendingSourceSwitchRate ?? player.defaultRate
@@ -640,21 +651,33 @@ final class PlayerSession: ObservableObject {
         let playable = await replacementIsReady(asset, generation: generation)
         let oldItemIsStillCurrent = player.currentItem === oldItem
         let oldItemIsDetachedForSwitch = player.currentItem == nil && pendingSourceSwitchItem === oldItem
-        guard playable, generation == sourceSwitchGeneration, !Task.isCancelled,
+        guard playable,
+              generation == sourceSwitchGeneration,
+              !Task.isCancelled,
               oldItemIsStillCurrent || oldItemIsDetachedForSwitch else {
-            if generation == sourceSwitchGeneration {
-                subtitleServer = oldServer
-                injectedSubtitleNames = oldNames
-                injectedSubtitleLanguageTags = oldLanguageTags
-                subtitleRenditions = oldRenditions
-                subtitleRenditionsByDisplayName = oldByName
-                subtitleRenditionsBySelectionID = oldByID
-                subtitleStudioTracks = oldTracks
-                subtitlePlaybackSource = oldSubtitleSource
-                canOpenSubtitleStudio = oldCanStudio
-                canAdjustSubtitleTiming = oldCanAdjust
+
+            // A newer source-switch request superseded this one.
+            // Do not restore state or clear the original playback snapshot,
+            // because the newer request is still using it.
+            guard generation == sourceSwitchGeneration else {
+                return false
             }
-            cancelSourceSwitch(resumePrevious: true)
+
+            subtitleServer = oldServer
+            injectedSubtitleNames = oldNames
+            injectedSubtitleLanguageTags = oldLanguageTags
+            subtitleRenditions = oldRenditions
+            subtitleRenditionsByDisplayName = oldByName
+            subtitleRenditionsBySelectionID = oldByID
+            subtitleStudioTracks = oldTracks
+            subtitlePlaybackSource = oldSubtitleSource
+            canOpenSubtitleStudio = oldCanStudio
+            canAdjustSubtitleTiming = oldCanAdjust
+
+            cancelSourceSwitch(
+                resumePrevious: true
+            )
+
             return false
         }
         let liveTime = oldItem.currentTime().seconds
@@ -3032,34 +3055,159 @@ struct NativePlayerController: UIViewControllerRepresentable {
             settingsButton.configuration = configuration
 
             settingsButton.accessibilityLabel = "Source & Quality"
-            settingsButton.accessibilityValue = "\(selectedSourceID.flatMap { id in streams.firstIndex { $0.id == id }.map { "Source \($0 + 1)" } } ?? "Automatic"), \(selectedQuality?.title ?? "Auto")"
+            let accessibilitySource: String
+
+            if automaticSource {
+                accessibilitySource = "Automatic"
+            } else if let selectedSourceID,
+                      let stream = streams.first(
+                        where: { $0.id == selectedSourceID }
+                      ) {
+                accessibilitySource =
+                    stream.candidate.providerName
+            } else {
+                accessibilitySource = "Automatic"
+            }
+
+            settingsButton.accessibilityValue =
+                "\(accessibilitySource), \(selectedQuality?.title ?? "Auto quality")"
             var sections: [UIMenuElement] = []
             if !streams.isEmpty {
-                var sources: [UIMenuElement] = [UIAction(title: "Automatic", state: automaticSource ? .on : .off) { [weak self] _ in
-                    self?.onSourceChanged?(nil, nil)
-                }]
-                for (index, stream) in streams.enumerated() {
+                let activeStream = selectedSourceID.flatMap { id in
+                    streams.first { $0.id == id }
+                }
+
+                let activeSourceName = activeStream?.candidate.providerName
+                    ?? "Unknown source"
+
+                let activeQualityText = selectedQuality?.title
+                    ?? activeStream?.candidate.displayMetadata?.quality
+                    ?? "Auto"
+
+                let automaticSubtitle: String
+
+                if automaticSource {
+                    automaticSubtitle =
+                        "Best available • Playing: \(activeSourceName) • \(activeQualityText)"
+                } else {
+                    automaticSubtitle = "Choose the best available source automatically"
+                }
+
+                var sources: [UIMenuElement] = [
+                    UIAction(
+                        title: "Automatic",
+                        subtitle: automaticSubtitle,
+                        image: UIImage(systemName: "wand.and.stars"),
+                        state: automaticSource ? .on : .off
+                    ) { [weak self] _ in
+                        self?.onSourceChanged?(nil, nil)
+                    }
+                ]
+
+                for stream in streams {
                     let active = selectedSourceID == stream.id
-                    let title = "Source \(index + 1)" + (active ? " ✓" : "")
-                    let qualities = active ? availableQualities : stream.qualities
+
+                    let sourceName = stream.candidate.providerName
+
+                    var metadata: [String] = []
+
+                    if let quality = stream.candidate.displayMetadata?.quality {
+                        metadata.append(quality)
+                    }
+
+                    if let container = stream.candidate.displayMetadata?.container {
+                        metadata.append(container.uppercased())
+                    }
+
+                    if let size = stream.candidate.displayMetadata?.sizeBytes {
+                        metadata.append(
+                            ByteCountFormatter.string(
+                                fromByteCount: size,
+                                countStyle: .file
+                            )
+                        )
+                    }
+
+                    if active {
+                        metadata.insert("Playing", at: 0)
+                    }
+
+                    let subtitle = metadata.isEmpty
+                        ? stream.label
+                        : metadata.joined(separator: " • ")
+
+                    let qualities = active
+                        ? availableQualities
+                        : stream.qualities
+
                     if qualities.isEmpty {
-                        sources.append(UIAction(title: title, subtitle: stream.label, state: active ? .on : .off) { [weak self] _ in
-                            self?.onSourceChanged?(stream.id, nil)
-                        })
+                        sources.append(
+                            UIAction(
+                                title: sourceName,
+                                subtitle: subtitle,
+                                image: active
+                                    ? UIImage(systemName: "play.fill")
+                                    : UIImage(systemName: "play.circle"),
+                                state: active && !automaticSource ? .on : .off
+                            ) { [weak self] _ in
+                                self?.onSourceChanged?(stream.id, nil)
+                            }
+                        )
                     } else {
-                        let choices: [StreamQuality?] = [nil] + qualities.reversed().map { Optional($0) }
+                        let choices: [StreamQuality?] =
+                            [nil]
+                            + qualities
+                                .reversed()
+                                .map { Optional($0) }
+
                         let actions = choices.map { quality in
-                            UIAction(title: quality?.title ?? "Auto", state: active && quality == selectedQuality ? .on : .off) { [weak self] _ in
-                                self?.onSourceChanged?(stream.id, quality)
+                            UIAction(
+                                title: quality?.title ?? "Auto",
+                                state:
+                                    active
+                                    && !automaticSource
+                                    && quality == selectedQuality
+                                        ? .on
+                                        : .off
+                            ) { [weak self] _ in
+                                self?.onSourceChanged?(
+                                    stream.id,
+                                    quality
+                                )
                             }
                         }
-                        sources.append(UIMenu(title: title, subtitle: stream.label, children: actions))
+
+                        sources.append(
+                            UIMenu(
+                                title: sourceName,
+                                subtitle: subtitle,
+                                image: active
+                                    ? UIImage(systemName: "play.fill")
+                                    : UIImage(systemName: "play.circle"),
+                                children: actions
+                            )
+                        )
                     }
                 }
+
                 if isSearchingForSources {
-                    sources.append(UIAction(title: "Searching for more sources…", image: UIImage(systemName: "magnifyingglass"), attributes: [.disabled]) { _ in })
+                    sources.append(
+                        UIAction(
+                            title: "Searching for more sources…",
+                            subtitle: "New sources will appear automatically",
+                            image: UIImage(systemName: "magnifyingglass"),
+                            attributes: [.disabled]
+                        ) { _ in }
+                    )
                 }
-                sections.append(UIMenu(title: "Source & Quality", image: UIImage(systemName: "video"), children: sources))
+
+                sections.append(
+                    UIMenu(
+                        title: "Source & Quality",
+                        image: UIImage(systemName: "video"),
+                        children: sources
+                    )
+                )
             }
 
             if subtitleTimingAvailable {

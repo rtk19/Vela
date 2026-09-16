@@ -465,6 +465,7 @@ final class PlayerViewModel: ObservableObject {
     private var refreshedURLs: Set<URL> = []
     private var operation = UUID()
     private var policy = StreamSelectionPolicy()
+    private var sourceSelectionGeneration = UUID()
 
     var allSubtitles: [SubtitleSource] {
         var seenResources: Set<String> = []
@@ -545,35 +546,105 @@ final class PlayerViewModel: ObservableObject {
                    audioLanguage: audioLanguage, backupAudioLanguage: backupAudioLanguage, qualityHeight: qualityHeight)
     }
 
-    func selectSource(_ id: String?, quality: StreamQuality?, library: LibraryStore,
-                      apply: (PlayableStream, StreamQuality?) async -> Bool) async -> Bool {
-        guard !isSwitching else { return false }
+    func selectSource(
+        _ id: String?,
+        quality: StreamQuality?,
+        library: LibraryStore,
+        apply: (PlayableStream, StreamQuality?) async -> Bool
+    ) async -> Bool {
+        let selectionGeneration = UUID()
+        sourceSelectionGeneration = selectionGeneration
+
         if id == nil {
             library.updateSourcePreference(nil, for: request)
             rememberedSource = nil
             policy.preference = nil
         }
-        guard let target = id.flatMap({ id in streams.first { $0.id == id } }) ?? policy.best(in: streams) else { return false }
+
+        guard let target =
+            id.flatMap({ id in
+                streams.first { $0.id == id }
+            })
+            ?? policy.best(in: streams)
+        else {
+            return false
+        }
+
         let token = operation
+
         isSwitching = true
-        defer { if operation == token { isSwitching = false } }
+
+        defer {
+            if operation == token,
+               sourceSelectionGeneration == selectionGeneration {
+                isSwitching = false
+            }
+        }
+
         do {
-            let fresh = try await PlaybackDiscovery.prepare(target.candidate)
-            guard operation == token, !Task.isCancelled else { return false }
-            guard await apply(fresh, quality), operation == token else { throw AppError.noStream }
+            let fresh = try await PlaybackDiscovery.prepare(
+                target.candidate
+            )
+
+            guard operation == token,
+                  sourceSelectionGeneration == selectionGeneration,
+                  !Task.isCancelled else {
+                return false
+            }
+
+            let applied = await apply(
+                fresh,
+                quality
+            )
+
+            guard operation == token,
+                  sourceSelectionGeneration == selectionGeneration,
+                  !Task.isCancelled else {
+                return false
+            }
+
+            guard applied else {
+                throw AppError.noStream
+            }
+
             source = fresh.source
             selectedSourceID = fresh.id
+
             failedSources.remove(fresh.id)
             refreshedSources.remove(fresh.id)
+
             if id != nil {
-                rememberedSource = fresh.candidate.preference
-                policy.preference = rememberedSource
-                library.updateSourcePreference(rememberedSource, for: request)
+                rememberedSource =
+                    fresh.candidate.preference
+
+                policy.preference =
+                    rememberedSource
+
+                library.updateSourcePreference(
+                    rememberedSource,
+                    for: request
+                )
             }
+
             return true
-        } catch where error.isCancellation { }
-        catch { if operation == token { errorMessage = "This source could not be opened. Playback returned to your previous source." } }
-        return false
+        } catch where error.isCancellation {
+            return false
+        } catch {
+            guard operation == token,
+                  sourceSelectionGeneration == selectionGeneration else {
+                return false
+            }
+
+            errorMessage =
+                "This source could not be opened. Playback returned to your previous source."
+
+            return false
+        }
+    }
+
+    func supersedeSourceSelection() {
+        sourceSelectionGeneration = UUID()
+        isSwitching = false
     }
 
     func recover(apply: (PlayableStream) async -> Bool) async -> Bool {
