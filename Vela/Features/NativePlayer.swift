@@ -753,9 +753,11 @@ final class PlayerSession: ObservableObject {
                 let injectedAsset = try await HLSSubtitleInjector.prepare(
                     source: source,
                     renditions: renditions,
-                    timingOffset: updatedOffset,
+                    timingOffset: appliedSubtitleTimingOffset,
                     selectedQualityHeight: selectedQuality?.height,
-                    client: self.subtitleClient
+                    primarySubtitleLanguage: primarySubtitleLanguage,
+                    secondarySubtitleLanguage: secondarySubtitleLanguage,
+                    client: subtitleClient
                 )
                 try Task.checkCancellation()
                 let selectedSubtitleName = await self.selectedSubtitleDisplayName()
@@ -960,7 +962,9 @@ final class PlayerSession: ObservableObject {
             from: source,
             client: subtitleClient
         )
-        let loadedRenditions = await downloadedRenditions + embeddedRenditions
+        let loadedRenditions = sortSubtitleRenditions(
+            await downloadedRenditions + embeddedRenditions
+        )
         guard !Task.isCancelled, generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
         subtitleStudioTracks = loadedRenditions.map {
             SubtitleStudioTrack(source: $0.subtitle, cues: $0.cues)
@@ -976,6 +980,8 @@ final class PlayerSession: ObservableObject {
                 renditions: renditions,
                 timingOffset: appliedSubtitleTimingOffset,
                 selectedQualityHeight: selectedQuality?.height,
+                primarySubtitleLanguage: primarySubtitleLanguage,
+                secondarySubtitleLanguage: secondarySubtitleLanguage,
                 client: subtitleClient
             )
             try Task.checkCancellation()
@@ -1024,6 +1030,120 @@ final class PlayerSession: ObservableObject {
         }
     }
 
+    private func sortSubtitleRenditions(
+        _ renditions: [HLSSubtitleRendition]
+    ) -> [HLSSubtitleRendition] {
+        let primary = SubtitleLanguage.canonicalCode(primarySubtitleLanguage)
+        let secondary = SubtitleLanguage.canonicalCode(secondarySubtitleLanguage)
+
+        return renditions.enumerated().sorted { lhs, rhs in
+            let left = lhs.element.subtitle
+            let right = rhs.element.subtitle
+
+            let leftKey = subtitleSortKey(
+                for: left,
+                primary: primary,
+                secondary: secondary
+            )
+
+            let rightKey = subtitleSortKey(
+                for: right,
+                primary: primary,
+                secondary: secondary
+            )
+
+            if leftKey.group != rightKey.group {
+                return leftKey.group < rightKey.group
+            }
+
+            if leftKey.language != rightKey.language {
+                return leftKey.language.localizedCaseInsensitiveCompare(
+                    rightKey.language
+                ) == .orderedAscending
+            }
+
+            if leftKey.source != rightKey.source {
+                return leftKey.source < rightKey.source
+            }
+
+            let providerComparison =
+                left.providerName.localizedCaseInsensitiveCompare(
+                    right.providerName
+                )
+
+            if providerComparison != .orderedSame {
+                return providerComparison == .orderedAscending
+            }
+
+            let labelComparison =
+                left.label.localizedCaseInsensitiveCompare(
+                    right.label
+                )
+
+            if labelComparison != .orderedSame {
+                return labelComparison == .orderedAscending
+            }
+
+            // Final stable fallback: preserve the original order.
+            return lhs.offset < rhs.offset
+        }
+        .map(\.element)
+    }
+
+    private func subtitleSortKey(
+        for subtitle: SubtitleSource,
+        primary: String?,
+        secondary: String?
+    ) -> (
+        group: Int,
+        language: String,
+        source: Int
+    ) {
+        let languageCode = subtitle.canonicalLanguageCode
+
+        let languageName = SubtitleLanguage.displayName(
+            languageCode
+        )
+
+        let isBuiltIn =
+            subtitle.providerID == "native-hls"
+            || subtitle.providerID == "stream"
+
+        let sourceOrder = isBuiltIn ? 0 : 1
+
+        if let primary,
+           languageCode == primary {
+            return (
+                group: 0,
+                language: languageName,
+                source: sourceOrder
+            )
+        }
+
+        if let secondary,
+           languageCode == secondary {
+            return (
+                group: 1,
+                language: languageName,
+                source: sourceOrder
+            )
+        }
+
+        if isBuiltIn {
+            return (
+                group: 2,
+                language: languageName,
+                source: 0
+            )
+        }
+
+        return (
+            group: 3,
+            language: languageName,
+            source: 1
+        )
+    }
+
     private func expandedSubtitleRenditions(
         from baseRenditions: [HLSSubtitleRendition]
     ) -> [HLSSubtitleRendition] {
@@ -1038,18 +1158,13 @@ final class PlayerSession: ObservableObject {
                         cues: rendition.cues,
                         timingOffset: version.offset,
                         syncVersionID: version.id,
-                        displayNameOverride: syncedDisplayName(
-                            for: rendition.subtitle,
-                            versionNumber: index + 1
+                        displayNameOverride: rendition.subtitle.resyncDisplayName(
+                            offset: version.offset
                         )
                     )
                 }
             return (rendition.subtitle.providerID == "native-hls" ? [] : [rendition]) + saved
         }
-    }
-
-    private func syncedDisplayName(for subtitle: SubtitleSource, versionNumber: Int) -> String {
-        subtitle.resyncDisplayName()
     }
 
     private func selectionID(forSyncVersionID id: UUID) -> String? {
