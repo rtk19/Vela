@@ -4457,7 +4457,8 @@ private struct SubtitleSyncStudioView: View {
         return track.cues.indices.contains(
             current + direction
         )
-    }
+    }var userFacingDisplayName: String {
+
 
     private func moveSelectedCue(
         by direction: Int

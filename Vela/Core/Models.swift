@@ -321,13 +321,33 @@ extension SubtitleSource {
     }
 
     var userFacingDisplayName: String {
-        guard providerID != "native-hls", providerID != "stream" else { return label }
-        return "\(SubtitleLanguage.displayName(languageCode)) - \(providerName) - \(label)"
+        let language = SubtitleLanguage.displayName(languageCode)
+
+        if providerID == "native-hls" || providerID == "stream" {
+            let cleanedLabel = label
+                .replacingOccurrences(of: language, with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "-·"))
+
+            if cleanedLabel.isEmpty {
+                return "\(language) - Built in"
+            }
+
+            return "\(language) - Built in - \(cleanedLabel)"
+        }
+
+        return "\(language) - \(providerName) - \(label)"
     }
 
     func resyncDisplayName(offset: Double? = nil) -> String {
-        let timing = offset.map { " (\(String(format: "%+.1fs", $0)))" } ?? ""
-        return "\(SubtitleLanguage.displayName(languageCode)) - Resync - \(label)\(timing)"
+        let language = SubtitleLanguage.displayName(languageCode)
+
+        if let offset {
+            let timing = String(format: "%+.1fs", offset)
+            return "\(language) - Resynced (\(timing)) - \(label)"
+        }
+
+        return "\(language) - Resynced - \(label)"
     }
 
     /// A stable identity for user-created timing versions. Subtitle URLs often
