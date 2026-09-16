@@ -330,13 +330,13 @@ extension SubtitleSource {
                 .trimmingCharacters(in: CharacterSet(charactersIn: "-·"))
 
             if cleanedLabel.isEmpty {
-                return "\(language) - Built in"
+                return "\(language) • Built in"
             }
 
-            return "\(language) - Built in - \(cleanedLabel)"
+            return "\(language) • Built in • \(cleanedLabel)"
         }
 
-        return "\(language) - \(providerName) - \(label)"
+        return "\(language) • \(providerName) • \(label)"
     }
 
     func resyncDisplayName(offset: Double? = nil) -> String {
@@ -344,10 +344,10 @@ extension SubtitleSource {
 
         if let offset {
             let timing = String(format: "%+.1fs", offset)
-            return "\(language) - Resynced (\(timing)) - \(label)"
+            return "\(language) • Resynced (\(timing)) • \(label)"
         }
 
-        return "\(language) - Resynced - \(label)"
+        return "\(language) • Resynced • \(label)"
     }
 
     /// A stable identity for user-created timing versions. Subtitle URLs often

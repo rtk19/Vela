@@ -546,7 +546,7 @@ struct HTMLPayloadParserTests {
             label: source.label, languageCode: "he-IL",
             url: try #require(URL(string: "https://example.com/sub.srt?token=two"))
         )
-        #expect(source.resyncDisplayName() == "Hebrew - Resynced - Release A")
+        #expect(source.resyncDisplayName() == "Hebrew • Resynced • Release A")
         #expect(source.syncKey == later.syncKey)
     }
 
