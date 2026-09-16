@@ -489,7 +489,7 @@ final class PlayerViewModel: ObservableObject {
         policy = StreamSelectionPolicy(preference: rememberedSource, audioLanguage: audioLanguage,
             backupAudioLanguage: backupAudioLanguage, qualityHeight: qualityHeight)
         defer { if operation == token { isLoading = false } }
-        let playbackRequest = request
+        let originalPlaybackRequest = request
         discovery.onUpdate = { [weak self] streams in
             guard self?.operation == token else { return }
             self?.streams = streams
@@ -499,6 +499,14 @@ final class PlayerViewModel: ObservableObject {
             self?.isSearching = isSearching
         }
         do {
+            let playbackRequest = await environment.canonicalPlaybackRequest(
+                for: originalPlaybackRequest
+            )
+
+            guard operation == token,
+                  !Task.isCancelled else {
+                return
+            }
             async let subtitles: [SubtitleSource] = {
                 guard let lookup = playbackRequest.subtitleLookupRequest else { return [] }
                 return await environment.subtitleRegistry.subtitles(for: lookup,

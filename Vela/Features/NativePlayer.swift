@@ -304,6 +304,7 @@ final class PlayerSession: ObservableObject {
     private var appliedSubtitleTimingOffset: Double = 0
     private var primarySubtitleLanguage = ""
     private var secondarySubtitleLanguage = ""
+
     private var audioLanguage = "en"
     private var subtitleVisibilityBaseline: Bool?
     private var subtitleSelectionAuthority = SubtitleSelectionAuthority()

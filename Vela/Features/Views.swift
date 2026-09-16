@@ -4018,10 +4018,86 @@ private enum PlaybackLanguages {
         .sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
 }
 
+private struct SubtitleStudioVersionMenuOption: Identifiable, Equatable {
+    let id: UUID
+    let title: String
+    let offsetTenths: Int
+}
+
+private struct SubtitleStudioVersionMenu: View {
+    let options: [SubtitleStudioVersionMenuOption]
+    let selectedID: UUID?
+    let selectedTitle: String
+    let onSelectOriginal: () -> Void
+    let onSelectVersion: (UUID, Int) -> Void
+
+    var body: some View {
+        Menu {
+            Button {
+                onSelectOriginal()
+            } label: {
+                Label(
+                    "Original · 0.0s",
+                    systemImage: selectedID == nil
+                        ? "checkmark"
+                        : "captions.bubble"
+                )
+            }
+
+            ForEach(options) { option in
+                Button {
+                    onSelectVersion(
+                        option.id,
+                        option.offsetTenths
+                    )
+                } label: {
+                    Label(
+                        option.title,
+                        systemImage: selectedID == option.id
+                            ? "checkmark"
+                            : "clock.arrow.circlepath"
+                    )
+                }
+            }
+        } label: {
+            menuLabel(
+                selectedTitle,
+                systemImage: "square.stack.3d.up"
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func menuLabel(
+        _ title: String,
+        systemImage: String
+    ) -> some View {
+        HStack(spacing: 10) {
+            Image(systemName: systemImage)
+
+            Text(title)
+                .lineLimit(1)
+                .truncationMode(.middle)
+
+            Spacer(minLength: 4)
+
+            Image(systemName: "chevron.down")
+                .font(.caption.weight(.semibold))
+        }
+        .padding(.horizontal, 14)
+        .frame(maxWidth: .infinity, minHeight: 44)
+        .background(
+            Color.accentColor.opacity(0.2),
+            in: Capsule()
+        )
+        .contentShape(Capsule())
+    }
+}
+
 private struct SubtitleSyncStudioView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var library: LibraryStore
-    @ObservedObject var session: PlayerSession
+    let session: PlayerSession
     let request: PlaybackRequest
     let initialContext: SubtitleStudioContext
 
@@ -4090,20 +4166,9 @@ private struct SubtitleSyncStudioView: View {
     private func controls(isCompact: Bool) -> some View {
         ScrollView {
             VStack(spacing: 18) {
-                Group {
-                    if isCompact {
-                        VStack(spacing: 10) {
-                            subtitleTrackMenu
-                            subtitleVersionMenu
-                        }
-                    } else {
-                        HStack(spacing: 12) {
-                            subtitleTrackMenu
-                                .layoutPriority(1)
-                            subtitleVersionMenu
-                        }
-                    }
-                }
+                selectedSubtitleCard
+
+                subtitleVersionMenu
 
                 cueSyncBrowser
 
@@ -4345,23 +4410,7 @@ private struct SubtitleSyncStudioView: View {
                 .onChange(
                     of: session.subtitleStudioPosition
                 ) { _, _ in
-                    let previousIndex = selectedCueIndex
-
                     updateActiveCue(in: track)
-
-                    guard let selectedCueIndex,
-                          selectedCueIndex != previousIndex else {
-                        return
-                    }
-
-                    withAnimation(
-                        .easeInOut(duration: 0.22)
-                    ) {
-                        proxy.scrollTo(
-                            selectedCueIndex,
-                            anchor: .center
-                        )
-                    }
                 }
                 .onChange(of: offsetTenths) { _, _ in
                     let previousIndex = selectedCueIndex
@@ -4564,70 +4613,77 @@ private struct SubtitleSyncStudioView: View {
         )
     }
 
-    private var subtitleTrackMenu: some View {
-        Menu {
-            ForEach(session.subtitleStudioTracks) { track in
-                Button {
-                    selectedTrackID = track.id
-                    selectedVersionID = nil
-                    offsetTenths = 0
-                    selectedCueIndex = nil
-                } label: {
-                    if track.id == selectedTrackID {
-                        Label(track.displayName, systemImage: "checkmark")
-                    } else {
-                        Text(track.displayName)
-                    }
-                }
-            }
-        } label: {
-            studioMenuLabel(
-                selectedTrack?.displayName ?? "Subtitle",
-                systemImage: "captions.bubble"
-            )
-        }
-        .buttonStyle(.plain)
-    }
-
     private var subtitleVersionMenu: some View {
-        Menu {
-            Button {
+        SubtitleStudioVersionMenu(
+            options: versionsForSelectedTrack.map { version in
+                SubtitleStudioVersionMenuOption(
+                    id: version.id,
+                    title: versionName(version),
+                    offsetTenths: version.offsetTenths
+                )
+            },
+            selectedID: selectedVersionID,
+            selectedTitle: selectedVersionName,
+            onSelectOriginal: {
                 selectedVersionID = nil
                 offsetTenths = 0
-            } label: {
-                Label("Original · 0.0s", systemImage: selectedVersionID == nil ? "checkmark" : "captions.bubble")
+            },
+            onSelectVersion: { versionID, versionOffsetTenths in
+                selectedVersionID = versionID
+                offsetTenths = versionOffsetTenths
             }
-            ForEach(versionsForSelectedTrack) { version in
-                Button {
-                    selectedVersionID = version.id
-                    offsetTenths = version.offsetTenths
-                } label: {
-                    Label(
-                        versionName(version),
-                        systemImage: selectedVersionID == version.id ? "checkmark" : "clock.arrow.circlepath"
-                    )
-                }
-            }
-        } label: {
-            studioMenuLabel(selectedVersionName, systemImage: "square.stack.3d.up")
-        }
-        .buttonStyle(.plain)
+        )
     }
 
-    private func studioMenuLabel(_ title: String, systemImage: String) -> some View {
-        HStack(spacing: 10) {
-            Image(systemName: systemImage)
-            Text(title)
-                .lineLimit(1)
+    private var selectedSubtitleCard: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "captions.bubble.fill")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(Color.accentColor)
+
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Editing Subtitle")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                Text(
+                    selectedTrack?.source.userFacingDisplayName
+                        ?? selectedTrack?.displayName
+                        ?? "Selected Subtitle"
+                )
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(2)
                 .truncationMode(.middle)
-            Spacer(minLength: 4)
-            Image(systemName: "chevron.down")
-                .font(.caption.weight(.semibold))
+                .multilineTextAlignment(.leading)
+            }
+
+            Spacer(minLength: 8)
+
+            Image(systemName: "lock.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(.horizontal, 14)
-        .frame(maxWidth: .infinity, minHeight: 44)
-        .background(Color.accentColor.opacity(0.2), in: Capsule())
-        .contentShape(Capsule())
+        .padding(.vertical, 12)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            Color.white.opacity(0.06),
+            in: RoundedRectangle(
+                cornerRadius: 14,
+                style: .continuous
+            )
+        )
+        .overlay {
+            RoundedRectangle(
+                cornerRadius: 14,
+                style: .continuous
+            )
+            .stroke(
+                Color.white.opacity(0.08),
+                lineWidth: 1
+            )
+        }
     }
 
     private var selectedTrack: SubtitleStudioTrack? {
@@ -4990,6 +5046,7 @@ struct PlayerScreen: View {
                 request: model.request,
                 initialContext: context
             )
+            .environmentObject(library)
         }
         .errorAlert(Binding(get: { model.source == nil ? nil : model.errorMessage },
             set: { model.errorMessage = $0 }))

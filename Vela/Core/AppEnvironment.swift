@@ -384,6 +384,36 @@ final class AppEnvironment: ObservableObject {
         )
     }
 
+    func canonicalPlaybackRequest(
+        for request: PlaybackRequest
+    ) async -> PlaybackRequest {
+        guard request.media.tmdbID != nil,
+              let token = try? tmdbAccessToken(),
+              let canonicalMedia = try? await tmdbClient.details(
+                  for: request.media,
+                  accessToken: token
+              ) else {
+            return request
+        }
+
+        guard canonicalMedia.imdbID != request.media.imdbID else {
+            return request
+        }
+
+        print(
+            "PLAYBACK IDENTITY CORRECTED:",
+            request.media.imdbID ?? "nil",
+            "->",
+            canonicalMedia.imdbID ?? "nil",
+            "tmdb=\(canonicalMedia.tmdbID.map(String.init) ?? "nil")"
+        )
+
+        return PlaybackRequest(
+            media: canonicalMedia,
+            episode: request.episode
+        )
+    }
+
     func playbackContext(for request: PlaybackRequest) async -> PlaybackLookupContext {
         guard let token = try? tmdbAccessToken() else { return PlaybackLookupContext(request: request) }
         return (try? await tmdbClient.playbackContext(for: request, accessToken: token)) ?? PlaybackLookupContext(request: request)

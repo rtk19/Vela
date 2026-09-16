@@ -214,9 +214,37 @@ final class PlaybackDiscovery {
                             group.addTask {
                                 do {
                                     let candidates = try await provider.candidates(for: context)
+                                    print(
+                                        "PLAYBACK PROVIDER CANDIDATES:",
+                                        provider.id,
+                                        "count=\(candidates.count)"
+                                    )
+
+                                    for candidate in candidates {
+                                        print(
+                                            "PLAYBACK CANDIDATE:",
+                                            provider.id,
+                                            candidate.id,
+                                            candidate.providerName,
+                                            candidate.preference.serverName
+                                        )
+                                    }
                                     await withTaskGroup(of: PlayableStream?.self) { servers in
                                         for candidate in candidates.prefix(12) {
-                                            servers.addTask { try? await prepare(candidate) }
+                                            servers.addTask {
+                                                do {
+                                                    return try await prepare(candidate)
+                                                } catch {
+                                                    print(
+                                                        "PLAYBACK SOURCE REJECTED:",
+                                                        candidate.id,
+                                                        candidate.providerName,
+                                                        candidate.preference.serverName,
+                                                        error
+                                                    )
+                                                    return nil
+                                                }
+                                            }
                                         }
                                         for await stream in servers {
                                             guard !Task.isCancelled else { servers.cancelAll(); break }

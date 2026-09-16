@@ -2569,9 +2569,27 @@ enum HLSSubtitleInjector {
         mpegTimestamp: UInt64 = 0
     ) -> String {
         let blocks = cues.enumerated().map { index, cue in
-            let text = SubtitleDirectionFormatter
+            let normalizedText = SubtitleDirectionFormatter
                 .displayText(cue.text, languageCode: languageCode)
                 .replacingOccurrences(of: "\n\n", with: "\n")
+
+            let text = normalizedText
+                .components(separatedBy: "\n")
+                .map { line in
+                    guard line.first == "\u{200F}",
+                          let last = line.last,
+                          last != "\u{200F}",
+                          last.unicodeScalars.allSatisfy({
+                              $0.properties.generalCategory == .otherPunctuation
+                                  || $0.properties.generalCategory == .closePunctuation
+                                  || $0.properties.generalCategory == .finalPunctuation
+                          }) else {
+                        return line
+                    }
+
+                    return line + "\u{200F}"
+                }
+                .joined(separator: "\n")
             return """
             \(index + 1)
             \(timestamp(cue.startTime)) --> \(timestamp(cue.endTime))
