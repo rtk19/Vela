@@ -2263,9 +2263,14 @@ final class PlayerSession: ObservableObject {
         var info: [String: Any] = [
             MPMediaItemPropertyTitle: nowPlayingTitle,
             MPNowPlayingInfoPropertyElapsedPlaybackTime: position,
-            MPNowPlayingInfoPropertyPlaybackRate: player.timeControlStatus == .playing
-                ? Double(player.rate)
-                : 0,
+            MPNowPlayingInfoPropertyPlaybackRate:
+                playbackWasRequested
+                    ? Double(
+                        player.rate > 0
+                            ? player.rate
+                            : player.defaultRate
+                    )
+                    : 0,
             MPNowPlayingInfoPropertyDefaultPlaybackRate: Double(player.defaultRate),
             MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.video.rawValue,
             MPNowPlayingInfoPropertyExternalContentIdentifier: nowPlayingContentID,
@@ -2296,8 +2301,15 @@ final class PlayerSession: ObservableObject {
     }
 
     private func configureRemoteCommandsIfNeeded() {
-        guard remoteCommandTargets.isEmpty else { return }
-        let center = MPRemoteCommandCenter.shared()
+        guard remoteCommandTargets.isEmpty else {
+            return
+        }
+
+        UIApplication.shared
+            .beginReceivingRemoteControlEvents()
+
+        let center =
+            MPRemoteCommandCenter.shared()
 
         center.playCommand.isEnabled = true
         let playTarget = center.playCommand.addTarget { [weak self] _ in
@@ -2330,6 +2342,70 @@ final class PlayerSession: ObservableObject {
             return .success
         }
         remoteCommandTargets.append((center.changePlaybackPositionCommand, positionTarget))
+
+        center.previousTrackCommand.isEnabled = false
+        center.nextTrackCommand.isEnabled = false
+
+        center.skipBackwardCommand.isEnabled = true
+        center.skipBackwardCommand.preferredIntervals = [15]
+
+        let skipBackwardTarget =
+            center.skipBackwardCommand.addTarget {
+                [weak self] _ in
+
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+
+                    self.seekFromRemoteCommand(
+                        to: max(
+                            0,
+                            self.position - 15
+                        )
+                    )
+                }
+
+                return .success
+            }
+
+        remoteCommandTargets.append(
+            (
+                center.skipBackwardCommand,
+                skipBackwardTarget
+            )
+        )
+
+        center.skipForwardCommand.isEnabled = true
+        center.skipForwardCommand.preferredIntervals = [15]
+
+        let skipForwardTarget =
+            center.skipForwardCommand.addTarget {
+                [weak self] _ in
+
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+
+                    let target =
+                        self.duration > 0
+                        ? min(
+                            self.duration,
+                            self.position + 15
+                        )
+                        : self.position + 15
+
+                    self.seekFromRemoteCommand(
+                        to: target
+                    )
+                }
+
+                return .success
+            }
+
+        remoteCommandTargets.append(
+            (
+                center.skipForwardCommand,
+                skipForwardTarget
+            )
+        )
     }
 
     private func removeRemoteCommands() {
@@ -2343,6 +2419,12 @@ final class PlayerSession: ObservableObject {
         center.pauseCommand.isEnabled = false
         center.togglePlayPauseCommand.isEnabled = false
         center.changePlaybackPositionCommand.isEnabled = false
+        center.previousTrackCommand.isEnabled = false
+        center.nextTrackCommand.isEnabled = false
+        center.skipBackwardCommand.isEnabled = false
+        center.skipForwardCommand.isEnabled = false
+        UIApplication.shared
+            .endReceivingRemoteControlEvents()
     }
 
     private func resumeFromRemoteCommand() {
@@ -2783,6 +2865,7 @@ struct NativePlayerController: UIViewControllerRepresentable {
 
     func makeUIViewController(context: Context) -> LayoutAwarePlayerViewController {
         let controller = LayoutAwarePlayerViewController()
+        controller.updatesNowPlayingInfoCenter = false
         controller.player = player
         controller.delegate = context.coordinator
         controller.showsPlaybackControls = true
