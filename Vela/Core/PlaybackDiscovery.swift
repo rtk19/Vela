@@ -1,6 +1,20 @@
 import Foundation
 import AVFoundation
 
+enum PlaybackStartupTrace {
+    static func now() -> Int {
+        Int(ProcessInfo.processInfo.systemUptime * 1000)
+    }
+
+    static func mark(_ message: String) {
+        print("PLAYBACK PERF [\(now())] \(message)")
+    }
+
+    static func duration(since start: Int) -> Int {
+        now() - start
+    }
+}
+
 struct PlaybackSourcePreference: Codable, Hashable, Sendable {
     let providerID: String
     let serverName: String
@@ -176,14 +190,31 @@ final class PlaybackDiscovery {
     }
 
     private nonisolated static func prepareStream(_ candidate: PlaybackCandidate) async throws -> PlayableStream {
+        let perfStart = PlaybackStartupTrace.now()
+
+        PlaybackStartupTrace.mark(
+            "candidate START id=\(candidate.id)"
+        )
+
         let source = try await candidate.resolve()
+
+        PlaybackStartupTrace.mark(
+            "candidate RESOLVED id=\(candidate.id) duration=\(PlaybackStartupTrace.duration(since: perfStart))ms"
+        )
+
         try Task.checkCancellation()
         let asset = AVURLAsset(url: source.url, options: ["AVURLAssetHTTPHeaderFieldsKey": source.headers])
         let isPlayable = try await withTaskCancellationHandler {
             try await asset.load(.isPlayable)
         } onCancel: { asset.cancelLoading() }
         guard isPlayable else { throw AppError.noStream }
+        PlaybackStartupTrace.mark(
+            "candidate PLAYABLE id=\(candidate.id) duration=\(PlaybackStartupTrace.duration(since: perfStart))ms"
+        )
         let qualities = await HLSPlaylistInspector().availableQualities(for: source)
+        PlaybackStartupTrace.mark(
+            "candidate QUALITIES id=\(candidate.id) count=\(qualities.count) duration=\(PlaybackStartupTrace.duration(since: perfStart))ms"
+        )
         let nativeSubtitles = try? await asset.loadMediaSelectionGroup(for: .legible)
         let subtitleKind: StreamSubtitleKind
         if candidate.subtitleKind == .unknown {
@@ -192,10 +223,16 @@ final class PlaybackDiscovery {
         } else { subtitleKind = candidate.subtitleKind }
         let verified = PlaybackCandidate(id: candidate.id, preference: candidate.preference, providerName: candidate.providerName,
             subtitleKind: subtitleKind, displayMetadata: candidate.displayMetadata, resolve: candidate.resolve)
+        PlaybackStartupTrace.mark(
+            "candidate DONE id=\(candidate.id) total=\(PlaybackStartupTrace.duration(since: perfStart))ms"
+        )
         return PlayableStream(candidate: verified, source: source, qualities: qualities)
     }
 
     func start(context: PlaybackLookupContext, providers: [any PlaybackProvider], policy: StreamSelectionPolicy) async throws -> PlayableStream {
+        PlaybackStartupTrace.mark(
+            "discovery START providers=\(providers.count)"
+        )
         cancel()
         let operation = UUID()
         generation = operation
@@ -280,6 +317,9 @@ final class PlaybackDiscovery {
 
     private func receive(_ stream: PlayableStream, operation: UUID) {
         guard generation == operation, isSearching, !streams.contains(where: { $0.id == stream.id }) else { return }
+        PlaybackStartupTrace.mark(
+            "stream READY id=\(stream.id) provider=\(stream.candidate.providerName)"
+        )
         streams.append(stream)
         onUpdate?(streams)
         guard initial != nil, settleTask == nil else { return }
@@ -292,6 +332,9 @@ final class PlaybackDiscovery {
 
     private func deliverInitial() {
         guard let initial, let best = policy.best(in: streams) else { return }
+        PlaybackStartupTrace.mark(
+            "initial SELECTED id=\(best.id) provider=\(best.candidate.providerName) streamsReady=\(streams.count)"
+        )
         self.initial = nil
         initialDeadlineTask?.cancel()
         initialDeadlineTask = nil

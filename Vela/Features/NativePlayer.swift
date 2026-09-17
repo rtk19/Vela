@@ -339,6 +339,7 @@ final class PlayerSession: ObservableObject {
     private var pendingSourceSwitchRate: Float?
     private var pendingSourceSwitchItem: AVPlayerItem?
     private var isSourceSwitching = false
+    private var startupPlayingLogged = false
     private let audioSessionController = AudioSessionController()
 
     init(subtitleClient: any HTTPClientProtocol = HTTPClient()) {
@@ -354,9 +355,27 @@ final class PlayerSession: ObservableObject {
             guard let rate = change.newValue, rate > 0 else { return }
             Task { @MainActor [weak self] in self?.recordPlaybackRate(rate) }
         }
-        timeControlStatusObservation = player.observe(\.timeControlStatus, options: [.initial, .new]) { [weak self] _, _ in
-            Task { @MainActor [weak self] in self?.refreshPlaybackState() }
-        }
+        timeControlStatusObservation =
+            player.observe(
+                \.timeControlStatus,
+                options: [.initial, .new]
+            ) { [weak self] _, _ in
+                Task { @MainActor [weak self] in
+                    guard let self else { return }
+
+                    self.refreshPlaybackState()
+
+                    if self.player.timeControlStatus == .playing,
+                       !self.startupPlayingLogged {
+
+                        self.startupPlayingLogged = true
+
+                        PlaybackStartupTrace.mark(
+                            "AVPlayer PLAYING"
+                        )
+                    }
+                }
+            }
         timeObserver = player.addPeriodicTimeObserver(forInterval: CMTime(seconds: 1, preferredTimescale: 1), queue: .main) { [weak self] time in
             Task { @MainActor in
                 guard let self else { return }
@@ -410,6 +429,13 @@ final class PlayerSession: ObservableObject {
         defaultQualityHeight: Int,
         defaultPlaybackRate: Float
     ) async {
+        let startupPerfStart = PlaybackStartupTrace.now()
+
+        PlaybackStartupTrace.mark(
+            "PlayerSession LOAD START"
+        )
+
+        startupPlayingLogged = false
         sourceSwitchGeneration = UUID()
         pendingSourceSwitchTime = nil
         pendingSourceSwitchShouldPlay = nil
@@ -436,7 +462,12 @@ final class PlayerSession: ObservableObject {
         appliedSubtitleTimingOffset = 0
         self.subtitleSyncVersions = subtitleSyncVersions
         let preparedSource = source.preferredForSubtitleLanguage(primarySubtitleLanguage)
+        let qualityPerfStart =
+            PlaybackStartupTrace.now()
         let qualities = await playlistInspector.availableQualities(for: preparedSource)
+        PlaybackStartupTrace.mark(
+            "PlayerSession qualities READY duration=\(PlaybackStartupTrace.duration(since: qualityPerfStart))ms"
+        )
         guard !Task.isCancelled else { return }
         availableQualities = qualities
         if !qualityPreferenceInitialized {
@@ -446,10 +477,19 @@ final class PlayerSession: ObservableObject {
         selectedQuality = preferredQualityHeight.flatMap {
             StreamQuality.closest(to: $0, in: qualities)
         }
+        let subtitlePerfStart =
+            PlaybackStartupTrace.now()
+
+        PlaybackStartupTrace.mark(
+            "PlayerSession subtitle injection START external=\(externalSubtitles.count)"
+        )
         let asset = await assetByInjectingSubtitles(
             externalSubtitles,
             into: preparedSource,
             selectedQuality: selectedQuality
+        )
+        PlaybackStartupTrace.mark(
+            "PlayerSession subtitle injection DONE duration=\(PlaybackStartupTrace.duration(since: subtitlePerfStart))ms"
         )
         guard !Task.isCancelled else { return }
         automaticPeakBitRate = source.preferredPeakBitRate
@@ -473,6 +513,9 @@ final class PlayerSession: ObservableObject {
                 .first
             : nil
         subtitleVisibilityBaseline = subtitlesEnabled
+        PlaybackStartupTrace.mark(
+            "PlayerSession replaceCurrentItem total=\(PlaybackStartupTrace.duration(since: startupPerfStart))ms"
+        )
         replaceCurrentItem(
             with: asset,
             resumeAt: resumeAt,
@@ -973,6 +1016,12 @@ final class PlayerSession: ObservableObject {
         selectedQuality: StreamQuality?,
         generation: UUID? = nil
     ) async -> AVURLAsset {
+        let injectionPerfStart =
+            PlaybackStartupTrace.now()
+
+        PlaybackStartupTrace.mark(
+            "subtitle asset START subtitles=\(subtitles.count)"
+        )
         let originalAsset = AVURLAsset(
             url: source.url,
             options: ["AVURLAssetHTTPHeaderFieldsKey": source.headers]
@@ -981,6 +1030,8 @@ final class PlayerSession: ObservableObject {
         let uniqueSubtitles = subtitles.filter {
             seenResources.insert("\($0.providerID):\($0.url.absoluteString)").inserted
         }
+        let subtitleDownloadsStart =
+            PlaybackStartupTrace.now()
         async let downloadedRenditions = loadSubtitleRenditions(uniqueSubtitles)
         async let embeddedRenditions = HLSNativeSubtitleLoader.load(
             from: source,
@@ -988,6 +1039,9 @@ final class PlayerSession: ObservableObject {
         )
         let loadedRenditions = sortSubtitleRenditions(
             await downloadedRenditions + embeddedRenditions
+        )
+        PlaybackStartupTrace.mark(
+            "subtitle renditions READY total=\(loadedRenditions.count) duration=\(PlaybackStartupTrace.duration(since: subtitleDownloadsStart))ms"
         )
         guard !Task.isCancelled, generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
         subtitleStudioTracks = loadedRenditions.map {
@@ -999,6 +1053,8 @@ final class PlayerSession: ObservableObject {
         guard !renditions.isEmpty || selectedQuality != nil else { return originalAsset }
 
         do {
+            let injectorStart =
+                PlaybackStartupTrace.now()
             let injectedAsset = try await HLSSubtitleInjector.prepare(
                 source: source,
                 renditions: renditions,
@@ -1008,8 +1064,16 @@ final class PlayerSession: ObservableObject {
                 secondarySubtitleLanguage: secondarySubtitleLanguage,
                 client: subtitleClient
             )
+            PlaybackStartupTrace.mark(
+                "subtitle injector PREPARED duration=\(PlaybackStartupTrace.duration(since: injectorStart))ms"
+            )
             try Task.checkCancellation()
+            let publishStart =
+                PlaybackStartupTrace.now()
             let localMasterURL = try await subtitleServer.publish(injectedAsset)
+            PlaybackStartupTrace.mark(
+                "subtitle server PUBLISHED duration=\(PlaybackStartupTrace.duration(since: publishStart))ms"
+            )
             try Task.checkCancellation()
             guard generation == nil || generation == sourceSwitchGeneration else { return originalAsset }
             injectedSubtitleNames = injectedAsset.displayNames
@@ -1032,6 +1096,9 @@ final class PlayerSession: ObservableObject {
                 )
             }
             subtitlePlaybackSource = loadedRenditions.isEmpty ? nil : source
+            PlaybackStartupTrace.mark(
+                "subtitle asset DONE total=\(PlaybackStartupTrace.duration(since: injectionPerfStart))ms"
+            )
             return AVURLAsset(
                 url: localMasterURL,
                 options: ["AVURLAssetHTTPHeaderFieldsKey": source.headers]
@@ -1213,59 +1280,130 @@ final class PlayerSession: ObservableObject {
         _ subtitles: [SubtitleSource]
     ) async -> [HLSSubtitleRendition] {
         let client = subtitleClient
-        var loaded: [(Int, HLSSubtitleRendition)] = []
         let maximumConcurrentDownloads = 6
 
-        for start in stride(from: 0, to: subtitles.count, by: maximumConcurrentDownloads) {
-            guard !Task.isCancelled else { return [] }
-            let end = min(start + maximumConcurrentDownloads, subtitles.count)
-            let batch = Array(subtitles[start..<end].enumerated()).map { offset, subtitle in
-                (start + offset, subtitle)
-            }
-            let batchResults = await withTaskGroup(
-                of: (Int, HLSSubtitleRendition?).self,
-                returning: [(Int, HLSSubtitleRendition)].self
-            ) { group in
-                for (index, subtitle) in batch {
-                    group.addTask {
-                        do {
-                            var request = URLRequest(url: subtitle.url)
-                            for (name, value) in subtitle.headers { request.setValue(value, forHTTPHeaderField: name) }
+        guard !subtitles.isEmpty else {
+            return []
+        }
+
+        return await withTaskGroup(
+            of: (Int, HLSSubtitleRendition?).self,
+            returning: [HLSSubtitleRendition].self
+        ) { group in
+            var loaded: [(Int, HLSSubtitleRendition)] = []
+
+            let initialCount = min(
+                maximumConcurrentDownloads,
+                subtitles.count
+            )
+
+            func addTask(
+                index: Int,
+                subtitle: SubtitleSource
+            ) {
+                group.addTask {
+                    do {
+                        var request = URLRequest(
+                            url: subtitle.url
+                        )
+
+                        for (name, value) in subtitle.headers {
                             request.setValue(
-                                "text/plain,text/vtt,application/x-subrip,*/*;q=0.8",
-                                forHTTPHeaderField: "Accept"
+                                value,
+                                forHTTPHeaderField: name
                             )
-                            request.setValue(
-                                HTTPClient.desktopUserAgent,
-                                forHTTPHeaderField: "User-Agent"
-                            )
-                            let response = try await SubtitleResourceRetry.load(
+                        }
+
+                        request.setValue(
+                            "text/plain,text/vtt,application/x-subrip,*/*;q=0.8",
+                            forHTTPHeaderField: "Accept"
+                        )
+
+                        request.setValue(
+                            HTTPClient.desktopUserAgent,
+                            forHTTPHeaderField: "User-Agent"
+                        )
+
+                        let response =
+                            try await SubtitleResourceRetry.load(
                                 request: request,
                                 client: client
                             )
-                            try Task.checkCancellation()
-                            let parsedCues = try SubtitleParser.cues(from: response.data, languageCode: subtitle.languageCode)
-                            let cues = SubtitleDirectionFormatter.normalizedCues(
-                                parsedCues,
-                                languageCode: subtitle.languageCode
+
+                        try Task.checkCancellation()
+
+                        let parsedCues =
+                            try SubtitleParser.cues(
+                                from: response.data,
+                                languageCode:
+                                    subtitle.languageCode
                             )
-                            return (index, HLSSubtitleRendition(subtitle: subtitle, cues: cues))
-                        } catch {
-                            return (index, nil)
-                        }
+
+                        let cues =
+                            SubtitleDirectionFormatter
+                                .normalizedCues(
+                                    parsedCues,
+                                    languageCode:
+                                        subtitle.languageCode
+                                )
+
+                        return (
+                            index,
+                            HLSSubtitleRendition(
+                                subtitle: subtitle,
+                                cues: cues
+                            )
+                        )
+                    } catch {
+                        return (
+                            index,
+                            nil
+                        )
                     }
                 }
-                var results: [(Int, HLSSubtitleRendition)] = []
-                for await (index, rendition) in group {
-                    if let rendition { results.append((index, rendition)) }
-                }
-                return results
             }
-            loaded.append(contentsOf: batchResults)
-        }
-        return loaded.sorted { $0.0 < $1.0 }.map(\.1)
-    }
 
+            for index in 0..<initialCount {
+                addTask(
+                    index: index,
+                    subtitle: subtitles[index]
+                )
+            }
+
+            var nextIndex = initialCount
+
+            while let (
+                index,
+                rendition
+            ) = await group.next() {
+                guard !Task.isCancelled else {
+                    group.cancelAll()
+                    return []
+                }
+
+                if let rendition {
+                    loaded.append(
+                        (index, rendition)
+                    )
+                }
+
+                if nextIndex < subtitles.count {
+                    addTask(
+                        index: nextIndex,
+                        subtitle: subtitles[nextIndex]
+                    )
+
+                    nextIndex += 1
+                }
+            }
+
+            return loaded
+                .sorted {
+                    $0.0 < $1.0
+                }
+                .map(\.1)
+        }
+    }
     private func replaceCurrentItem(
         with asset: AVURLAsset,
         resumeAt: Double,

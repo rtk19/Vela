@@ -387,14 +387,26 @@ final class AppEnvironment: ObservableObject {
     func canonicalPlaybackRequest(
         for request: PlaybackRequest
     ) async -> PlaybackRequest {
+        let perfStart = PlaybackStartupTrace.now()
+
+        PlaybackStartupTrace.mark(
+            "canonical START tmdb=\(request.media.tmdbID.map(String.init) ?? "nil") imdb=\(request.media.imdbID ?? "nil")"
+        )
         guard request.media.tmdbID != nil,
               let token = try? tmdbAccessToken(),
               let canonicalMedia = try? await tmdbClient.details(
                   for: request.media,
                   accessToken: token
               ) else {
+            PlaybackStartupTrace.mark(
+                "canonical FALLBACK duration=\(PlaybackStartupTrace.duration(since: perfStart))ms"
+            )
             return request
         }
+
+        PlaybackStartupTrace.mark(
+            "canonical READY duration=\(PlaybackStartupTrace.duration(since: perfStart))ms imdb=\(canonicalMedia.imdbID ?? "nil")"
+        )
 
         guard canonicalMedia.imdbID != request.media.imdbID else {
             return request

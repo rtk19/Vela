@@ -3387,7 +3387,17 @@ struct SettingsView: View {
     @AppStorage("player.animeAudioLanguage") private var animeAudioLanguage = "en"
     @AppStorage("player.animeBackupAudioLanguage") private var animeBackupAudioLanguage = "ja"
     @AppStorage("player.subtitlesEnabledByDefault") private var subtitlesEnabledByDefault = true
-    @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
+    @AppStorage("subtitle.provider.subdl.enabled")
+    private var subDLSubtitlesEnabled = true
+
+    @AppStorage("subtitle.provider.wizdom.enabled")
+    private var wizdomSubtitlesEnabled = true
+
+    @AppStorage("subtitle.provider.ktuvit.enabled")
+    private var ktuvitSubtitlesEnabled = true
+
+    @AppStorage("subtitle.provider.externalStreams.enabled")
+    private var externalStreamSubtitlesEnabled = true
     @AppStorage("player.subtitleSync.autoSelectLatest") private var autoSelectLatestSubtitleSync = true
     @State private var isCheckingForUpdates = false
     @State private var updateCheckResult: UpdateCheckResult?
@@ -3466,14 +3476,75 @@ struct SettingsView: View {
                 }
                 .listRowBackground(VelaTheme.surface)
                 Section("Third-party Subtitles") {
-                    Toggle("Enabled", isOn: $thirdPartySubtitlesEnabled)
-                    Toggle("Use latest saved sync automatically", isOn: $autoSelectLatestSubtitleSync)
-                    Text("Third-party availability depends on the title and provider service.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Text("Saved subtitle timing versions stay available alongside the original and are stored separately for each movie or episode.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    Menu {
+                        Button {
+                            subDLSubtitlesEnabled.toggle()
+                        } label: {
+                            Label(
+                                "SubDL",
+                                systemImage: subDLSubtitlesEnabled
+                                    ? "checkmark"
+                                    : "circle"
+                            )
+                        }
+
+                        Button {
+                            wizdomSubtitlesEnabled.toggle()
+                        } label: {
+                            Label(
+                                "Wizdom",
+                                systemImage: wizdomSubtitlesEnabled
+                                    ? "checkmark"
+                                    : "circle"
+                            )
+                        }
+
+                        Button {
+                            ktuvitSubtitlesEnabled.toggle()
+                        } label: {
+                            Label(
+                                "Ktuvit",
+                                systemImage: ktuvitSubtitlesEnabled
+                                    ? "checkmark"
+                                    : "circle"
+                            )
+                        }
+
+                        Button {
+                            externalStreamSubtitlesEnabled.toggle()
+                        } label: {
+                            Label(
+                                "External Streams",
+                                systemImage: externalStreamSubtitlesEnabled
+                                    ? "checkmark"
+                                    : "circle"
+                            )
+                        }
+                    } label: {
+                        HStack {
+                            Text("Sources")
+
+                            Spacer()
+
+                            Text(subtitleProviderSummary)
+                                .foregroundStyle(.secondary)
+
+                            Image(systemName: "chevron.up.chevron.down")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+
+                    Toggle(
+                        "Use latest saved sync automatically",
+                        isOn: $autoSelectLatestSubtitleSync
+                    )
+
+                    Text(
+                        "Choose which third-party subtitle services Vela should search. Fewer sources can improve playback startup time."
+                    )
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
                 }
                 .listRowBackground(VelaTheme.surface)
                 Section("Backup & Restore") {
@@ -3597,6 +3668,28 @@ struct SettingsView: View {
         }
         .alert(item: $backupNotice) { notice in
             Alert(title: Text(notice.title), message: Text(notice.message), dismissButton: .default(Text("OK")))
+        }
+    }
+
+    private var subtitleProviderSummary: String {
+        let count = [
+            subDLSubtitlesEnabled,
+            wizdomSubtitlesEnabled,
+            ktuvitSubtitlesEnabled,
+            externalStreamSubtitlesEnabled
+        ]
+        .filter { $0 }
+        .count
+
+        switch count {
+        case 0:
+            return "None"
+        case 4:
+            return "All"
+        case 1:
+            return "1 selected"
+        default:
+            return "\(count) selected"
         }
     }
 
@@ -4934,7 +5027,17 @@ struct PlayerScreen: View {
     @AppStorage("player.animeAudioLanguage") private var animeAudioLanguage = "en"
     @AppStorage("player.animeBackupAudioLanguage") private var animeBackupAudioLanguage = "ja"
     @AppStorage("player.subtitlesEnabledByDefault") private var subtitlesEnabledByDefault = true
-    @AppStorage("subtitle.thirdParty.enabled") private var thirdPartySubtitlesEnabled = true
+    @AppStorage("subtitle.provider.subdl.enabled")
+    private var subDLSubtitlesEnabled = true
+
+    @AppStorage("subtitle.provider.wizdom.enabled")
+    private var wizdomSubtitlesEnabled = true
+
+    @AppStorage("subtitle.provider.ktuvit.enabled")
+    private var ktuvitSubtitlesEnabled = true
+
+    @AppStorage("subtitle.provider.externalStreams.enabled")
+    private var externalStreamSubtitlesEnabled = true
     @AppStorage("player.subtitleSync.autoSelectLatest") private var autoSelectLatestSubtitleSync = true
     @StateObject private var model: PlayerViewModel
     @StateObject private var session = PlayerSession()
@@ -4946,6 +5049,9 @@ struct PlayerScreen: View {
     @State private var sourceSwitchRequestID = UUID()
 
     init(request: PlaybackRequest, nextRequest: PlaybackRequest?) {
+        PlaybackStartupTrace.mark(
+            "PLAYER OPEN content=\(request.contentID)"
+        )
         _model = StateObject(wrappedValue: PlayerViewModel(request: request))
         _nextRequest = State(initialValue: nextRequest)
     }
@@ -5277,6 +5383,32 @@ struct PlayerScreen: View {
             set: { model.errorMessage = $0 }))
     }
 
+    private func cancelPendingSourceSwitch() {
+        guard case .switching = sourceSwitchStatus else {
+            return
+        }
+
+        // Immediately make the current request stale so that even if its
+        // async work finishes after cancellation, it cannot affect playback.
+        sourceSwitchRequestID = UUID()
+
+        model.supersedeSourceSelection()
+        session.supersedeSourceSwitch()
+
+        sourceSwitchTask?.cancel()
+        sourceSwitchTask = nil
+
+        // Drop the pending replacement while keeping/resuming the source
+        // that was playing before the switch started.
+        session.cancelSourceSwitch(
+            resumePrevious: true
+        )
+
+        withAnimation {
+            sourceSwitchStatus = nil
+        }
+    }
+
     private func sourceSwitchOverlay(
         _ status: SourceSwitchStatus
     ) -> some View {
@@ -5305,6 +5437,32 @@ struct PlayerScreen: View {
                     .foregroundStyle(.white.opacity(0.72))
                     .lineLimit(1)
                     .truncationMode(.middle)
+            }
+
+            if case .switching = status {
+                Divider()
+                    .frame(height: 24)
+                    .overlay(
+                        Color.white.opacity(0.18)
+                    )
+                    .padding(.leading, 2)
+
+                Button {
+                    cancelPendingSourceSwitch()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(.white.opacity(0.85))
+                        .frame(
+                            width: 30,
+                            height: 30
+                        )
+                        .contentShape(Circle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(
+                    "Cancel source switch"
+                )
             }
         }
         .padding(.horizontal, 16)
@@ -5400,7 +5558,27 @@ struct PlayerScreen: View {
     }
 
     private var enabledSubtitleProviderIDs: Set<String> {
-        thirdPartySubtitlesEnabled ? ["subdl", "wizdom", "ktuvit", "external-stream-subtitles"] : []
+        var providers: Set<String> = []
+
+        if subDLSubtitlesEnabled {
+            providers.insert("subdl")
+        }
+
+        if wizdomSubtitlesEnabled {
+            providers.insert("wizdom")
+        }
+
+        if ktuvitSubtitlesEnabled {
+            providers.insert("ktuvit")
+        }
+
+        if externalStreamSubtitlesEnabled {
+            providers.insert(
+                "external-stream-subtitles"
+            )
+        }
+
+        return providers
     }
 
     private var playerOrientation: PlayerOrientationPreference {
