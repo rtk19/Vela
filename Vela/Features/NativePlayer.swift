@@ -347,6 +347,7 @@ final class PlayerSession: ObservableObject {
         player.allowsExternalPlayback = true
         player.automaticallyWaitsToMinimizeStalling = true
         player.appliesMediaSelectionCriteriaAutomatically = false
+        player.audiovisualBackgroundPlaybackPolicy = .continuesIfPossible
         rateObservation = player.observe(\.rate, options: [.new]) { [weak self] _, change in
             guard let rate = change.newValue, rate > 0 else { return }
             Task { @MainActor [weak self] in self?.recordPlaybackRate(rate) }
@@ -525,7 +526,6 @@ final class PlayerSession: ObservableObject {
                 ? preferredSyncVersionID?.1
                 : "__subtitles_off__"
         )
-        schedulePausedSourceRefreshBeforeExpiration()
     }
 
     func stop() {
@@ -582,19 +582,10 @@ final class PlayerSession: ObservableObject {
         Task { [audioSessionController] in
             await audioSessionController.activateForPlayback()
         }
-        guard player.currentItem != nil,
-              player.timeControlStatus == .paused else { return }
-        // iOS can leave a paused HLS item attached after suspending its network
-        // requests. Recreate that item only when the user next asks it to play.
-        needsSourceRefreshAfterBackground = true
-        sourceRefreshRequestedForURL = nil
     }
 
     func prepareForBackground() {
-        guard player.timeControlStatus == .paused else { return }
-        Task { [audioSessionController] in
-            await audioSessionController.deactivate()
-        }
+        // Keep the playback audio session alive while the PlayerScreen exists.
     }
 
     func retryPlayback() {
@@ -767,7 +758,6 @@ final class PlayerSession: ObservableObject {
                            preferredSubtitleDisplayName: subtitleName,
                            preferredSubtitleSelectionID: subtitlesWereOff ? "__subtitles_off__" : subtitleID)
         primarySubtitleLanguage = oldLanguage
-        schedulePausedSourceRefreshBeforeExpiration()
         withExtendedLifetime(oldServer) { }
         return true
     }
@@ -1698,11 +1688,6 @@ final class PlayerSession: ObservableObject {
         case .waitingToPlayAtSpecifiedRate:
             playbackState = isSeekRecoveryGraceActive ? .seeking : .buffering
             playbackWasRequested = true
-            if needsSourceRefreshAfterBackground {
-                requestSourceRefresh()
-            } else {
-                refreshSourceIfExpired()
-            }
             scheduleRecoveryWatchdogIfNeeded()
         case .paused:
             if isPreparingPlayback {
@@ -1718,7 +1703,7 @@ final class PlayerSession: ObservableObject {
             playbackState = .paused
             recoveryWatchdogTask?.cancel()
             recoveryWatchdogTask = nil
-            if player.currentItem?.status == .failed || sourceIsExpiredOrExpiringSoon {
+            if player.currentItem?.status == .failed {
                 requestSourceRefresh()
             }
         @unknown default:

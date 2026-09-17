@@ -759,9 +759,19 @@ enum SubtitleDirectionFormatter {
     private struct PunctuationLayoutScore {
         var legacy = 0
         var logical = 0
+        var legacyLines = 0
+        var logicalLines = 0
 
         var usesLegacyLayout: Bool {
-            legacy >= 2 && legacy >= logical * 2
+            // Ambiguous punctuation is rewritten only when several
+            // independent RTL lines prove that this subtitle file
+            // consistently uses legacy visual-order punctuation.
+            //
+            // Strong per-line repairs remain available even when this
+            // file-level threshold is not reached.
+            legacyLines >= 3 &&
+            legacy >= 6 &&
+            legacy >= logical * 2
         }
     }
 
@@ -864,18 +874,49 @@ enum SubtitleDirectionFormatter {
                     remainingText: String(trimmed.dropFirst(leadingDecoration.count))
                 )
 
+                var lineHasLegacyEvidence = false
+                var lineHasLogicalEvidence = false
+
                 if !leadingTerminal.isEmpty {
-                    // A leading ellipsis is commonly intentional. It only
-                    // contributes weak evidence unless the rest of the file
-                    // also follows the legacy convention.
-                    total.legacy += isOnlyEllipsis(leadingTerminal) ? 1 : 2
+                    total.legacy +=
+                        isOnlyEllipsis(leadingTerminal)
+                        ? 1
+                        : 2
+
+                    if !isOnlyEllipsis(leadingTerminal) {
+                        lineHasLegacyEvidence = true
+                    }
                 }
-                if leadingTerminal.isEmpty, pairedBoundary { total.legacy += 2 }
-                if !trailingDialogueDash.isEmpty, !hasPairedDialogueBoundary {
+
+                if leadingTerminal.isEmpty,
+                   pairedBoundary {
                     total.legacy += 2
+                    lineHasLegacyEvidence = true
                 }
-                if !trailingTerminal.isEmpty { total.logical += 2 }
-                if !leadingDialogueDash.isEmpty { total.logical += 2 }
+
+                if !trailingDialogueDash.isEmpty,
+                   !hasPairedDialogueBoundary {
+                    total.legacy += 2
+                    lineHasLegacyEvidence = true
+                }
+
+                if !trailingTerminal.isEmpty {
+                    total.logical += 2
+                    lineHasLogicalEvidence = true
+                }
+
+                if !leadingDialogueDash.isEmpty {
+                    total.logical += 2
+                    lineHasLogicalEvidence = true
+                }
+
+                if lineHasLegacyEvidence {
+                    total.legacyLines += 1
+                }
+
+                if lineHasLogicalEvidence {
+                    total.logicalLines += 1
+                }
             }
         }
         return score.usesLegacyLayout
@@ -1152,26 +1193,48 @@ enum SubtitleDirectionFormatter {
         return "\(leadingBoundary.trimmingCharacters(in: .whitespaces)) \(correctedBody) \(trailingBoundary.trimmingCharacters(in: .whitespaces))"
     }
 
-    private static func correctedMirroredLeadingOpening(in text: String) -> String? {
+    private static func correctedMirroredLeadingOpening(
+        in text: String
+    ) -> String? {
         guard let first = text.first,
-              let opening = mirroredOpeningDelimiter(for: first) else {
+              let opening =
+                mirroredOpeningDelimiter(for: first) else {
             return nil
         }
-        let remainder = text.dropFirst()
-        // `)(text` and `”“text` are complete legacy-reversed pairs handled by
-        // the general boundary repair below. This path is only for a lone
-        // mirrored opener whose matching glyph occurs later in the sentence.
-        guard remainder.drop(while: { $0.isWhitespace }).first != opening else {
+
+        let remainder = String(text.dropFirst())
+
+        guard directionalCounts(in: remainder)
+            .rightToLeft > 0 else {
             return nil
         }
-        // A lone closing glyph at the logical beginning can be a legacy visual
-        // representation of an opening delimiter. Only correct it when the
-        // remainder has an unmatched opener of the same kind; balanced text
-        // and ordinary closing punctuation are left unchanged.
-        let openingCount = remainder.filter { $0 == opening }.count
-        let closingCount = remainder.filter { $0 == first }.count
-        guard openingCount > closingCount else { return nil }
-        return "\(opening)\(remainder)"
+
+        let openingCount =
+            remainder.filter { $0 == opening }.count
+
+        let closingCount =
+            remainder.filter { $0 == first }.count
+
+        /*
+         A visually mirrored closing delimiter at the beginning
+         is only safe to repair when there is exactly one unmatched
+         logical opening delimiter later in the line.
+
+         Do not merely turn `)` into `(`. That creates an invalid
+         pair such as:
+
+             (text (caption
+
+         Instead, move the displaced closing delimiter to the
+         logical end of the line:
+
+             text (caption)
+        */
+        guard openingCount == closingCount + 1 else {
+            return nil
+        }
+
+        return remainder + String(first)
     }
 
     private static func mirroredOpeningDelimiter(for closing: Character) -> Character? {
@@ -2281,9 +2344,22 @@ enum HLSSubtitleInjector {
             )
             try Data(master.utf8).write(to: masterURL, options: .atomic)
             for (index, rendition) in renditions.enumerated() {
-                let adjustedCues = rendition.cues.map {
-                    $0.shifted(by: rendition.timingOffset + timingOffset)
-                }
+                let normalizedCues =
+                    SubtitleDirectionFormatter
+                        .normalizedCues(
+                            rendition.cues,
+                            languageCode:
+                                rendition.subtitle.languageCode
+                        )
+
+                let adjustedCues =
+                    normalizedCues.map {
+                        $0.shifted(
+                            by:
+                                rendition.timingOffset
+                                + timingOffset
+                        )
+                    }
                 let segments = segmentedWebVTT(
                     cues: adjustedCues,
                     renditionIndex: index,
@@ -2544,21 +2620,67 @@ enum HLSSubtitleInjector {
         renditionIndex: Int,
         directory: URL
     ) -> [WebVTTSegment] {
-        // Small enough for reliable seeking/switching, without producing the
-        // thousands of files created by broadcast-sized six-second segments.
         let segmentDuration = 60.0
-        let totalDuration = max(1, cues.map(\.endTime).max() ?? 1)
-        let segmentCount = max(1, Int(ceil(totalDuration / segmentDuration)))
+        let totalDuration = max(
+            1,
+            cues.map(\.endTime).max() ?? 1
+        )
+
+        let segmentCount = max(
+            1,
+            Int(ceil(totalDuration / segmentDuration))
+        )
+
         return (0..<segmentCount).map { segmentIndex in
-            let start = Double(segmentIndex) * segmentDuration
-            let duration = min(segmentDuration, totalDuration - start)
+            let start =
+                Double(segmentIndex) * segmentDuration
+
+            let duration = min(
+                segmentDuration,
+                totalDuration - start
+            )
+
             let end = start + duration
+
+            let segmentCues = cues.compactMap {
+                cue -> SubtitleCue? in
+
+                guard cue.endTime > start,
+                      cue.startTime < end else {
+                    return nil
+                }
+
+                // A cue that crosses an HLS segment boundary is split at
+                // that boundary instead of being emitted twice with the
+                // same complete time range in adjacent WebVTT segments.
+                let clippedStart = max(
+                    cue.startTime,
+                    start
+                )
+
+                let clippedEnd = min(
+                    cue.endTime,
+                    end
+                )
+
+                guard clippedEnd > clippedStart else {
+                    return nil
+                }
+
+                return SubtitleCue(
+                    startTime: clippedStart,
+                    endTime: clippedEnd,
+                    text: cue.text
+                )
+            }
+
             return WebVTTSegment(
                 url: directory.appending(
-                    path: "external-subtitles-\(renditionIndex)-\(segmentIndex).vtt"
+                    path:
+                        "external-subtitles-\(renditionIndex)-\(segmentIndex).vtt"
                 ),
                 duration: duration,
-                cues: cues.filter { $0.endTime > start && $0.startTime < end }
+                cues: segmentCues
             )
         }
     }
@@ -2569,21 +2691,25 @@ enum HLSSubtitleInjector {
         mpegTimestamp: UInt64 = 0
     ) -> String {
         let blocks = cues.enumerated().map { index, cue in
-            let normalizedText = SubtitleDirectionFormatter
-                .displayText(cue.text, languageCode: languageCode)
-                .replacingOccurrences(of: "\n\n", with: "\n")
-
-            let text = normalizedText
+            let text = cue.text
+                .replacingOccurrences(
+                    of: "\n\n",
+                    with: "\n"
+                )
                 .components(separatedBy: "\n")
                 .map { line in
-                    guard line.first == "\u{200F}",
-                          let last = line.last,
-                          last != "\u{200F}",
-                          last.unicodeScalars.allSatisfy({
-                              $0.properties.generalCategory == .otherPunctuation
-                                  || $0.properties.generalCategory == .closePunctuation
-                                  || $0.properties.generalCategory == .finalPunctuation
-                          }) else {
+                    guard line.first == "\u{200F}" else {
+                        return line
+                    }
+
+                    // The leading RLM establishes the RTL base direction.
+                    // A matching trailing RLM gives AVPlayer a strong RTL
+                    // boundary after neutral punctuation such as:
+                    // ) ] } " ' . , ! ? :
+                    //
+                    // Without this, a closing delimiter at the logical end
+                    // can be mirrored or resolved onto the wrong visual side.
+                    if line.last == "\u{200F}" {
                         return line
                     }
 
